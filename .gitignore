@@ -1,0 +1,33 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Testy / cache ---
+.pytest_cache/
+
+# --- Vystupy behu (velke, generovane) ---
+data/results/
+benchmark/results/
+*.log
+benchmark_results.csv
+benchmark_summary.txt
+
+# --- OSOBNI UDAJE ZAKAZNIKU / RIDICU (GDPR) — NIKDY do gitu! ---
+# RiRo vstupy a pripravene objednavky = jmena, adresy, GPS, vahy zakazniku.
+# locations_*.csv = nazvy + adresy + GPS zakazniku.
+# vehicle_registry.csv = jmena ridicu + SPZ.
+# Verzuji se jen config bez PII: vehicle_types.csv a closures.json.
+data/input/
+data/prepared/
+data/static/locations_*.csv
+data/static/vehicle_registry.csv
+
+# --- Routovaci data (ORS/OSRM grafy, stahovana / v Docker volume) ---
+routing/
+
+# --- Lokalni nastaveni editoru / Claude ---
+.claude/settings.local.json
+.vscode/
