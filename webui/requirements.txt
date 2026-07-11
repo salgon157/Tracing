@@ -1,0 +1,11 @@
+# Závislosti webového rozhraní (webui/).
+#
+# POZOR: závislosti samotného solveru (requests, numpy, pandas, openpyxl,
+# scikit-learn, ortools, pytest) jsou SAMOSTATNÉ a už nainstalované v prostředí
+# — NEinstalují se odsud a nejsou tu uvedené. Tento soubor pokrývá jen web vrstvu.
+#
+# Instalace:  pip install -r webui/requirements.txt
+
+fastapi==0.139.0
+uvicorn==0.51.0
+python-multipart==0.0.32

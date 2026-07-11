@@ -31,3 +31,6 @@ routing/
 # --- Lokalni nastaveni editoru / Claude ---
 .claude/settings.local.json
 .vscode/
+
+# --- webui runtime joby (job.json + job.log per beh) ---
+webui/jobs/

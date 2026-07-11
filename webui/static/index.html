@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VRP Plánovač — webové rozhraní</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>VRP Plánovač <span class="sub">— webové rozhraní</span></h1>
+    <div id="health-badge" class="badge badge-unknown" title="Stav serveru">…</div>
+  </header>
+
+  <nav class="tabs">
+    <a href="#denni"     data-tab="denni">Denní běh</a>
+    <a href="#benchmarky" data-tab="benchmarky">Benchmarky</a>
+    <a href="#vysledky"  data-tab="vysledky">Výsledky</a>
+    <a href="#ulohy"     data-tab="ulohy">Úlohy</a>
+  </nav>
+
+  <main>
+    <!-- ── DENNÍ BĚH ─────────────────────────────────────────── -->
+    <section id="tab-denni" class="tab-panel">
+      <h2>Denní běh</h2>
+      <div class="row">
+        <label>Depo:
+          <select id="daily-depot"></select>
+        </label>
+        <button id="daily-refresh-input" class="btn-secondary">Obnovit</button>
+      </div>
+
+      <div class="card">
+        <h3>Aktuální soubor v <code>aktivni/</code></h3>
+        <div id="daily-input-info" class="muted">Načítám…</div>
+        <div class="row">
+          <input type="file" id="daily-upload-file" accept=".csv">
+          <button id="daily-upload-btn" class="btn-secondary">Nahrát RiRo</button>
+        </div>
+        <div class="hint">Očekávaný formát: <code>riro-YYYYMMDD-{DEPO}-POB.csv</code>
+          — DEPO může být kód (CB) i plný název (Morava, Praha, Hradec&nbsp;Králové).</div>
+      </div>
+
+      <div class="card">
+        <h3>Nastavení běhu</h3>
+        <div class="row">
+          <label>Budget (min):
+            <input type="number" id="daily-budget" placeholder="30" min="1" step="1" style="width:6em">
+          </label>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="daily-force-matrix"> <code>--force-matrix</code>
+            <span class="hint">(Praha ho obvykle potřebuje)</span></label>
+          <label><input type="checkbox" id="daily-fresh-osm"> <code>--fresh-osm</code>
+            <span class="hint">(čerstvá OSM data, porty 5001/8081)</span></label>
+          <label class="warn"><input type="checkbox" id="daily-allow-fallback"> <code>--allow-profile-fallback</code>
+            <span class="hint">(kamiony smí spadnout na osobní profil — opatrně)</span></label>
+          <label><input type="checkbox" id="daily-skip-tests"> Přeskočit startup testy
+            <span class="hint">(default vypnuto — jako CLI)</span></label>
+          <label><input type="checkbox" id="daily-visualize" checked> Na konci vygenerovat mapu</label>
+        </div>
+        <div class="row">
+          <button id="daily-show-cmd" class="btn-secondary">Zobrazit příkazy</button>
+          <button id="daily-run" class="btn-primary">Spustit</button>
+        </div>
+        <pre id="daily-cmd-preview" class="cmd-preview hidden"></pre>
+      </div>
+
+      <div id="daily-job" class="job-detail hidden"></div>
+    </section>
+
+    <!-- ── BENCHMARKY ────────────────────────────────────────── -->
+    <section id="tab-benchmarky" class="tab-panel">
+      <h2>Benchmarky</h2>
+
+      <div class="card">
+        <h3>Všechna depa najednou</h3>
+        <div class="grid2">
+          <label>Datum:<input type="text" id="ad-date" placeholder="nejnovější společné"></label>
+          <label>Depa:<input type="text" id="ad-depots" placeholder="CB,MO,HK,PR"></label>
+          <label>Budget (min):<input type="number" id="ad-budget" placeholder="dle skriptu" min="1"></label>
+          <label>Budget ratios:<input type="text" id="ad-ratios" placeholder="0.35,0.25,0.40"></label>
+          <label>Clustery:<input type="text" id="ad-clusters" placeholder="auto"></label>
+          <label>Workers:<input type="number" id="ad-workers" placeholder="auto"></label>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="ad-force-matrix"> <code>--force-matrix</code></label>
+          <label><input type="checkbox" id="ad-fresh-osm"> <code>--fresh-osm</code></label>
+          <label><input type="checkbox" id="ad-dry-run"> <code>--dry-run</code> (jen validace)</label>
+          <label><input type="checkbox" id="ad-skip-tests"> Přeskočit startup testy</label>
+        </div>
+        <div class="row">
+          <button id="ad-show-cmd" class="btn-secondary">Náhled příkazu</button>
+          <button id="ad-run" class="btn-primary">Spustit</button>
+        </div>
+        <pre id="ad-cmd-preview" class="cmd-preview hidden"></pre>
+      </div>
+
+      <div class="card">
+        <h3>Benchmark více variant</h3>
+        <div class="grid2">
+          <label>Budget (min):<input type="number" id="bm-budget" placeholder="30" min="1"></label>
+          <label>Preset:<input type="text" id="bm-preset" placeholder="např. tomorrow_4h"></label>
+          <label>Datum:<input type="text" id="bm-date" placeholder="nejnovější společné"></label>
+          <label>Depa:<input type="text" id="bm-depots" placeholder="CB,MO,HK,PR"></label>
+          <label>Cluster faktory:<input type="text" id="bm-factors" placeholder="0.75,1.0,1.25"></label>
+          <label>Budget profily:<input type="text" id="bm-profiles" placeholder="combined_lns,normal_no_lns"></label>
+        </div>
+        <div class="hint">Zadej <strong>buď</strong> Budget <strong>nebo</strong> Preset (ne obojí).</div>
+        <div class="checks">
+          <label><input type="checkbox" id="bm-list-only" checked> <code>--list-only</code> (jen vypsat plán)</label>
+          <label><input type="checkbox" id="bm-force-matrix"> <code>--force-matrix</code></label>
+          <label><input type="checkbox" id="bm-fresh-osm"> <code>--fresh-osm</code></label>
+          <label><input type="checkbox" id="bm-skip-tests"> Přeskočit startup testy</label>
+        </div>
+        <div class="row">
+          <button id="bm-show-cmd" class="btn-secondary">Náhled příkazu</button>
+          <button id="bm-run" class="btn-primary">Spustit</button>
+        </div>
+        <pre id="bm-cmd-preview" class="cmd-preview hidden"></pre>
+      </div>
+
+      <div id="bench-job" class="job-detail hidden"></div>
+
+      <div class="card">
+        <h3>Výsledky sessionu</h3>
+        <div class="row">
+          <select id="bench-session-select"><option value="">— vyber session —</option></select>
+          <button id="bench-session-refresh" class="btn-secondary">Obnovit</button>
+        </div>
+        <div id="bench-session-table"></div>
+      </div>
+    </section>
+
+    <!-- ── VÝSLEDKY ──────────────────────────────────────────── -->
+    <section id="tab-vysledky" class="tab-panel">
+      <h2>Výsledky</h2>
+      <div class="split">
+        <div class="split-left">
+          <div class="row">
+            <strong>Běhy</strong>
+            <button id="results-refresh" class="btn-secondary">Obnovit</button>
+          </div>
+          <div id="results-list" class="results-list">Načítám…</div>
+        </div>
+        <div class="split-right">
+          <div id="results-detail" class="muted">Vyber běh vlevo.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Historie běhů</h3>
+        <div class="row">
+          <label>Zóna:
+            <select id="runlog-zone">
+              <option value="">— všechny —</option>
+            </select>
+          </label>
+          <button id="runlog-refresh" class="btn-secondary">Obnovit</button>
+          <span class="hint">Zaškrtni 2 řádky pro porovnání.</span>
+        </div>
+        <div id="runlog-compare"></div>
+        <div id="runlog-table"></div>
+      </div>
+    </section>
+
+    <!-- ── ÚLOHY ─────────────────────────────────────────────── -->
+    <section id="tab-ulohy" class="tab-panel">
+      <h2>Úlohy</h2>
+      <div class="row">
+        <button id="jobs-refresh" class="btn-secondary">Obnovit</button>
+        <button id="jobs-selftest" class="btn-secondary">Testovací úloha (selftest)</button>
+      </div>
+      <div id="jobs-table"></div>
+      <div id="jobs-job" class="job-detail hidden"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
