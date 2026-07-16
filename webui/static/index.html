@@ -16,6 +16,7 @@
     <a href="#denni"     data-tab="denni">Denní běh</a>
     <a href="#benchmarky" data-tab="benchmarky">Benchmarky</a>
     <a href="#vysledky"  data-tab="vysledky">Výsledky</a>
+    <a href="#uzavirky"  data-tab="uzavirky">Uzavírky</a>
     <a href="#ulohy"     data-tab="ulohy">Úlohy</a>
   </nav>
 
@@ -162,6 +163,52 @@
         <div id="runlog-compare"></div>
         <div id="runlog-table"></div>
       </div>
+    </section>
+
+    <!-- ── UZAVÍRKY ──────────────────────────────────────────── -->
+    <section id="tab-uzavirky" class="tab-panel">
+      <h2>Uzavírky</h2>
+
+      <div class="card">
+        <h3>Nová uzavírka</h3>
+        <p class="hint">Tvorba probíhá v <strong>mapovém editoru</strong> (klikací mapa) —
+          tlačítko ho spustí a otevře na portu 8765. Po uložení uzavírky klikni na „Obnovit".</p>
+        <div class="row">
+          <button id="clo-editor-start" class="btn-primary">Spustit mapový editor</button>
+          <span id="clo-editor-link" class="hint"></span>
+        </div>
+      </div>
+
+      <div class="split">
+        <div class="split-left">
+          <div class="row">
+            <strong>Seznam uzavírek</strong>
+            <button id="clo-refresh" class="btn-secondary">Obnovit</button>
+          </div>
+          <div id="clo-list">Načítám…</div>
+        </div>
+        <div class="split-right">
+          <iframe id="clo-map" class="map" src="/api/closures/map"></iframe>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Test uzavírek proti objednávkám</h3>
+        <p class="hint">Spustí <code>manage_closures.py test</code> — ukáže, které trasy uzavírky zasáhnou.
+          Potřebuje běžící OSRM.</p>
+        <div class="row">
+          <label>Orders soubor:
+            <input type="text" id="clo-test-orders"
+                   placeholder="data/prepared/CB/orders_CB_2026-07-10.csv" style="width:30em">
+          </label>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="clo-test-fresh"> Použít fresh-osm routing (port 5001)</label>
+        </div>
+        <div class="row"><button id="clo-test-run" class="btn-primary">Spustit test</button></div>
+      </div>
+
+      <div id="clo-job" class="job-detail hidden"></div>
     </section>
 
     <!-- ── ÚLOHY ─────────────────────────────────────────────── -->

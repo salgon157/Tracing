@@ -1540,6 +1540,14 @@ def save_excel(routes, total_cost_kc, filepath="lines_plan.xlsx"):
 
 RUN_LOG_PATH = Path("data/results/run_log.jsonl")
 
+ORDERS_FILE_RE = re.compile(r"orders_([A-Z]+)_(\d{4}-\d{2}-\d{2})\.csv$")
+
+
+def orders_file_meta(filename: str) -> tuple[str, str]:
+    """Vytáhne (depot, date) z názvu orders_{DEPOT}_{YYYY-MM-DD}.csv, jinak ('', '')."""
+    m = ORDERS_FILE_RE.match(filename)
+    return (m.group(1), m.group(2)) if m else ("", "")
+
 def _git_commit() -> str | None:
     """Vrátí krátký git hash nebo None pokud git není dostupný."""
     try:
@@ -1620,12 +1628,13 @@ def _build_run_record(
     }
 
 
-def _load_previous_run(zone: str, delivery_date: str) -> dict | None:
+def _load_previous_run(zone: str, delivery_date: str,
+                       log_path: Path = RUN_LOG_PATH) -> dict | None:
     """Najde poslední run se stejnou zónou a datem doručení."""
-    if not RUN_LOG_PATH.exists():
+    if not log_path.exists():
         return None
     last = None
-    with open(RUN_LOG_PATH, encoding="utf-8") as f:
+    with open(log_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -1640,10 +1649,10 @@ def _load_previous_run(zone: str, delivery_date: str) -> dict | None:
     return last
 
 
-def append_run_log(record: dict) -> None:
+def append_run_log(record: dict, log_path: Path = RUN_LOG_PATH) -> None:
     """Přidá záznam na konec run_log.jsonl."""
-    RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(RUN_LOG_PATH, "a", encoding="utf-8") as f:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
@@ -1703,7 +1712,8 @@ def print_run_diff(current: dict, previous: dict) -> None:
 
 
 def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elapsed_min: float,
-                 orders: list | None = None, delivery_date: str = "", closures: list | None = None):
+                 orders: list | None = None, delivery_date: str = "", closures: list | None = None,
+                 run_log_path: Path = RUN_LOG_PATH):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     summary_rows = []
@@ -1779,13 +1789,13 @@ def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elaps
     _closures = closures or []
     _date     = delivery_date or ""
 
-    previous = _load_previous_run(zone_label, _date)
+    previous = _load_previous_run(zone_label, _date, log_path=run_log_path)
     record   = _build_run_record(
         routes, total_cost_kc, output_dir, zone_label,
         _date, elapsed_min, _orders, _closures,
     )
-    append_run_log(record)
-    print(f"\n  [run log] uloženo → {RUN_LOG_PATH}  (run_id: {record['run_id']})")
+    append_run_log(record, log_path=run_log_path)
+    print(f"\n  [run log] uloženo → {run_log_path}  (run_id: {record['run_id']})")
 
     if previous:
         print_run_diff(record, previous)
@@ -1899,6 +1909,10 @@ def parse_args():
                         help="Override celkového časového budgetu solveru (v minutách). "
                              "Default je v CONFIG['total_time_budget_sec'] (30 min). "
                              "Užitečné pro rychlé porovnávací běhy: --budget-min 5")
+    parser.add_argument("--run-log-path", default=str(RUN_LOG_PATH),
+                        help="Cesta k run_log.jsonl (default: data/results/run_log.jsonl). "
+                             "Predikční běhy: data/prediction/results/run_log.jsonl — "
+                             "ostrá historie zůstane čistá.")
     parser.add_argument("--allow-profile-fallback", action="store_true",
                         help="Když routing pro těžká vozidla (driving-hgv/ORS) selže, "
                              "dovol tichý fallback na osobní profil 'driving'. "
@@ -2083,14 +2097,14 @@ def main():
 
     # Auto-detekce výstupní složky z názvu orders souboru
     # Pattern: orders_{DEPOT}_{YYYY-MM-DD}.csv → data/results/{DEPOT}/{YYYY-MM-DD}/
+    # delivery_date se z názvu bere VŽDY (i s explicitním --output-dir) — jinak
+    # by běhy s vlastní output složkou (predikce, porovnávací běhy) měly
+    # v run logu prázdné datum a nešly párovat.
     orders_path = Path(args.orders_file)
-    m_path = re.match(r'orders_([A-Z]+)_(\d{4}-\d{2}-\d{2})\.csv', orders_path.name)
-    if m_path and args.output_dir == "output":
-        depot_code_out, date_out = m_path.group(1), m_path.group(2)
+    depot_code_out, date_out = orders_file_meta(orders_path.name)
+    if depot_code_out and args.output_dir == "output":
         output_dir = Path(f"data/results/{depot_code_out}/{date_out}")
     else:
-        depot_code_out = ""
-        date_out       = ""
         output_dir = Path(args.output_dir)
     delivery_date = date_out
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2226,6 +2240,7 @@ def main():
         orders=orders,
         delivery_date=delivery_date,
         closures=active_closures,
+        run_log_path=Path(args.run_log_path),
     )
 
 

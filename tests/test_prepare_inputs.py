@@ -11,6 +11,7 @@ from prepare_inputs_v6 import (
     parse_payload,
     parse_min_from_hhmm,
     transform,
+    find_active_riro_file,
 )
 
 
@@ -255,3 +256,57 @@ class TestTransform:
         rows = [_make_raw_row("LOC1", from_sec="-1", to_sec="28800")]
         orders, _ = transform(rows, locations, "CB")
         assert len(orders) == 0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  find_active_riro_file — parametr input_dir (--data-root, predikční režim)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestFindActiveRiroFileInputDir:
+    def _make_riro(self, root, depot="CB", name="riro-20260714-CB-POB.csv"):
+        aktivni = root / "input" / depot / "aktivni"
+        aktivni.mkdir(parents=True)
+        (aktivni / name).write_text("", encoding="utf-8")
+        return aktivni / name
+
+    def test_custom_input_dir_finds_file(self, tmp_path):
+        expected = self._make_riro(tmp_path)
+        path, date_str = find_active_riro_file("CB", tmp_path / "input")
+        assert path == expected
+        assert date_str == "2026-07-14"
+
+    def test_missing_dir_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            find_active_riro_file("CB", tmp_path / "input")
+
+    def test_two_files_raise(self, tmp_path):
+        self._make_riro(tmp_path)
+        aktivni = tmp_path / "input" / "CB" / "aktivni"
+        (aktivni / "riro-20260715-CB-POB.csv").write_text("", encoding="utf-8")
+        with pytest.raises(ValueError):
+            find_active_riro_file("CB", tmp_path / "input")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  build_prepare_stats — bilance vyřazených objednávek
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestBuildPrepareStats:
+    def test_full_breakdown(self):
+        from prepare_inputs_v6 import build_prepare_stats
+        s = build_prepare_stats(
+            "CB", "2026-07-15", "riro-20260715-CB-POB.csv",
+            raw_rows=183, orders_count=175,
+            missing_codes=["b-kod", "a-kod"], missing_rows=7)
+        assert s["excluded_total"] == 8
+        assert s["excluded_missing_location_rows"] == 7
+        assert s["excluded_invalid_time_window_rows"] == 1
+        assert s["excluded_missing_location_codes"] == ["a-kod", "b-kod"]
+
+    def test_all_pass(self):
+        from prepare_inputs_v6 import build_prepare_stats
+        s = build_prepare_stats("CB", "2026-07-15", "x.csv",
+                                raw_rows=100, orders_count=100,
+                                missing_codes=[], missing_rows=0)
+        assert s["excluded_total"] == 0
+        assert s["excluded_invalid_time_window_rows"] == 0

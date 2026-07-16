@@ -534,3 +534,46 @@ class TestBuildDataModelNaNSafety:
         val = data["dist_int"][0][1]
         assert isinstance(val, int)
         assert val > 0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  run log — parametr log_path (--run-log-path, predikční režim)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestRunLogPath:
+    def _record(self, zone="CB", date="2026-07-14"):
+        return {"run_id": "t", "input": {"zone": zone, "delivery_date": date},
+                "results": {"total_cost_kc": 1}}
+
+    def test_append_writes_to_custom_path(self, tmp_path):
+        from vrp_solver_lines_v6 import append_run_log
+        log = tmp_path / "sub" / "run_log.jsonl"          # rodič neexistuje → vytvoří
+        append_run_log(self._record(), log_path=log)
+        append_run_log(self._record(), log_path=log)
+        lines = log.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 2
+
+    def test_load_previous_from_custom_path(self, tmp_path):
+        from vrp_solver_lines_v6 import append_run_log, _load_previous_run
+        log = tmp_path / "run_log.jsonl"
+        append_run_log(self._record(zone="CB"), log_path=log)
+        append_run_log(self._record(zone="HK"), log_path=log)
+        rec = _load_previous_run("CB", "2026-07-14", log_path=log)
+        assert rec is not None
+        assert rec["input"]["zone"] == "CB"
+        assert _load_previous_run("PR", "2026-07-14", log_path=log) is None
+
+    def test_load_previous_missing_file_none(self, tmp_path):
+        from vrp_solver_lines_v6 import _load_previous_run
+        assert _load_previous_run("CB", "2026-07-14",
+                                  log_path=tmp_path / "neni.jsonl") is None
+
+
+class TestOrdersFileMeta:
+    def test_standard_name(self):
+        from vrp_solver_lines_v6 import orders_file_meta
+        assert orders_file_meta("orders_CB_2026-07-15.csv") == ("CB", "2026-07-15")
+
+    def test_nonmatching_name(self):
+        from vrp_solver_lines_v6 import orders_file_meta
+        assert orders_file_meta("neco_jineho.csv") == ("", "")

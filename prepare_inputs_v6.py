@@ -6,17 +6,23 @@ prepare_inputs_v6.py — RiRo -> solver-ready orders per depot
 Použití:
   python prepare_inputs_v6.py CB
   python prepare_inputs_v6.py HK
+  python prepare_inputs_v6.py CB --data-root data/prediction   (predikční režim)
 
 Vstupy:
-  data/input/{DEPOT}/aktivni/riro-YYYYMMDD-{DEPOT}-POB.csv   (právě jeden soubor)
+  {data-root}/input/{DEPOT}/aktivni/riro-YYYYMMDD-{DEPOT}-POB.csv   (právě jeden soubor)
   data/static/locations_{DEPOT}.csv  (fallback: locations_lookup.csv)
 
 Výstupy:
-  data/prepared/{DEPOT}/orders_{DEPOT}_{YYYY-MM-DD}.csv
-  data/prepared/{DEPOT}/missing_locs_{DEPOT}_{YYYY-MM-DD}.txt
+  {data-root}/prepared/{DEPOT}/orders_{DEPOT}_{YYYY-MM-DD}.csv
+  {data-root}/prepared/{DEPOT}/missing_locs_{DEPOT}_{YYYY-MM-DD}.txt
+
+--data-root (default "data") přesměruje input/ a prepared/ pod jiný kořen,
+např. data/prediction pro predikční běhy. Statická data (data/static)
+zůstávají vždy společná — lokace ani vozidla se neduplikují.
 """
 
 import csv
+import json
 import re
 import argparse
 from pathlib import Path
@@ -129,10 +135,10 @@ def load_locations_lookup(path: Path) -> dict:
               f"{'...' if len(skipped_gps) > 10 else ''}")
     return locations
 
-def find_active_riro_file(depot_code: str) -> tuple[Path, str]:
-    """Find the single active RiRo file in data/input/{DEPOT}/aktivni/.
+def find_active_riro_file(depot_code: str, input_dir: Path = INPUT_DIR) -> tuple[Path, str]:
+    """Find the single active RiRo file in {input_dir}/{DEPOT}/aktivni/.
     Returns (file_path, date_str) where date_str is 'YYYY-MM-DD'."""
-    aktivni_dir = INPUT_DIR / depot_code / "aktivni"
+    aktivni_dir = input_dir / depot_code / "aktivni"
     if not aktivni_dir.exists():
         raise FileNotFoundError(
             f"[CHYBA] Složka neexistuje: {aktivni_dir}\n"
@@ -276,6 +282,25 @@ def save_orders(orders: list[dict], output_path: Path) -> None:
         writer.writeheader()
         writer.writerows(orders)
 
+def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
+                        raw_rows: int, orders_count: int,
+                        missing_codes: list[str], missing_rows: int) -> dict:
+    """Bilance zpracování: kolik řádků riro prošlo a proč které vypadly.
+    Vyřazené = chybějící lokace + vadná časová okna (jiný důvod neexistuje)."""
+    invalid_tw = max(0, raw_rows - orders_count - missing_rows)
+    return {
+        "depot": depot,
+        "date": date_str,
+        "riro_file": riro_name,
+        "raw_rows": raw_rows,
+        "orders_count": orders_count,
+        "excluded_total": raw_rows - orders_count,
+        "excluded_missing_location_rows": missing_rows,
+        "excluded_missing_location_codes": sorted(missing_codes),
+        "excluded_invalid_time_window_rows": invalid_tw,
+    }
+
+
 def save_missing(missing_codes: list[str], output_path: Path) -> None:
     if not missing_codes:
         if output_path.exists():
@@ -337,10 +362,15 @@ def main():
     parser.add_argument("--locations-file", default=None,
                         help="Cesta k CSV lokací. Výchozí: data/static/locations_{DEPOT}.csv, "
                              "fallback na locations_lookup.csv")
+    parser.add_argument("--data-root", default=str(DATA_DIR),
+                        help="Kořen složek input/ a prepared/ (default: data). "
+                             "Predikční běhy: --data-root data/prediction. "
+                             "Statická data (data/static) zůstávají společná.")
     args = parser.parse_args()
 
     depot_code = args.depot_code.upper()
-    riro_path, date_str = find_active_riro_file(depot_code)
+    data_root = Path(args.data_root)
+    riro_path, date_str = find_active_riro_file(depot_code, data_root / "input")
 
     if args.locations_file:
         locations_path = Path(args.locations_file)
@@ -368,7 +398,7 @@ def main():
 
     orders, missing = transform(raw_rows, locations, depot_code)
 
-    output_dir = PREPARED_DIR / depot_code
+    output_dir = data_root / "prepared" / depot_code
     output_file = output_dir / f"orders_{depot_code}_{date_str}.csv"
     missing_file = output_dir / f"missing_locs_{depot_code}_{date_str}.txt"
 
@@ -378,10 +408,28 @@ def main():
     save_orders(orders, output_file)
     save_missing(missing, missing_file)
 
+    # Bilance zpracování — strojově čitelná (čte ji compare_prediction.py a UI)
+    missing_rows = sum(
+        1 for raw in raw_rows
+        if raw["location_code"].strip().lower() not in locations
+    )
+    stats = build_prepare_stats(
+        depot_code, date_str, riro_path.name,
+        raw_rows=len(raw_rows), orders_count=len(orders),
+        missing_codes=missing, missing_rows=missing_rows,
+    )
+    stats_file = output_dir / f"prepare_stats_{depot_code}_{date_str}.json"
+    with open(stats_file, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
     total_kg = sum(o["weight_kg"] for o in orders)
     print(f"Objednávky: {len(orders)}")
     print(f"Celkem kg:  {total_kg:,.1f}")
     print(f"Výstup:     {output_file}")
+    if stats["excluded_total"]:
+        print(f"[!] VYŘAZENO {stats['excluded_total']} z {stats['raw_rows']} řádků: "
+              f"{stats['excluded_missing_location_rows']}x chybějící lokace, "
+              f"{stats['excluded_invalid_time_window_rows']}x vadné časové okno")
     if missing:
         print(f"Chybějící lokace: {len(missing)} → {missing_file}")
 

@@ -25,6 +25,10 @@ data/prepared/
 data/static/locations_*.csv
 data/static/vehicle_registry.csv
 
+# --- Predikcni behy (cely strom: input/prepared/results) ---
+# Predikovane objednavky = realne radky zakazniku (PII) + generovane vystupy.
+data/prediction/
+
 # --- Routovaci data (ORS/OSRM grafy, stahovana / v Docker volume) ---
 routing/
 

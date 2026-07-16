@@ -20,6 +20,26 @@
       },
       "buffer_km": 0.02,
       "notes": ""
+    },
+    {
+      "id": "CLO_002",
+      "name": "Most HB - Billa",
+      "active": true,
+      "created": "2026-07-12",
+      "valid_from": "2026-07-12",
+      "valid_to": null,
+      "segment": {
+        "from": {
+          "lat": 49.60505064511426,
+          "lon": 15.574793815612795
+        },
+        "to": {
+          "lat": 49.60372958535321,
+          "lon": 15.576446056365969
+        }
+      },
+      "buffer_km": 0.02,
+      "notes": ""
     }
   ]
 }

@@ -148,7 +148,7 @@ async function watchJob(jobId, container, onDone) {
 
 /* ── Taby ────────────────────────────────────────────────────────────────── */
 
-const TABS = ["denni", "benchmarky", "vysledky", "ulohy"];
+const TABS = ["denni", "benchmarky", "vysledky", "uzavirky", "ulohy"];
 function activateTab(name) {
   if (!TABS.includes(name)) name = "denni";
   document.querySelectorAll(".tabs a").forEach(a =>
@@ -158,6 +158,7 @@ function activateTab(name) {
   if (name === "denni") Daily.onShow();
   if (name === "benchmarky") Bench.onShow();
   if (name === "vysledky") Results.onShow();
+  if (name === "uzavirky") Closures.onShow();
   if (name === "ulohy") Jobs.onShow();
 }
 window.addEventListener("hashchange", () => activateTab(location.hash.slice(1)));
@@ -480,12 +481,90 @@ const Jobs = {
   },
 };
 
+/* ── UZAVÍRKY ────────────────────────────────────────────────────────────── */
+
+const Closures = {
+  init() {
+    document.getElementById("clo-refresh").onclick = () => { this.load(); this.reloadMap(); };
+    document.getElementById("clo-editor-start").onclick = () => this.startEditor();
+    document.getElementById("clo-test-run").onclick = () => this.runTest();
+  },
+  onShow() { this.load(); this.reloadMap(); },
+  reloadMap() {
+    const m = document.getElementById("clo-map");
+    if (m) m.src = "/api/closures/map?_=" + Date.now();   // bust cache
+  },
+  async load() {
+    const el = document.getElementById("clo-list");
+    try {
+      const d = await apiGet("/api/closures");
+      const cs = d.closures || [];
+      if (!cs.length) { el.innerHTML = `<p class="muted">Žádné uzavírky.</p>`; return; }
+      el.innerHTML = `<table><thead><tr><th>ID</th><th>Název</th><th>Aktivní</th>
+          <th>Platnost</th><th>Buffer</th><th></th></tr></thead><tbody>${
+        cs.map(c => `<tr>
+          <td>${esc(c.id)}</td><td>${esc(c.name)}</td>
+          <td>${c.active
+            ? '<span class="status-pill st-success">ano</span>'
+            : '<span class="status-pill st-skipped">ne</span>'}</td>
+          <td class="hint">${esc(c.valid_from || "")}${c.valid_to ? " – " + esc(c.valid_to) : " – ∞"}</td>
+          <td>${c.buffer_km != null ? esc(c.buffer_km) + " km" : ""}</td>
+          <td>
+            <button class="btn-secondary clo-toggle" data-id="${esc(c.id)}">${c.active ? "Deaktivovat" : "Aktivovat"}</button>
+            <button class="btn-secondary clo-remove" data-id="${esc(c.id)}">Smazat</button>
+          </td></tr>`).join("")}</tbody></table>`;
+      el.querySelectorAll(".clo-toggle").forEach(b => b.onclick = () => this.toggle(b.dataset.id));
+      el.querySelectorAll(".clo-remove").forEach(b => b.onclick = () => this.remove(b.dataset.id));
+    } catch (e) { el.textContent = detailText(e); }
+  },
+  async toggle(id) {
+    try {
+      const d = await apiPost(`/api/closures/${id}/toggle`, {});
+      if (d.returncode !== 0) toast(d.output || "Toggle selhal.");
+      this.load(); this.reloadMap();
+    } catch (e) { toast(detailText(e)); }
+  },
+  async remove(id) {
+    if (!confirm(`Opravdu TRVALE smazat uzavírku ${id}?`)) return;
+    try {
+      const d = await apiPost(`/api/closures/${id}/remove`, {});
+      if (d.returncode !== 0) toast(d.output || "Smazání selhalo.");
+      this.load(); this.reloadMap();
+    } catch (e) { toast(detailText(e)); }
+  },
+  async startEditor() {
+    try {
+      const d = await apiPost("/api/closures/editor/start", {});
+      // Editor si sám otevře okno (webbrowser.open); tady jen ukážeme odkaz,
+      // ať neotvíráme tab dvakrát a nezávodíme se startem serveru na :8765.
+      document.getElementById("clo-editor-link").innerHTML =
+        (d.already_running ? "Editor už běží: " : "Editor se spouští: ") +
+        `<a href="${d.url}" target="_blank">${d.url}</a>` +
+        " — po uložení uzavírky klikni na Obnovit.";
+    } catch (e) { toast(detailText(e)); }
+  },
+  async runTest() {
+    const orders = document.getElementById("clo-test-orders").value.trim();
+    if (!orders) { toast("Zadej cestu k orders souboru."); return; }
+    const fresh = document.getElementById("clo-test-fresh").checked;
+    try {
+      const job = await apiPost("/api/closures/test", {
+        orders_file: orders,
+        osrm_url: fresh ? "http://localhost:5001" : null,
+        skip_startup_tests: true,
+      });
+      watchJob(job.id, document.getElementById("clo-job"));
+    } catch (e) { toast(detailText(e)); }
+  },
+};
+
 /* ── Init ────────────────────────────────────────────────────────────────── */
 
 (async function init() {
   await Daily.init();
   Bench.init();
   Results.init();
+  Closures.init();
   Jobs.init();
   pollHealth();
   activateTab(location.hash.slice(1) || "denni");
