@@ -38,3 +38,6 @@ routing/
 
 # --- webui runtime joby (job.json + job.log per beh) ---
 webui/jobs/
+
+# --- vystupy experimentu (generovane, muzou obsahovat PII z objednavek) ---
+experiments/*/results/
