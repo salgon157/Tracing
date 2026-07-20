@@ -92,14 +92,14 @@ def sample_orders():
             "order_number": "O1",
             "lat": 50.05, "lon": 14.45,
             "time_from": "08:00", "time_to": "12:00",
-            "weight_kg": 300.0, "base_service_min": 15,
+            "weight_kg": 300.0, "service_sec": 900,
             "block_id": "CB",
         },
         {
             "order_number": "O2",
             "lat": 50.10, "lon": 14.50,
             "time_from": "10:00", "time_to": "16:00",
-            "weight_kg": 600.0, "base_service_min": 20,
+            "weight_kg": 600.0, "service_sec": 1200,
             "block_id": "CB",
         },
     ]

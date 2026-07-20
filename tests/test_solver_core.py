@@ -26,12 +26,12 @@ from vrp_solver_lines_v6 import (
 # ── Helper factories ─────────────────────────────────────────────────────────
 
 def _make_order(lat=50.0, lon=14.0, time_from="08:00", time_to="16:00",
-                weight_kg=300.0, base_service_min=10):
+                weight_kg=300.0, service_sec=600):
     return {
         "lat": lat, "lon": lon,
         "time_from": time_from, "time_to": time_to,
         "weight_kg": weight_kg,
-        "base_service_min": base_service_min,
+        "service_sec": service_sec,
         "order_number": "O1",
     }
 
@@ -83,38 +83,40 @@ class TestTimeToMinutes:
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestServiceTimeMin:
-    def test_zero_weight_only_base(self):
-        order = _make_order(weight_kg=0.0, base_service_min=15)
-        assert service_time_min(order) == 15
+    """SEC z ESO9 je KOMPLETNÍ čas zastávky — žádná kg složka, žádný fallback."""
 
-    def test_base_from_order(self):
-        order = _make_order(weight_kg=0.0, base_service_min=20)
-        assert service_time_min(order) == 20
+    def test_exact_minutes(self):
+        assert service_time_min(_make_order(service_sec=600)) == 10
 
-    def test_weight_adds_ceil_step(self):
-        # kg_step=24 → 1 min za každých 24 kg (zaokrouhlení nahoru)
-        # 24 kg → ceil(24/24)*1 = 1 min
-        order = _make_order(weight_kg=24.0, base_service_min=10)
-        assert service_time_min(order) == 11
+    def test_ceil_to_whole_minutes(self):
+        # 261 s = 4.35 min → 5
+        assert service_time_min(_make_order(service_sec=261)) == 5
 
-    def test_weight_one_step_partial(self):
-        # 1 kg → ceil(1/24)*1 = 1 min extra
-        order = _make_order(weight_kg=1.0, base_service_min=10)
-        assert service_time_min(order) == 11
-
-    def test_weight_300_kg(self):
-        # ceil(300/24) = ceil(12.5) = 13 extra min
-        order = _make_order(weight_kg=300.0, base_service_min=15)
-        assert service_time_min(order) == 15 + math.ceil(300 / CONFIG["service_time_kg_step"])
-
-    def test_weight_exactly_two_steps(self):
-        step = CONFIG["service_time_kg_step"]
-        order = _make_order(weight_kg=float(step * 2), base_service_min=5)
-        assert service_time_min(order) == 7  # 5 base + 2 extra
+    def test_weight_does_not_affect_result(self):
+        light = _make_order(weight_kg=1.0, service_sec=300)
+        heavy = _make_order(weight_kg=900.0, service_sec=300)
+        assert service_time_min(light) == service_time_min(heavy) == 5
 
     def test_result_is_int(self):
-        order = _make_order(weight_kg=123.4, base_service_min=10)
-        assert isinstance(service_time_min(order), int)
+        assert isinstance(service_time_min(_make_order(service_sec=123)), int)
+
+    def test_string_sec_accepted(self):
+        # z CSV chodí str — musí projít
+        assert service_time_min(_make_order(service_sec="300")) == 5
+
+    def test_missing_sec_raises(self):
+        order = _make_order()
+        del order["service_sec"]
+        with pytest.raises(ValueError, match="service_sec"):
+            service_time_min(order)
+
+    def test_zero_sec_raises(self):
+        with pytest.raises(ValueError, match="service_sec"):
+            service_time_min(_make_order(service_sec=0))
+
+    def test_garbage_sec_raises(self):
+        with pytest.raises(ValueError, match="service_sec"):
+            service_time_min(_make_order(service_sec="neco"))
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -232,8 +234,8 @@ class TestBuildDataModel:
     def _build(self, orders=None, vehicles=None):
         if orders is None:
             orders = [
-                _make_order(time_from="08:00", time_to="12:00", weight_kg=300, base_service_min=15),
-                _make_order(time_from="10:00", time_to="16:00", weight_kg=600, base_service_min=20),
+                _make_order(time_from="08:00", time_to="12:00", weight_kg=300, service_sec=900),
+                _make_order(time_from="10:00", time_to="16:00", weight_kg=600, service_sec=1200),
             ]
         if vehicles is None:
             vehicles = [_make_vehicle()]

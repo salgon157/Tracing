@@ -2,7 +2,7 @@
 Staging RiRo uploadů do data/input/{depot}/aktivni/.
 
 Pravidla:
-- Název musí sedět na riro-YYYYMMDD-{DEPOT}-POB.csv A depot token = cílové depo.
+- Název musí sedět na riro-YYYYMMDD-{DEPOT}.csv A depot token = cílové depo.
 - Neprázdná aktivni/ + force=False → 409 (seznam existujících).
 - force=True → existující se PŘESUNE do data/input/{depot}/archiv_webui/
   ({stamp}_{název}) — NIKDY se nemaže.
@@ -54,8 +54,8 @@ def validate_riro_name(depot: str, filename: str) -> None:
     if not m:
         raise StagingError(
             400,
-            f"Název '{filename}' neodpovídá formátu riro-YYYYMMDD-DEPO-POB.csv "
-            f"(např. riro-20260710-{depot}-POB.csv).",
+            f"Název '{filename}' neodpovídá formátu riro-YYYYMMDD-DEPO.csv "
+            f"(např. riro-20260717-{depot}.csv).",
         )
     token = m.group(2)
     # Token depa může být kód (CB) i plný název (Morava, Hradec Králové, Praha).

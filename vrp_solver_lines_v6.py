@@ -102,12 +102,8 @@ CONFIG = {
     #   1.02 = počítáme s 2 % vyšší kapacitou (slack při balení, vzdušné mezery)
     "vehicle_capacity_multiplier":   1.02,
 
-    # Doba zastávky: 5 min fixně + 2 min za každých 50 kg
-    "service_time_base_min":         4,
-    # Přídavek: 1 minuta za každých započatých 150 kg
-    # (ekvivalent pravidla 1 sekunda za každých 2.5 kg, pak zaokrouhlení nahoru na minuty)
-    "service_time_kg_step":            24,
-    "service_time_per_step_min":       1,
+    # Pozn.: doba zastávky NENÍ v CONFIG — chodí předpočítaná z ESO9 v riro
+    # (payload SEC) a prepare ji předává ve sloupci `service_sec`. Žádný vzorec.
 
     # Maximální počet zákaznických zastávek na jedné trase (sklad se nepočítá)
     # None nebo 0 = neomezeno
@@ -269,7 +265,16 @@ def load_orders_day(path: str) -> list:
     with open(p, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         required = ["order_number", "location_code", "time_from", "time_to",
-                    "weight_kg", "lat", "lon", "base_service_min"]
+                    "weight_kg", "lat", "lon", "service_sec"]
+        # Fail-fast na hlavičce: bez service_sec by se skipnul KAŽDÝ řádek
+        # a uživatel by dostal matoucí "neobsahuje žádné objednávky".
+        if "service_sec" not in (reader.fieldnames or []):
+            raise ValueError(
+                f"[CHYBA] {path} je ze starého prepare — chybí sloupec 'service_sec'.\n"
+                "        Solver podporuje jen data s předpočítaným časem zastávky "
+                "z ESO9.\n"
+                "        Vytvoř soubor znovu: python prepare_inputs_v6.py {DEPO}"
+            )
         for i, row in enumerate(reader, 1):
             # Kontrola povinných sloupců
             missing = [c for c in required if c not in row or not row[c].strip()]
@@ -281,7 +286,7 @@ def load_orders_day(path: str) -> list:
                 weight_kg = float(row["weight_kg"])
                 lat       = float(row["lat"])
                 lon       = float(row["lon"])
-                base_service_min = int(float(row["base_service_min"]))
+                service_sec = int(float(row["service_sec"]))
             except ValueError as e:
                 print(f"  [!] Řádek {i}: neplatná čísla — {e}, přeskakuji")
                 continue
@@ -300,7 +305,7 @@ def load_orders_day(path: str) -> list:
                 "lon":           lon,
                 "city":          row.get("city", "").strip(),
                 "note":          row.get("note", "").strip(),
-                "base_service_min": base_service_min,
+                "service_sec":   service_sec,
 
                 # Aliasy pro kompatibilitu s algoritmem (neměň)
                 "id":            row["order_number"].strip(),
@@ -324,20 +329,24 @@ def time_to_minutes(t: str) -> int:
 
 def service_time_min(order: dict) -> int:
     """
-    Business pravidlo:
-    - základní čas z lokace (`base_service_min`)
-    - plus 1 minuta za každých započatých 150 kg
-      (ekvivalent pravidla 1 sekunda za každých 2.5 kg, pak zaokrouhlení na minuty nahoru)
+    Doba zastávky = `service_sec` z ESO9, zaokrouhlená nahoru na minuty.
+
+    SEC je KOMPLETNÍ čas (už zahrnuje složku za váhu i manipulaci), takže se
+    k němu nic nepřipočítává — je to jediný zdroj pravdy. Chybí-li, jde o data
+    ze starého prepare a solver s nimi vědomě odmítá počítat.
     """
-    base = int(order.get("base_service_min", CONFIG["service_time_base_min"]))
-    weight_kg = float(order.get("weight_kg", 0.0) or 0.0)
-    kg_step = float(CONFIG["service_time_kg_step"])
-    step_min = int(CONFIG["service_time_per_step_min"])
-    if weight_kg <= 0:
-        extra_min = 0
-    else:
-        extra_min = math.ceil(weight_kg / kg_step) * step_min
-    return int(base + extra_min)
+    sec = order.get("service_sec")
+    try:
+        sec_int = int(sec)
+    except (TypeError, ValueError):
+        sec_int = 0
+    if sec_int <= 0:
+        raise ValueError(
+            f"[CHYBA] Objednávka {order.get('order_number', '?')} nemá platný "
+            f"service_sec (={sec!r}). Solver podporuje jen data s předpočítaným "
+            f"časem zastávky z ESO9 — vytvoř orders CSV znovu přes prepare_inputs_v6.py."
+        )
+    return math.ceil(sec_int / 60)
 
 
 
@@ -928,7 +937,6 @@ def _extract_routes(manager, routing, solution, time_dim,
                     "city":             o.get("city", ""),
                     "note":             o.get("note", ""),
                     "leg_km":           leg_km,
-                    "base_service_min": o.get("base_service_min", ""),
                     "service_min":      svc,
                     "departure":        dep_str,
                     "lat":              o["lat"],
@@ -1512,8 +1520,7 @@ def save_excel(routes, total_cost_kc, filepath="lines_plan.xlsx"):
                 "Location code": s.get("location_code", ""),
                 "Arrival":       s["arrival"],
                 "Leg km":        s.get("leg_km", ""),
-                "Základ min":    s.get("base_service_min", ""),
-                "Vykládka min":  s.get("service_min", ""),
+                "Servis min":    s.get("service_min", ""),
                 "Departure":     s.get("departure", ""),
                 "Kg":            s["kg"],
                 "Window":      s.get("window", "—"),
@@ -1603,9 +1610,6 @@ def _build_run_record(
             "travel_time_speed_factor":     CONFIG.get("travel_time_speed_factor", 1.0),
             "time_buffer_fixed_min":        CONFIG["time_buffer_fixed_min"],
             "time_buffer_pct":              CONFIG["time_buffer_pct"],
-            "service_time_base_min":        CONFIG["service_time_base_min"],
-            "service_time_kg_step":         CONFIG["service_time_kg_step"],
-            "service_time_per_step_min":    CONFIG["service_time_per_step_min"],
             "max_route_duration_h":         CONFIG["max_route_duration_h"],
             "budget_phase_C_pct":           CONFIG["budget_phase_C_pct"],
             "budget_phase_D_pct":           CONFIG["budget_phase_D_pct"],
@@ -1745,7 +1749,6 @@ def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elaps
                 "location_code": s.get("location_code", ""),
                 "arrival": s["arrival"],
                 "leg_km": s.get("leg_km", ""),
-                "base_service_min": s.get("base_service_min", ""),
                 "service_min": s.get("service_min", ""),
                 "departure": s.get("departure", ""),
                 "kg": s["kg"],
@@ -1850,9 +1853,6 @@ def print_run_settings(args, orders, vehicles_expanded, block_id, zone_label, n_
 
     print(f"time_buffer_fixed_min:       {CONFIG['time_buffer_fixed_min']}")
     print(f"time_buffer_pct:             {CONFIG['time_buffer_pct']}")
-    print(f"service_time_base_min:       {CONFIG['service_time_base_min']}")
-    print(f"service_time_kg_step:        {CONFIG['service_time_kg_step']}")
-    print(f"service_time_per_step_min:   {CONFIG['service_time_per_step_min']}")
     print(f"max_route_duration_h:        {CONFIG['max_route_duration_h']}")
 
     print(f"lns_destroy_min:             {CONFIG['lns_destroy_min']}")

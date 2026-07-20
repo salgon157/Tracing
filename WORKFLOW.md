@@ -12,11 +12,12 @@ Praktický návod na denní běh. Depot kódy: **CB** (České Budějovice),
 
 ```powershell
 # 1) Vlož PRÁVĚ JEDEN RiRo soubor do aktivni/ složky depa:
-#    data/input/CB/aktivni/riro-YYYYMMDD-CB-POB.csv
+#    data/input/CB/aktivni/riro-YYYYMMDD-CB.csv
 
 # 2) Priprav objednavky (RiRo -> orders CSV + validace)
 python prepare_inputs_v6.py CB
 #    -> data/prepared/CB/orders_CB_YYYY-MM-DD.csv
+#    -> data/prepared/CB/prepare_stats_CB_YYYY-MM-DD.json  (bilance zpracování)
 
 # 3) Spust solver
 python vrp_solver_lines_v6.py --orders-file data/prepared/CB/orders_CB_YYYY-MM-DD.csv
@@ -31,9 +32,38 @@ Pro ostatní depa vyměň `CB` → `HK` / `MO` / `PR`.
 
 **Pravidla vstupu:**
 - V `data/input/{DEPOT}/aktivni/` musí být **právě jeden** CSV. Víc/míň → chyba.
-- Datum se bere z názvu souboru (`riro-YYYYMMDD-...`).
+- Datum se bere z názvu souboru (`riro-YYYYMMDD-...`), depo z CLI argumentu.
 - Výstupní složka se **auto-detekuje** z názvu orders souboru
   (`orders_CB_2026-04-29.csv` → `data/results/CB/2026-04-29/`).
+
+### Formát RiRo (finální, od 17. 7. 2026)
+
+RiRo z ESO9 je **jediný zdroj pravdy** — 30 sloupců, středníkem, bez hlavičky:
+
+| sloupec | obsah |
+|---|---|
+| **L / M** (11/12) | závozové okno od–do (sekundy od půlnoci) |
+| **R / S** (17/18) | **lon / lat** — GPS (dřív rezerva s `-1000`) |
+| **AA** (26) | `KG:51.475#SEC:261` — váha + **kompletní čas zastávky v sekundách** |
+
+- **`SEC` je celý čas zastávky** — solver ho použije tak, jak je (`ceil` na minuty).
+  Žádný vzorec za váhu se nepřipočítává.
+- `data/static/locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
+  (`build_static_data.py` a `convert_to_riro.py` jsou legacy, jen se nemažou.)
+- **Starý formát** (30 sloupců bez SEC) i **přechodný** (32 sloupců, GPS na konci)
+  jsou odmítnuty jasnou chybou. Archiv: `data/input/{DEPOT}/archiv_stary_format/`.
+- Historické `orders_*.csv` z dubna/července **nejde spustit** — nemají `service_sec`.
+  Výsledky benchmarků z nich už máme; nová data jedou jen na předpočítaném čase.
+
+### Přísný režim prepare
+
+Když **jakýkoliv** řádek neprojde validací (vadná GPS / chybějící SEC / vadné okno),
+prepare vypíše konkrétní řádky s důvodem a **skončí chybou — nic neuloží**.
+Správně je jen když projdou všechny řádky z ESO9.
+
+```powershell
+python prepare_inputs_v6.py CB --allow-drops   # vědomě pokračovat i s vadnými řádky
+```
 
 ---
 
@@ -123,8 +153,9 @@ automaticky. Config bez PII → **je verzován**.
 ## 7. Git a osobní údaje (GDPR) — DŮLEŽITÉ
 
 **Do gitu NIKDY nejdou osobní údaje.** Blokuje je `.gitignore`:
-- `data/input/`, `data/prepared/` (jména, adresy, GPS, váhy zákazníků)
-- `data/static/locations_*.csv` (adresy zákazníků)
+- `data/input/`, `data/prepared/`, `data/prediction/` (jména, adresy, GPS, váhy zákazníků)
+- `data/static/locations_*.csv` (adresy zákazníků — pipeline je už nepoužívá, ale
+  soubory na disku zůstávají a do gitu nesmí)
 - `data/static/vehicle_registry.csv` (jména řidičů, SPZ)
 
 Verzuje se pouze **kód + config bez PII** (`vehicle_types.csv`, `closures.json`).

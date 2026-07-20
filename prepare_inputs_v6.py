@@ -7,23 +7,29 @@ Použití:
   python prepare_inputs_v6.py CB
   python prepare_inputs_v6.py HK
   python prepare_inputs_v6.py CB --data-root data/prediction   (predikční režim)
+  python prepare_inputs_v6.py CB --allow-drops                 (jeď i s vadnými řádky)
 
 Vstupy:
-  {data-root}/input/{DEPOT}/aktivni/riro-YYYYMMDD-{DEPOT}-POB.csv   (právě jeden soubor)
-  data/static/locations_{DEPOT}.csv  (fallback: locations_lookup.csv)
+  {data-root}/input/{DEPOT}/aktivni/riro-YYYYMMDD-{DEPOT}.csv   (právě jeden soubor)
 
 Výstupy:
   {data-root}/prepared/{DEPOT}/orders_{DEPOT}_{YYYY-MM-DD}.csv
-  {data-root}/prepared/{DEPOT}/missing_locs_{DEPOT}_{YYYY-MM-DD}.txt
+  {data-root}/prepared/{DEPOT}/prepare_stats_{DEPOT}_{YYYY-MM-DD}.json
+
+RiRo z ESO9 je jediný zdroj pravdy — nese GPS (sloupce R/S) i předpočítaný čas
+zastávky (SEC v payloadu). Statická data locations_*.csv už NEJSOU potřeba.
+
+Přísný režim: když jakýkoliv řádek neprojde validací, skript vypíše které a proč
+a SKONČÍ CHYBOU — správně je jen když projdou všechny. --allow-drops to obejde.
 
 --data-root (default "data") přesměruje input/ a prepared/ pod jiný kořen,
-např. data/prediction pro predikční běhy. Statická data (data/static)
-zůstávají vždy společná — lokace ani vozidla se neduplikují.
+např. data/prediction pro predikční běhy.
 """
 
 import csv
 import json
 import re
+import sys
 import argparse
 from pathlib import Path
 
@@ -31,18 +37,27 @@ from pathlib import Path
 COL_RECORD_TYPE    = 0
 COL_LOCATION_CODE  = 1
 COL_CUSTOMER_NAME  = 2
+COL_CITY           = 6
 COL_TW1_FROM_SEC   = 11
 COL_TW1_TO_SEC     = 12
+COL_LON            = 17    # R — dřív rezerva s -1000, od 17.7.2026 nese lon
+COL_LAT            = 18    # S — dřív rezerva s -1000, od 17.7.2026 nese lat
 COL_ORDER_NUMBER   = 23
 COL_NOTE           = 25
-COL_PAYLOAD_RAW    = 26
+COL_PAYLOAD_RAW    = 26    # "KG:51.475#SEC:261"
 COL_CODE_A         = 27
 COL_BLOCK_ID       = 28
+# Kontrola struktury: kolik polí musí řádek mít. Starý i finální formát mají
+# shodně 30 → formát se pozná podle OBSAHU (#SEC v payloadu), ne podle počtu.
 EXPECTED_COLS      = 30
+TRANSITIONAL_COLS  = 32    # slepá ulička z 16.7.2026 (GPS nalepené na konec)
 EXPECTED_RECORD    = "RIRO_INPUT_LOCATIONSANDORDERS_V3.00"
 
+# Sanity rozsah ČR — chytí prohozené lat/lon i nesmyslné souřadnice
+LON_RANGE = (11.0, 20.0)
+LAT_RANGE = (47.0, 52.0)
+
 DATA_DIR           = Path("data")
-STATIC_DIR         = DATA_DIR / "static"
 INPUT_DIR          = DATA_DIR / "input"
 PREPARED_DIR       = DATA_DIR / "prepared"
 
@@ -58,10 +73,11 @@ def seconds_to_hhmm(sec_str: str) -> str | None:
         return None
 
 def parse_payload(payload_raw: str) -> dict:
+    """"KG:51.475#SEC:261" -> {"KG": 51.475, "SEC": 261.0}. Oddělovač je '#'."""
     result = {}
     if not payload_raw:
         return result
-    for part in str(payload_raw).strip().split(";"):
+    for part in str(payload_raw).strip().split("#"):
         if ":" not in part:
             continue
         key, _, value = part.partition(":")
@@ -72,69 +88,6 @@ def parse_payload(payload_raw: str) -> dict:
             result[key] = None
     return result
 
-def parse_min_from_hhmm(value: str | None) -> int:
-    if value is None:
-        return 0
-    s = str(value).strip()
-    if not s or s.lower() == "nan":
-        return 0
-    if ":" in s:
-        parts = s.split(":")
-        if len(parts) == 2:
-            h, m = parts
-            return int(h) * 60 + int(m)
-        if len(parts) == 3:
-            h, m, sec = parts
-            return int(h) * 60 + int(m) + (1 if int(sec) > 0 else 0)
-    return int(float(s))
-
-def load_locations_lookup(path: Path) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(f"[CHYBA] Chybí statický soubor lokací: {path}")
-
-    locations = {}
-    skipped_gps = []
-    with open(path, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        required = {"location_code", "lat", "lon"}
-        if not required.issubset(set(reader.fieldnames or [])):
-            raise ValueError(f"[CHYBA] {path} nemá povinné sloupce: {sorted(required)}")
-        for row in reader:
-            code = str(row.get("location_code", "")).strip().lower()
-            if not code:
-                continue
-            try:
-                lat = float(row["lat"])
-                lon = float(row["lon"])
-            except Exception:
-                skipped_gps.append(code)
-                continue
-
-            service_time_default = row.get("service_time_default", "")
-            admin_time_default   = row.get("admin_time_default", "")
-            base_service_min = parse_min_from_hhmm(service_time_default) or parse_min_from_hhmm(admin_time_default) or 4
-
-            address = str(row.get("address", "")).strip()
-            city = ""
-            if address:
-                city = address.split(",")[0].strip()
-
-            locations[code] = {
-                "lat": lat,
-                "lon": lon,
-                "name": str(row.get("name", "")).strip(),
-                "address": address,
-                "city": city,
-                "comment": str(row.get("comment", "")).strip(),
-                "base_service_min": int(base_service_min),
-                "riro_vehicle_type_code": str(row.get("riro_vehicle_type_code", "")).strip(),
-            }
-    if skipped_gps:
-        print(f"  [WARN] {len(skipped_gps)} lokací v {path.name} přeskočeno — "
-              f"chybí/nevalidní GPS: {', '.join(skipped_gps[:10])}"
-              f"{'...' if len(skipped_gps) > 10 else ''}")
-    return locations
-
 def find_active_riro_file(depot_code: str, input_dir: Path = INPUT_DIR) -> tuple[Path, str]:
     """Find the single active RiRo file in {input_dir}/{DEPOT}/aktivni/.
     Returns (file_path, date_str) where date_str is 'YYYY-MM-DD'."""
@@ -142,14 +95,14 @@ def find_active_riro_file(depot_code: str, input_dir: Path = INPUT_DIR) -> tuple
     if not aktivni_dir.exists():
         raise FileNotFoundError(
             f"[CHYBA] Složka neexistuje: {aktivni_dir}\n"
-            f"  Vytvoř ji a vlož tam RiRo soubor: riro-YYYYMMDD-{depot_code}-POB.csv"
+            f"  Vytvoř ji a vlož tam RiRo soubor: riro-YYYYMMDD-{depot_code}.csv"
         )
 
     files = [f for f in aktivni_dir.iterdir() if f.is_file() and f.suffix == ".csv"]
     if len(files) == 0:
         raise FileNotFoundError(
             f"[CHYBA] Žádný CSV soubor v: {aktivni_dir}\n"
-            f"  Vlož tam RiRo soubor: riro-YYYYMMDD-{depot_code}-POB.csv"
+            f"  Vlož tam RiRo soubor: riro-YYYYMMDD-{depot_code}.csv"
         )
     if len(files) > 1:
         names = ", ".join(f.name for f in sorted(files))
@@ -167,6 +120,38 @@ def find_active_riro_file(depot_code: str, input_dir: Path = INPUT_DIR) -> tuple
     date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
     return riro_path, date_str
 
+def check_row_format(row: list, line_no: int) -> None:
+    """Struktura JEDNOHO řádku — počet sloupců."""
+    if len(row) == TRANSITIONAL_COLS:
+        raise ValueError(
+            f"[CHYBA] Řádek {line_no} má {TRANSITIONAL_COLS} sloupců — to je "
+            f"přechodný formát z 16.7.2026 (GPS nalepené na konci).\n"
+            f"        Ten už není podporovaný. Exportuj finální formát z ESO9."
+        )
+    if len(row) != EXPECTED_COLS:
+        raise ValueError(
+            f"[CHYBA] Řádek {line_no} nemá {EXPECTED_COLS} sloupců, ale {len(row)}. "
+            "RiRo formát nesedí."
+        )
+
+
+def check_file_format(first_row: list) -> None:
+    """Formát CELÉHO souboru — pozná se podle prvního datového řádku.
+
+    Starý i finální formát mají shodně 30 sloupců, takže je rozliší jen obsah:
+    finální nese SEC v payloadu. Kontrola je záměrně jen na prvním řádku —
+    chybějící SEC na dalších řádcích je vada DAT (řeší přísný režim v transform),
+    ne špatný formát souboru.
+    """
+    if "#SEC:" not in str(first_row[COL_PAYLOAD_RAW]):
+        raise ValueError(
+            f"[CHYBA] Soubor je ve starém formátu — první řádek nemá SEC v payloadu "
+            f"(sloupec AA = {str(first_row[COL_PAYLOAD_RAW])!r}), takže nenese ani "
+            f"předpočítaný čas zastávky, ani GPS.\n"
+            f"        Ten už není podporovaný. Exportuj finální formát z ESO9."
+        )
+
+
 def load_riro_csv(path: Path) -> list[dict]:
     rows = []
     with open(path, encoding="utf-8-sig") as f:
@@ -175,11 +160,9 @@ def load_riro_csv(path: Path) -> list[dict]:
             if not row or not "".join(row).strip():
                 continue
 
-            if len(row) != EXPECTED_COLS:
-                raise ValueError(
-                    f"[CHYBA] Řádek {line_no} nemá {EXPECTED_COLS} sloupců, ale {len(row)}. "
-                    "RiRo formát nesedí."
-                )
+            check_row_format(row, line_no)
+            if not rows:                      # formát souboru — jen 1. datový řádek
+                check_file_format(row)
 
             record_type = str(row[COL_RECORD_TYPE]).strip()
             if record_type != EXPECTED_RECORD:
@@ -193,8 +176,11 @@ def load_riro_csv(path: Path) -> list[dict]:
                 "record_type": record_type,
                 "location_code": str(row[COL_LOCATION_CODE]).strip().lower(),
                 "customer_name": str(row[COL_CUSTOMER_NAME]).strip(),
+                "city": str(row[COL_CITY]).strip(),
                 "tw1_from_sec": str(row[COL_TW1_FROM_SEC]).strip(),
                 "tw1_to_sec": str(row[COL_TW1_TO_SEC]).strip(),
+                "lon": str(row[COL_LON]).strip(),
+                "lat": str(row[COL_LAT]).strip(),
                 "order_number": str(row[COL_ORDER_NUMBER]).strip(),
                 "note": str(row[COL_NOTE]).strip(),
                 "payload_raw": str(row[COL_PAYLOAD_RAW]).strip(),
@@ -202,71 +188,89 @@ def load_riro_csv(path: Path) -> list[dict]:
             })
     return rows
 
-def transform(raw_rows: list[dict], locations: dict, depot_code: str) -> tuple[list[dict], list[str]]:
-    orders = []
-    missing_codes = []
-    seen_missing = set()
-    skipped_tw = []
-    payload_warnings = []
+def parse_gps(raw: dict) -> tuple[float, float] | None:
+    """(lat, lon) ze sloupců R/S, nebo None když chybí/jsou mimo ČR.
+    Rozsahová kontrola chytí i prohozené pořadí lat↔lon."""
+    try:
+        lon = float(raw["lon"])
+        lat = float(raw["lat"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (LON_RANGE[0] < lon < LON_RANGE[1] and LAT_RANGE[0] < lat < LAT_RANGE[1]):
+        return None
+    return lat, lon
+
+
+def transform(raw_rows: list[dict], depot_code: str) -> tuple[list[dict], list[dict]]:
+    """RiRo řádky → solver-ready objednávky.
+
+    Vrací (orders, dropped). `dropped` nese pro každý vyřazený řádek důvod —
+    volající rozhodne, jestli to je fatální (přísný režim) nebo jen varování.
+    GPS i čas zastávky (SEC) jdou z riro; locations už se nepoužívají.
+    """
+    orders: list[dict] = []
+    dropped: list[dict] = []
+
+    def drop(raw: dict, reason: str, detail: str) -> None:
+        dropped.append({
+            "line": raw.get("_line"),
+            "order_number": raw.get("order_number", ""),
+            "location_code": raw.get("location_code", ""),
+            "customer_name": raw.get("customer_name", ""),
+            "reason": reason,
+            "detail": detail,
+        })
 
     for raw in raw_rows:
-        loc_code = raw["location_code"]
-        loc = locations.get(loc_code.strip().lower())
-        if loc is None:
-            if loc_code not in seen_missing:
-                seen_missing.add(loc_code)
-                missing_codes.append(loc_code)
+        gps = parse_gps(raw)
+        if gps is None:
+            drop(raw, "vadná GPS",
+                 f"sloupec R (lon)={raw.get('lon')!r}, S (lat)={raw.get('lat')!r}")
             continue
+        lat, lon = gps
 
         time_from = seconds_to_hhmm(raw["tw1_from_sec"])
         time_to   = seconds_to_hhmm(raw["tw1_to_sec"])
         if time_from is None or time_to is None:
-            skipped_tw.append((raw["order_number"], loc_code,
-                               f"nevalidní čas: from={raw['tw1_from_sec']}, to={raw['tw1_to_sec']}"))
+            drop(raw, "vadné časové okno",
+                 f"sloupce L/M: from={raw['tw1_from_sec']!r}, to={raw['tw1_to_sec']!r}")
             continue
         if time_from >= time_to:
-            skipped_tw.append((raw["order_number"], loc_code,
-                               f"noční/obrácené okno: {time_from}–{time_to}"))
+            drop(raw, "vadné časové okno",
+                 f"noční/obrácené okno: {time_from}–{time_to}")
             continue
 
         parsed_payload = parse_payload(raw["payload_raw"])
-        weight_kg = parsed_payload.get("KG", 0.0) or 0.0
-        if weight_kg == 0.0 and raw["payload_raw"]:
-            payload_warnings.append((raw["order_number"], loc_code, raw["payload_raw"]))
+        service_sec = parsed_payload.get("SEC")
+        if service_sec is None or service_sec <= 0:
+            drop(raw, "vadný payload",
+                 f"chybí/nevalidní SEC: sloupec AA={raw['payload_raw']!r}")
+            continue
+        weight_kg = parsed_payload.get("KG")
+        if weight_kg is None or weight_kg < 0:
+            drop(raw, "vadný payload",
+                 f"chybí/nevalidní KG: sloupec AA={raw['payload_raw']!r}")
+            continue
 
         orders.append({
             "order_number": raw["order_number"],
-            "location_code": loc_code,
+            "location_code": raw["location_code"],
             "customer_name": raw["customer_name"],
             "block_id": depot_code,
             "time_from": time_from,
             "time_to": time_to,
             "payload_raw": raw["payload_raw"],
             "weight_kg": round(float(weight_kg), 3),
-            "lat": loc["lat"],
-            "lon": loc["lon"],
-            "city": loc.get("city", ""),
+            "lat": lat,
+            "lon": lon,
+            "city": raw.get("city", ""),
             "note": raw.get("note", ""),
-            "base_service_min": int(loc.get("base_service_min", 4)),
+            "service_sec": int(service_sec),
             "code_a": raw.get("code_a", ""),
-            "riro_vehicle_type_code": loc.get("riro_vehicle_type_code", ""),
+            "riro_vehicle_type_code": "",
         })
 
-    if skipped_tw:
-        print(f"\n  [WARN] {len(skipped_tw)} objednávek přeskočeno — nevalidní časová okna:")
-        for order_num, code, reason in skipped_tw[:10]:
-            print(f"         #{order_num} [{code}]: {reason}")
-        if len(skipped_tw) > 10:
-            print(f"         ... a {len(skipped_tw) - 10} dalších")
-
-    if payload_warnings:
-        print(f"\n  [WARN] {len(payload_warnings)} objednávek s nulovou vahou (KG=0 nebo chybí v payloadu):")
-        for order_num, code, payload in payload_warnings[:10]:
-            print(f"         #{order_num} [{code}]: payload={payload!r}")
-        if len(payload_warnings) > 10:
-            print(f"         ... a {len(payload_warnings) - 10} dalších")
-
-    return orders, missing_codes
+    return orders, dropped
 
 def save_orders(orders: list[dict], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,41 +279,50 @@ def save_orders(orders: list[dict], output_path: Path) -> None:
         "time_from", "time_to",
         "payload_raw", "weight_kg",
         "lat", "lon", "city", "note",
-        "base_service_min", "code_a", "riro_vehicle_type_code",
+        "service_sec", "code_a", "riro_vehicle_type_code",
     ]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(orders)
 
+
 def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
                         raw_rows: int, orders_count: int,
-                        missing_codes: list[str], missing_rows: int) -> dict:
-    """Bilance zpracování: kolik řádků riro prošlo a proč které vypadly.
-    Vyřazené = chybějící lokace + vadná časová okna (jiný důvod neexistuje)."""
-    invalid_tw = max(0, raw_rows - orders_count - missing_rows)
+                        dropped: list[dict]) -> dict:
+    """Bilance zpracování: kolik řádků riro prošlo a proč které vypadly."""
+    def _count(reason: str) -> int:
+        return sum(1 for d in dropped if d["reason"] == reason)
+
     return {
         "depot": depot,
         "date": date_str,
         "riro_file": riro_name,
         "raw_rows": raw_rows,
         "orders_count": orders_count,
-        "excluded_total": raw_rows - orders_count,
-        "excluded_missing_location_rows": missing_rows,
-        "excluded_missing_location_codes": sorted(missing_codes),
-        "excluded_invalid_time_window_rows": invalid_tw,
+        "excluded_total": len(dropped),
+        "excluded_invalid_gps_rows": _count("vadná GPS"),
+        "excluded_invalid_payload_rows": _count("vadný payload"),
+        "excluded_invalid_time_window_rows": _count("vadné časové okno"),
+        "excluded_rows": dropped,
     }
 
 
-def save_missing(missing_codes: list[str], output_path: Path) -> None:
-    if not missing_codes:
-        if output_path.exists():
-            output_path.unlink()
-        return
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("# location_code missing in locations_lookup.csv\n")
-        for code in sorted(missing_codes):
-            f.write(f"{code}\n")
+def format_dropped_report(dropped: list[dict], raw_rows: int) -> str:
+    """Lidsky čitelný seznam vyřazených řádků — konkrétní řádek, důvod, hodnoty."""
+    lines = [f"\n{'=' * 64}",
+             f"VYŘAZENO {len(dropped)} z {raw_rows} řádků",
+             "=" * 64]
+    by_reason: dict[str, list[dict]] = {}
+    for d in dropped:
+        by_reason.setdefault(d["reason"], []).append(d)
+    for reason, items in sorted(by_reason.items()):
+        lines.append(f"\n{reason} ({len(items)}x):")
+        for d in items:
+            lines.append(f"  řádek {d['line']:>4} | obj {d['order_number']} "
+                         f"| {d['location_code']} ({d['customer_name']})")
+            lines.append(f"               {d['detail']}")
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -359,31 +372,18 @@ def main():
     run_startup_tests()
     parser = argparse.ArgumentParser()
     parser.add_argument("depot_code", help="Kód depa, např. CB, HK, MO, PR")
-    parser.add_argument("--locations-file", default=None,
-                        help="Cesta k CSV lokací. Výchozí: data/static/locations_{DEPOT}.csv, "
-                             "fallback na locations_lookup.csv")
     parser.add_argument("--data-root", default=str(DATA_DIR),
                         help="Kořen složek input/ a prepared/ (default: data). "
-                             "Predikční běhy: --data-root data/prediction. "
-                             "Statická data (data/static) zůstávají společná.")
+                             "Predikční běhy: --data-root data/prediction.")
+    parser.add_argument("--allow-drops", action="store_true",
+                        help="Pokračuj i když nějaký řádek neprojde validací. "
+                             "DEFAULT je hard-fail — správně je jen když projdou "
+                             "všechny řádky z ESO9.")
     args = parser.parse_args()
 
     depot_code = args.depot_code.upper()
     data_root = Path(args.data_root)
     riro_path, date_str = find_active_riro_file(depot_code, data_root / "input")
-
-    if args.locations_file:
-        locations_path = Path(args.locations_file)
-    else:
-        depot_path = STATIC_DIR / f"locations_{depot_code}.csv"
-        if depot_path.exists():
-            locations_path = depot_path
-        else:
-            locations_path = STATIC_DIR / "locations_lookup.csv"
-            print(f"  [WARN] Soubor locations_{depot_code}.csv nenalezen, "
-                  f"používám fallback: {locations_path}")
-
-    locations = load_locations_lookup(locations_path)
     raw_rows = load_riro_csv(riro_path)
 
     print("=" * 64)
@@ -392,46 +392,44 @@ def main():
     print(f"Depo:       {depot_code}")
     print(f"Datum:      {date_str}")
     print(f"Vstup:      {riro_path}")
-    print(f"Lokace DB:  {locations_path}")
     print(f"Raw rows:   {len(raw_rows)}")
-    print(f"GPS lookup: {len(locations)} lokací")
 
-    orders, missing = transform(raw_rows, locations, depot_code)
+    orders, dropped = transform(raw_rows, depot_code)
 
-    output_dir = data_root / "prepared" / depot_code
-    output_file = output_dir / f"orders_{depot_code}_{date_str}.csv"
-    missing_file = output_dir / f"missing_locs_{depot_code}_{date_str}.txt"
+    # Přísný režim: ESO9 garantuje kompletní data, takže jakýkoliv vyřazený
+    # řádek = problém ve zdroji, který má někdo opravit — ne tiše přejít.
+    if dropped:
+        print(format_dropped_report(dropped, len(raw_rows)))
+        if not args.allow_drops:
+            sys.exit(
+                f"\n[ABORT] {len(dropped)} řádků neprošlo validací — nic se neuložilo.\n"
+                f"        Oprav data v ESO9 a exportuj riro znovu.\n"
+                f"        Vědomě pokračovat i tak: --allow-drops"
+            )
+        print("\n[!] --allow-drops: pokračuji bez vyřazených řádků.\n")
 
     if not orders:
         raise ValueError(f"[CHYBA] Pro depo {depot_code} nevznikly žádné objednávky.")
 
+    output_dir = data_root / "prepared" / depot_code
+    output_file = output_dir / f"orders_{depot_code}_{date_str}.csv"
     save_orders(orders, output_file)
-    save_missing(missing, missing_file)
 
     # Bilance zpracování — strojově čitelná (čte ji compare_prediction.py a UI)
-    missing_rows = sum(
-        1 for raw in raw_rows
-        if raw["location_code"].strip().lower() not in locations
-    )
     stats = build_prepare_stats(
         depot_code, date_str, riro_path.name,
-        raw_rows=len(raw_rows), orders_count=len(orders),
-        missing_codes=missing, missing_rows=missing_rows,
+        raw_rows=len(raw_rows), orders_count=len(orders), dropped=dropped,
     )
     stats_file = output_dir / f"prepare_stats_{depot_code}_{date_str}.json"
     with open(stats_file, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
     total_kg = sum(o["weight_kg"] for o in orders)
+    total_service_h = sum(o["service_sec"] for o in orders) / 3600
     print(f"Objednávky: {len(orders)}")
     print(f"Celkem kg:  {total_kg:,.1f}")
+    print(f"Servis:     {total_service_h:,.1f} h celkem (předpočítáno v ESO9)")
     print(f"Výstup:     {output_file}")
-    if stats["excluded_total"]:
-        print(f"[!] VYŘAZENO {stats['excluded_total']} z {stats['raw_rows']} řádků: "
-              f"{stats['excluded_missing_location_rows']}x chybějící lokace, "
-              f"{stats['excluded_invalid_time_window_rows']}x vadné časové okno")
-    if missing:
-        print(f"Chybějící lokace: {len(missing)} → {missing_file}")
 
 if __name__ == "__main__":
     main()

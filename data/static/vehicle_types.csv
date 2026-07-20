@@ -1,9 +1,8 @@
-type_code,type_name,max_kg,cost_per_km,start_cost_kc,available_count,total_count,active_count,profiles,riro_type_codes,example_vehicle,cost_per_km_source,available_count_source,count_block_CB,count_block_HK,count_block_MO,count_block_PR,count_block_OM,time_multiplier,osrm_profile
-TYPE_01,Type A,1080,13.0,1000,1,1,1,Malé auto,,Bocomp 1 Klofáč_6J1 6495,provided_by_user_2026_04_08,defaulted_to_total_count_review_before_production,0,0,0,1,0,1.0,driving
-TYPE_02,Type B,1350,10.0,1000,70,70,70,Malé auto,1|10|11,Slepička Martin_7J6 4104,provided_by_user_2026_04_08,defaulted_to_total_count_review_before_production,27,24,20,22,0,1.0,driving
-TYPE_03,Type C,2000,16.0,1000,1,1,1,Velké auto,,Volný 12,provided_by_user_2026_04_08,defaulted_to_total_count_review_before_production,0,1,0,1,0,1.02,driving-hgv
-TYPE_04,Type D,2800,17.0,1000,0,0,0,Velké auto,,Bocomp Čapek_3J7 9146,provided_by_user_2026_04_08,defaulted_to_total_count_review_before_production,0,0,0,0,0,1.02,driving-hgv
-TYPE_05,Type E,3000,18.0,1000,3,3,3,Velké auto,,Mrkos Pavel_7U8 0685,provided_by_user_2026_04_08,defaulted_to_total_count_review_before_production,2,1,2,2,0,1.02,driving-hgv
-TYPE_06,Type F,8000,21.0,1000,1,1,1,Velké auto,,Bocomp Renault_6J7 3814,provided_by_user_2026_04_08,defaulted_to_total_count_review_before_production,0,1,1,1,0,1.02,driving-hgv
-TYPE_06B,Type F2,5000,21.0,1000,1,1,1,Velké auto,,Bocomp Renault_6J7 3814,review_before_production,provided_by_user_2026_04_08,0,1,0,0,0,1.02,driving-hgv
-TYPE_07,Type G,9000,23.0,1000,1,1,1,Velké auto,,Bocomp Iveco_6J2 2537,provided_by_user_2026_04_08,defaulted_to_total_count_review_before_production,0,1,0,0,0,1.02,driving-hgv
+type_code,type_name,max_kg,cost_per_km,start_cost_kc,available_count,total_count,active_count,profiles,cost_per_km_source,available_count_source,time_multiplier,osrm_profile
+TYPE_01,Dodávka 1.2t,1200,11.0,1000,3,3,3,Malé auto,provided_by_user_2026_07_19,provided_by_user_2026_07_19,1.0,driving
+TYPE_02,Dodávka 1.35t,1350,11.0,1000,53,53,53,Malé auto,provided_by_user_2026_07_19,provided_by_user_2026_07_19,1.0,driving
+TYPE_03,Nákladní 2t,2000,17.4,1000,1,1,1,Velké auto,provided_by_user_2026_07_19,provided_by_user_2026_07_19,1.0,driving
+TYPE_04,Nákladní 3t,3000,19.5,1000,1,1,1,Velké auto,provided_by_user_2026_07_19,provided_by_user_2026_07_19,1.0,driving
+TYPE_05,Nákladní 3.2t,3200,19.5,1000,2,2,2,Velké auto,provided_by_user_2026_07_19,provided_by_user_2026_07_19,1.0,driving
+TYPE_06,Kamion 8t,8000,35.0,1000,1,1,1,Velké auto,provided_by_user_2026_07_19,provided_by_user_2026_07_19,1.0,driving-hgv
+TYPE_07,Kamion 8.7t,8700,35.0,1000,1,1,1,Velké auto,provided_by_user_2026_07_19,provided_by_user_2026_07_19,1.0,driving-hgv

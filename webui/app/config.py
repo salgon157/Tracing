@@ -50,11 +50,14 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("VRP_WEBUI_PORT", "8777"))
 
 # ── RiRo názvy ───────────────────────────────────────────────────────────────
-# Reálné soubory dostáváme pod kódem I plným názvem depa, např.:
-#   riro-20260710-CB-POB.csv, riro-20260710-Morava-POB.csv,
-#   riro-20260710-Hradec Králové-POB.csv, riro-20260710-Praha-POB.csv
+# Finální export z ESO9 (od 17.7.2026) je BEZ přípony '-POB', pod kódem
+# i plným názvem depa, např.:
+#   riro-20260717-CB.csv, riro-20260717-Morava.csv,
+#   riro-20260717-Hradec Králové.csv, riro-20260717-Praha.csv
 # prepare_inputs_v6.py stejně token depa v názvu ignoruje (depo bere z CLI arg,
 # datum z 'riro-YYYYMMDD-'), takže upload jen ověřuje datum + shodu tokenu s depem.
+# Starý název ('...-CB-POB.csv') vyrobí token 'CB-POB', který neprojde kontrolou
+# depa → odmítnut. Formát OBSAHU stejně validuje až prepare.
 
 # Přijímané tokeny depa v názvu: kód i plný název.
 DEPOT_FILE_TOKENS = {
@@ -64,8 +67,8 @@ DEPOT_FILE_TOKENS = {
     "PR": ("PR", "Praha"),
 }
 
-# Obecný RiRo pattern: datum + libovolný depot token (kód/plný název) + POB.
-RIRO_GENERIC_RE = re.compile(r"^riro-(\d{8})-(.+)-POB\.csv$", re.IGNORECASE)
+# Obecný RiRo pattern: datum + depot token (kód/plný název).
+RIRO_GENERIC_RE = re.compile(r"^riro-(\d{8})-(.+)\.csv$", re.IGNORECASE)
 # Tolerantní pattern jen pro extrakci data (Krok 2). Sedí na 'riro-YYYYMMDD-...'.
 RIRO_DATE_RE = re.compile(r"^riro-(\d{8})-", re.IGNORECASE)
 
