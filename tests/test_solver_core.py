@@ -579,3 +579,26 @@ class TestOrdersFileMeta:
     def test_nonmatching_name(self):
         from vrp_solver_lines_v6 import orders_file_meta
         assert orders_file_meta("neco_jineho.csv") == ("", "")
+
+
+class TestUnreachableThresholds:
+    """Práh nedosažitelných párů: default 1,5 %, Praha 5 % (HGV legitimně
+    nedojede do center měst). Bezpečnost nedělá práh, ale sentinel."""
+
+    def test_default_threshold(self):
+        from vrp_solver_lines_v6 import UNREACHABLE_MATRIX_FAIL_PCT
+        assert UNREACHABLE_MATRIX_FAIL_PCT == pytest.approx(0.015)
+
+    def test_prague_has_higher_threshold(self):
+        from vrp_solver_lines_v6 import UNREACHABLE_MATRIX_FAIL_PCT_BY_ZONE as Z
+        assert Z["PR"] == pytest.approx(0.05)
+
+    def test_other_depots_use_default(self):
+        from vrp_solver_lines_v6 import UNREACHABLE_MATRIX_FAIL_PCT_BY_ZONE as Z
+        assert not ({"CB", "HK", "MO"} & set(Z))
+
+    def test_sentinel_exceeds_route_duration_cap(self):
+        # Jádro bezpečnosti: nedosažitelný úsek se do trasy nevejde,
+        # takže ho solver nemůže použít ani při vysokém prahu.
+        from vrp_solver_lines_v6 import UNREACHABLE_TIME_MIN, CONFIG
+        assert UNREACHABLE_TIME_MIN > CONFIG["max_route_duration_h"] * 60
