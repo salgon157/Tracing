@@ -582,23 +582,35 @@ class TestOrdersFileMeta:
 
 
 class TestUnreachableThresholds:
-    """Práh nedosažitelných párů: default 1,5 %, Praha 5 % (HGV legitimně
-    nedojede do center měst). Bezpečnost nedělá práh, ale sentinel."""
+    """Práh nedosažitelných párů je PER PROFIL. Bezpečnost nedělá práh,
+    ale sentinel proti stropu délky trasy."""
 
-    def test_default_threshold(self):
-        from vrp_solver_lines_v6 import UNREACHABLE_MATRIX_FAIL_PCT
-        assert UNREACHABLE_MATRIX_FAIL_PCT == pytest.approx(0.015)
+    def test_driving_is_strict(self):
+        # dodávky mají dojet skoro všude (v Praze naměřeno 0,00 %)
+        from vrp_solver_lines_v6 import unreachable_fail_pct
+        assert unreachable_fail_pct("driving") == pytest.approx(0.015)
 
-    def test_prague_has_higher_threshold(self):
-        from vrp_solver_lines_v6 import UNREACHABLE_MATRIX_FAIL_PCT_BY_ZONE as Z
-        assert Z["PR"] == pytest.approx(0.05)
+    def test_hgv_is_looser(self):
+        # kamiony legitimně nedojedou do center měst (CB 1,14 %, PR 2,04 %)
+        from vrp_solver_lines_v6 import unreachable_fail_pct
+        assert unreachable_fail_pct("driving-hgv") == pytest.approx(0.05)
 
-    def test_other_depots_use_default(self):
-        from vrp_solver_lines_v6 import UNREACHABLE_MATRIX_FAIL_PCT_BY_ZONE as Z
-        assert not ({"CB", "HK", "MO"} & set(Z))
+    def test_hgv_threshold_covers_measured_reality(self):
+        from vrp_solver_lines_v6 import unreachable_fail_pct
+        assert unreachable_fail_pct("driving-hgv") > 0.0228   # nejhorší naměřené
+
+    def test_unknown_profile_falls_back_to_default(self):
+        from vrp_solver_lines_v6 import unreachable_fail_pct
+        assert unreachable_fail_pct("neznamy") == pytest.approx(0.015)
+
+    def test_force_matrix_disables_all_profiles(self, monkeypatch):
+        import vrp_solver_lines_v6 as solver
+        monkeypatch.setattr(solver, "FORCE_MATRIX", True)
+        assert solver.unreachable_fail_pct("driving") == 1.0
+        assert solver.unreachable_fail_pct("driving-hgv") == 1.0
 
     def test_sentinel_exceeds_route_duration_cap(self):
         # Jádro bezpečnosti: nedosažitelný úsek se do trasy nevejde,
-        # takže ho solver nemůže použít ani při vysokém prahu.
+        # takže ho solver nepoužije ani při vysokém prahu.
         from vrp_solver_lines_v6 import UNREACHABLE_TIME_MIN, CONFIG
         assert UNREACHABLE_TIME_MIN > CONFIG["max_route_duration_h"] * 60

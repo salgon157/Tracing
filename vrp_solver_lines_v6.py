@@ -50,17 +50,33 @@ UNREACHABLE_TIME_MIN = 999_999
 # Práh pro hard-fail: pokud je víc než X % matice nedosažitelných, data jsou rozbitá.
 # 1.1 % toleruje case kdy HGV profil nedosáhne na pár adres v malých uličkách
 # (legitimní omezení, ne data corruption).
-UNREACHABLE_MATRIX_FAIL_PCT = 0.015
-
-# Per-depo override prahu. Praha má legitimně víc nedosažitelných párů pro
-# kamiony (driving-hgv) — centra měst, pěší zóny, zákazy vjezdu; namátkou
-# Galerie Teplice a Prodejna 300 Teplice samy dělají ~2 % matice.
-# Není to vada dat: profil 'driving' (dodávky) má v Praze 0,00 % nedosažitelných
-# a ty adresy rozveze. Nedosažitelný pár dostane sentinel UNREACHABLE_TIME_MIN
-# (999 999 min >> strop trasy 1 410 min), takže ho solver fyzicky nepoužije.
-UNREACHABLE_MATRIX_FAIL_PCT_BY_ZONE = {
-    "PR": 0.05,
+# Práh pro hard-fail: kolik % matice smí být nedosažitelných, než to považujeme
+# za rozbitá data. Je to hlídač KVALITY DAT, ne bezpečnostní pojistka —
+# bezpečnost dělá sentinel UNREACHABLE_TIME_MIN (999 999 min) proti stropu
+# délky trasy (1 410 min): takový úsek se do trasy nevejde, solver ho nepoužije.
+# Matice jsou per-vozidlo, takže HGV-nedosažitelný pár blokuje jen kamion
+# a adresu obslouží dodávka.
+#
+# Práh je PER PROFIL, protože každý profil má jinou realitu:
+#   driving      — dodávky mají dojet skoro všude (naměřeno v Praze 0,00 %),
+#                  jakýkoli nárůst = opravdu vadná data → přísně
+#   driving-hgv  — kamiony legitimně nedojedou do center měst (pěší zóny,
+#                  zákazy vjezdu). Naměřeno CB 1,14 %, PR 2,04 % — dvě adresy
+#                  v centru Teplic samy dělají ~2 % matice → volněji
+UNREACHABLE_MATRIX_FAIL_PCT = 0.015                 # default (driving)
+UNREACHABLE_MATRIX_FAIL_PCT_BY_PROFILE = {
+    "driving-hgv": 0.05,
 }
+# Nastaví --force-matrix; helper pak vrací 100 % (nikdy nezfailuje).
+FORCE_MATRIX = False
+
+
+def unreachable_fail_pct(profile: str) -> float:
+    """Práh pro daný routing profil (--force-matrix vypíná úplně)."""
+    if FORCE_MATRIX:
+        return 1.0
+    return UNREACHABLE_MATRIX_FAIL_PCT_BY_PROFILE.get(
+        profile, UNREACHABLE_MATRIX_FAIL_PCT)
 
 # Když routing pro těžká vozidla (ORS / driving-hgv) selže, DEFAULT je hard-fail.
 # Tiché "spadnutí" na osobní profil (driving) by naplánovalo kamiony po trasách,
@@ -470,7 +486,8 @@ def _sanitize_matrix(
     if len(bad_pairs) > 5:
         print(f"         ... a dalších {len(bad_pairs) - 5} párů")
 
-    if bad_pct > UNREACHABLE_MATRIX_FAIL_PCT:
+    limit = unreachable_fail_pct(profile)
+    if bad_pct > limit:
         raise SystemExit(
             f"\n[CHYBA] OSRM/ORS matrix má {bad_count} nedosažitelných párů "
             f"({bad_pct*100:.2f} % > limit {UNREACHABLE_MATRIX_FAIL_PCT*100:.1f} %).\n"
@@ -2015,9 +2032,7 @@ def run_routing_tests(osrm_url: str, ors_url: str) -> None:
 
 
 def main():
-    # Práh nedosažitelných párů se mutuje na dvou místech níže:
-    #   --force-matrix (vypne hard-fail)  a  per-depo override.
-    global UNREACHABLE_MATRIX_FAIL_PCT
+    global FORCE_MATRIX          # nastavuje --force-matrix níže
     run_startup_tests()
     t_global_start = time.time()
 
@@ -2046,9 +2061,9 @@ def main():
     CONFIG["orders_file"] = args.orders_file
 
     # ── --force-matrix: vypnout hard-fail při nedosažitelných párech ───────
-    # Mutace module-level konstanty — _sanitize_matrix() jí čte přímo.
+    # Nastaví flag, který čte unreachable_fail_pct() při sanitizaci matice.
     if args.force_matrix:
-        UNREACHABLE_MATRIX_FAIL_PCT = 1.0   # 100 % = nikdy nezfailuje
+        FORCE_MATRIX = True
         print("[FORCE] Limit nedosažitelných párů v matici vypnut (--force-matrix). "
               "Páry s NaN durations dostanou sentinel UNREACHABLE_TIME_MIN, "
               "solver je nepřiřadí.")
@@ -2106,14 +2121,6 @@ def main():
     orders            = load_orders_day(args.orders_file)
     block_id          = orders[0].get("block_id", "").strip() if orders else ""
     vehicles_expanded = load_vehicle_types_db(args.vehicle_types_file, block_id=block_id)
-
-    # ── Per-depo práh nedosažitelných párů ────────────────────────────────
-    # Musí být PŘED výpočtem matice. --force-matrix (nastavuje 1.0) má přednost.
-    if not args.force_matrix and block_id in UNREACHABLE_MATRIX_FAIL_PCT_BY_ZONE:
-        UNREACHABLE_MATRIX_FAIL_PCT = UNREACHABLE_MATRIX_FAIL_PCT_BY_ZONE[block_id]
-        print(f"  [matrix] Depo {block_id}: práh nedosažitelných párů "
-              f"{UNREACHABLE_MATRIX_FAIL_PCT*100:.1f} % (default "
-              f"{1.5:.1f} % — Praha má legitimně víc HGV-nedosažitelných adres)")
 
     # Auto-detekce výstupní složky z názvu orders souboru
     # Pattern: orders_{DEPOT}_{YYYY-MM-DD}.csv → data/results/{DEPOT}/{YYYY-MM-DD}/
