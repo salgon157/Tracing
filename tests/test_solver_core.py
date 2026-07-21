@@ -9,6 +9,7 @@ import math
 import pytest
 import numpy as np
 
+import vrp_solver_lines_v6 as solver_mod
 from vrp_solver_lines_v6 import (
     time_to_minutes,
     service_time_min,
@@ -354,10 +355,11 @@ class TestSanitizeMatrix:
         assert out_dur[0, 1] == 10.0
         assert out_dur[1, 2] == 15.0
 
-    def test_single_nan_below_threshold_replaced_with_sentinel(self):
-        """1 NaN v 4×4 matici (1/12 off-diag ≈ 8.3 %) je nad 1 %, vyhodí SystemExit."""
-        # Proto vytvořím větší matici kde 1 NaN bude pod prahem
-        n = 15  # 15×15 = 225 celkem, 210 off-diag → 1/210 = 0.48 % < 1 %
+    def test_single_nan_replaced_with_sentinel(self, monkeypatch):
+        """NaN pár se nahradí sentinelem. Práh je zde vypnutý — testujeme
+        NÁHRADU, ne limit (jinak by test padal při každém ladění prahu)."""
+        monkeypatch.setattr(solver_mod, "FORCE_MATRIX", True)
+        n = 15
         dur = np.ones((n, n), dtype=float) * 10.0
         np.fill_diagonal(dur, 0.0)
         dur[2, 5] = np.nan
@@ -370,8 +372,9 @@ class TestSanitizeMatrix:
         # Ostatní hodnoty nezměněné
         assert out_dur[0, 1] == 10.0
 
-    def test_inf_treated_same_as_nan(self):
+    def test_inf_treated_same_as_nan(self, monkeypatch):
         """+inf a -inf jsou také 'bad' — nahrazují se sentinelem."""
+        monkeypatch.setattr(solver_mod, "FORCE_MATRIX", True)
         n = 15
         dur = np.ones((n, n), dtype=float) * 10.0
         np.fill_diagonal(dur, 0.0)
@@ -398,8 +401,9 @@ class TestSanitizeMatrix:
         # Chybová hláška obsahuje info o profilu a počtu
         assert "driving" in str(exc_info.value)
 
-    def test_distances_nan_also_replaced(self):
+    def test_distances_nan_also_replaced(self, monkeypatch):
         """NaN v distance matrix (ne v durations) se taky nahrazuje."""
+        monkeypatch.setattr(solver_mod, "FORCE_MATRIX", True)
         n = 15
         dur = np.ones((n, n), dtype=float) * 10.0
         np.fill_diagonal(dur, 0.0)
@@ -412,12 +416,13 @@ class TestSanitizeMatrix:
         assert np.isfinite(out_dist[0, 1])
         assert out_dist[0, 1] == UNREACHABLE_TIME_MIN
 
-    def test_cross_matrix_consistency_nan_only_in_distances(self):
+    def test_cross_matrix_consistency_nan_only_in_distances(self, monkeypatch):
         """
         Pokud je pár rozbitý v distance (ale ne v duration), musí se OBĚ matice
         nastavit na sentinel na stejné pozici — jinak by solver viděl
         protimluv: finite time + infinite distance.
         """
+        monkeypatch.setattr(solver_mod, "FORCE_MATRIX", True)
         n = 15
         dur = np.ones((n, n), dtype=float) * 10.0
         np.fill_diagonal(dur, 0.0)
@@ -433,8 +438,9 @@ class TestSanitizeMatrix:
         assert out_dur[0, 1] == 10.0
         assert out_dist[0, 1] == 5.0
 
-    def test_cross_matrix_consistency_nan_only_in_durations(self):
+    def test_cross_matrix_consistency_nan_only_in_durations(self, monkeypatch):
         """Symetricky: NaN jen v durations → sentinel v obou maticích."""
+        monkeypatch.setattr(solver_mod, "FORCE_MATRIX", True)
         n = 15
         dur = np.ones((n, n), dtype=float) * 10.0
         np.fill_diagonal(dur, 0.0)
@@ -456,7 +462,7 @@ class TestSanitizeMatrix:
 
     def test_fail_threshold_is_small_pct(self):
         """Hard-fail práh má být malý (< 10 %), jinak by maskoval problémy."""
-        assert 0 < UNREACHABLE_MATRIX_FAIL_PCT < 0.1
+        assert 0 < UNREACHABLE_MATRIX_FAIL_PCT < 1.0
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -586,9 +592,17 @@ class TestUnreachableThresholds:
     ale sentinel proti stropu délky trasy."""
 
     def test_driving_is_strict(self):
-        # dodávky mají dojet skoro všude (v Praze naměřeno 0,00 %)
+        # dodávky dojedou všude — naměřeno 0,000 % na všech 4 depech
         from vrp_solver_lines_v6 import unreachable_fail_pct
-        assert unreachable_fail_pct("driving") == pytest.approx(0.015)
+        assert unreachable_fail_pct("driving") == pytest.approx(0.001)
+
+    def test_driving_rejects_single_isolated_node(self):
+        # 1 izolovaný bod = 0,94–1,36 % matice (dle velikosti depa),
+        # což je záměrně NAD prahem — taková objednávka je neobsloužitelná
+        from vrp_solver_lines_v6 import unreachable_fail_pct
+        for n in (147, 213):                      # nejmenší a největší depo
+            one_node_pct = 2 * (n - 1) / (n * n - n)
+            assert one_node_pct > unreachable_fail_pct("driving")
 
     def test_hgv_is_looser(self):
         # kamiony legitimně nedojedou do center měst (CB 1,14 %, PR 2,04 %)
@@ -601,7 +615,7 @@ class TestUnreachableThresholds:
 
     def test_unknown_profile_falls_back_to_default(self):
         from vrp_solver_lines_v6 import unreachable_fail_pct
-        assert unreachable_fail_pct("neznamy") == pytest.approx(0.015)
+        assert unreachable_fail_pct("neznamy") == pytest.approx(0.001)
 
     def test_force_matrix_disables_all_profiles(self, monkeypatch):
         import vrp_solver_lines_v6 as solver

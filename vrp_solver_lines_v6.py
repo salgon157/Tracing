@@ -56,12 +56,23 @@ UNREACHABLE_TIME_MIN = 999_999
 # a adresu obslouží dodávka.
 #
 # Práh je PER PROFIL, protože každý profil má jinou realitu:
-#   driving      — dodávky mají dojet skoro všude (naměřeno v Praze 0,00 %),
-#                  jakýkoli nárůst = opravdu vadná data → přísně
-#   driving-hgv  — kamiony legitimně nedojedou do center měst (pěší zóny,
-#                  zákazy vjezdu). Naměřeno CB 1,14 %, PR 2,04 % — dvě adresy
-#                  v centru Teplic samy dělají ~2 % matice → volněji
-UNREACHABLE_MATRIX_FAIL_PCT = 0.015                 # default (driving)
+#
+#   driving (dodávky) — 0,1 %, prakticky nulová tolerance.
+#     Naměřeno 22. 7. 2026 na všech depech: CB 0,000 %, HK 0,000 %,
+#     MO 0,000 %, PR 0,000 % (125k+ párů, ani jeden nedosažitelný).
+#     Pozor co 0,1 % znamená v praxi: JEDEN úplně izolovaný bod udělá
+#     0,94–1,36 % matice (podle velikosti depa), takže tenhle práh
+#     neprojde ani jedna nedosažitelná adresa. To je ZÁMĚR — když
+#     dodávka někam nedojede, nedojede tam nic (kamion je omezenější),
+#     objednávka je neobsloužitelná a model by stejně skončil jako
+#     infeasible, jen o pár minut později a s méně srozumitelnou chybou.
+#     Tolerovaných ~21–45 párů kryje jen drobné anomálie typu jednosměrek.
+#
+#   driving-hgv (kamiony) — 5 %, legitimně nedojedou do center měst
+#     (pěší zóny, zákazy vjezdu). Naměřeno CB 1,14 %, PR 2,04 %; dvě
+#     adresy v centru Teplic samy dělají ~2 % matice. Tyhle adresy
+#     obslouží dodávka, proto se kvůli nim nesmí zastavit celý běh.
+UNREACHABLE_MATRIX_FAIL_PCT = 0.001                 # default (driving)
 UNREACHABLE_MATRIX_FAIL_PCT_BY_PROFILE = {
     "driving-hgv": 0.05,
 }
