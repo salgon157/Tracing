@@ -98,13 +98,13 @@ Stable instance (`C:\osrm`, 5000/8080) zůstává **nedotčená**.
 |---|---|
 | `--budget-min 5` | Časový budget solveru v minutách (default 30). Rychlé porovnávací běhy. |
 | `--output-dir CESTA` | Ruční výstupní složka (jinak auto-detekce). Nutné pro porovnávací běhy, ať se nepřepíšou. |
-| `--force-matrix` | Ignoruj limit nedosažitelných párů v matici. **Praha (PR)** ho obvykle potřebuje (HGV nedosáhne na úzké uličky). |
+| `--force-matrix` | **Nouzový** přepínač — vypne limit nedosažitelných párů pro všechny profily. Běžně NENÍ potřeba: limity jsou per profil (`driving` 1,5 %, `driving-hgv` 5 %) a pokrývají i Prahu. |
 | `--allow-profile-fallback` | Dovol tichý fallback kamionů na osobní profil když ORS selže. **DEFAULT je hard-fail** (jinak by kamiony jely po špatných trasách). Používej jen vědomě. |
 | `--zone-label CB` | Popisek zóny do výstupů (jinak z dat). |
 
 **Příklad — Praha přes fresh-osm:**
 ```powershell
-python vrp_solver_lines_v6.py --fresh-osm --force-matrix --orders-file data/prepared/PR/orders_PR_2026-04-29.csv
+python vrp_solver_lines_v6.py --fresh-osm --orders-file data/prepared/PR/orders_PR_2026-04-29.csv
 ```
 
 **Příklad — porovnání 5 vs 30 min (bez přepsání):**

@@ -693,7 +693,9 @@ def prepare_run(args: argparse.Namespace) -> tuple[str, dict[str, Path], list[di
         solver.CONFIG["total_time_budget_sec"] = int(args.budget_min * 60)
 
     if args.force_matrix:
-        solver.UNREACHABLE_MATRIX_FAIL_PCT = 1.0
+        # Nastavit FLAG, ne konstantu: prahy jsou per profil a přepsání
+        # defaultu by driving-hgv (vlastní hodnota v BY_PROFILE) neovlivnilo.
+        solver.FORCE_MATRIX = True
 
     date_str = args.date or latest_common_date(args.depots)
     args.date = date_str

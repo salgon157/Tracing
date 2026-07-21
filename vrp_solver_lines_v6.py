@@ -47,9 +47,7 @@ SOLVER_VERSION = "v6"   # verze solveru — zvedni ručně při větších změn
 # 999_999 minut ≈ 16 666 hodin → OR-Tools to chápe jako prohibitivně drahou hranu.
 # Používáme místo NaN/inf, které by po .astype(int) daly undefined behavior (INT_MIN).
 UNREACHABLE_TIME_MIN = 999_999
-# Práh pro hard-fail: pokud je víc než X % matice nedosažitelných, data jsou rozbitá.
-# 1.1 % toleruje case kdy HGV profil nedosáhne na pár adres v malých uličkách
-# (legitimní omezení, ne data corruption).
+
 # Práh pro hard-fail: kolik % matice smí být nedosažitelných, než to považujeme
 # za rozbitá data. Je to hlídač KVALITY DAT, ne bezpečnostní pojistka —
 # bezpečnost dělá sentinel UNREACHABLE_TIME_MIN (999 999 min) proti stropu
@@ -458,7 +456,8 @@ def _sanitize_matrix(
     Detekuje NaN/inf v OSRM/ORS matici, hlásí konkrétní problematické páry
     a nahrazuje je sentinelem UNREACHABLE_TIME_MIN.
 
-    Hard-failuje pokud je rozbitých více než UNREACHABLE_MATRIX_FAIL_PCT matice.
+    Hard-failuje pokud je rozbitých víc než práh pro daný profil
+    (viz unreachable_fail_pct) — hlídač kvality dat, ne bezpečnostní pojistka.
     """
     # Kombinovaná maska: rozbité je to, co je NaN/inf v durations NEBO distances.
     # Ignoruj diagonálu (přepíše se na 0 v _parse_matrix_result).
@@ -490,9 +489,11 @@ def _sanitize_matrix(
     if bad_pct > limit:
         raise SystemExit(
             f"\n[CHYBA] OSRM/ORS matrix má {bad_count} nedosažitelných párů "
-            f"({bad_pct*100:.2f} % > limit {UNREACHABLE_MATRIX_FAIL_PCT*100:.1f} %).\n"
-            f"Profil: {profile}. Zkontroluj GPS souřadnice — pravděpodobně jsou body "
-            f"mimo silniční síť nebo na izolovaném ostrově grafu."
+            f"({bad_pct*100:.2f} % > limit {limit*100:.1f} % pro profil '{profile}').\n"
+            f"Zkontroluj GPS souřadnice — pravděpodobně jsou body mimo silniční "
+            f"síť nebo na izolovaném ostrově grafu.\n"
+            f"Pokud jsou data v pořádku a jde o legitimní omezení vozidla, "
+            f"zvaž úpravu prahu v UNREACHABLE_MATRIX_FAIL_PCT_BY_PROFILE."
         )
 
     # Pod prahem: nahraď sentinelem OBĚ matice na stejných pozicích.
@@ -1927,11 +1928,12 @@ def parse_args():
     parser.add_argument("--zone-label", default="",
                         help="Popisek zóny/bloku do výstupů; když chybí, bere se ze souboru")
     parser.add_argument("--force-matrix", action="store_true",
-                        help="Ignoruj limit nedosažitelných párů v matici. "
-                             "Použij když HGV (driving-hgv) legitimně nedosáhne na "
-                             "některé adresy v úzkých uličkách (typicky velká města). "
-                             "Solver tyto páry stejně vyhodnotí jako prohibitivně drahé "
-                             "(UNREACHABLE_TIME_MIN) a HGV vozidlu je nepřiřadí.")
+                        help="NOUZOVÝ přepínač: vypne limit nedosažitelných párů pro VŠECHNY "
+                             "profily. Běžně NENÍ potřeba — limity jsou per profil "
+                             "(driving 1,5 %%, driving-hgv 5 %%) a pokrývají i Prahu. "
+                             "Použij jen když víš, že data jsou v pořádku a limit "
+                             "přesto brání běhu. Nedosažitelné páry dostanou sentinel "
+                             "a solver je nepřiřadí tak jako tak.")
     parser.add_argument("--budget-min", type=float, default=None,
                         help="Override celkového časového budgetu solveru (v minutách). "
                              "Default je v CONFIG['total_time_budget_sec'] (30 min). "
