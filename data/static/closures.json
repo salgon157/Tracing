@@ -2,26 +2,6 @@
   "version": 1,
   "closures": [
     {
-      "id": "CLO_001",
-      "name": "Pozovice",
-      "active": true,
-      "created": "2026-04-28",
-      "valid_from": "2026-04-28",
-      "valid_to": null,
-      "segment": {
-        "from": {
-          "lat": 49.507087536568385,
-          "lon": 15.596581399440767
-        },
-        "to": {
-          "lat": 49.516192313014265,
-          "lon": 15.614651441574098
-        }
-      },
-      "buffer_km": 0.02,
-      "notes": ""
-    },
-    {
       "id": "CLO_002",
       "name": "Most HB - Billa",
       "active": true,

@@ -291,8 +291,9 @@ def command_for_variant(args: argparse.Namespace, variant: dict, output_dir: Pat
         command.extend(["--workers", str(args.workers)])
     if args.force_matrix:
         command.append("--force-matrix")
-    if args.fresh_osm:
-        command.append("--fresh-osm")
+    # Benchmark měří VÝKONNOST ALGORITMU → zamrzlá mapa, aby byla měření
+    # porovnatelná napříč časem. Proto se zdroj předává explicitně.
+    command += ["--osm-source", args.osm_source]
     if args.dry_run:
         command.append("--dry-run")
     if args.run_startup_tests:
@@ -512,9 +513,11 @@ def parse_args() -> argparse.Namespace:
         help="Pass --force-matrix to the solver.",
     )
     parser.add_argument(
-        "--fresh-osm",
+        "--osm-source",
         action="store_true",
-        help="Pass --fresh-osm to the solver.",
+        choices=["stable", "current"], default="stable",
+        help="Routing instance for the solver (default: stable = frozen map, "
+             "so performance measurements stay comparable over time).",
     )
     parser.add_argument(
         "--run-startup-tests",

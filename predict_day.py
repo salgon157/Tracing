@@ -60,7 +60,7 @@ def depots_with_input(root: Path = PREDICTION_ROOT) -> list[str]:
 
 def build_depot_commands(depot: str, date_str: str, stamp: str, *,
                          budget_min: float, force_matrix: bool,
-                         fresh_osm: bool, visualize: bool,
+                         osm_source: str, visualize: bool,
                          root: Path = PREDICTION_ROOT) -> tuple[list[list[str]], Path]:
     """Složí příkazy pro jedno depo — tytéž jako denní běh, jen pod {root}.
     Vrací (seznam argv, výstupní složka)."""
@@ -76,15 +76,15 @@ def build_depot_commands(depot: str, date_str: str, stamp: str, *,
              "--run-log-path", (root / "results" / "run_log.jsonl").as_posix()]
     if force_matrix:
         solve.append("--force-matrix")
-    if fresh_osm:
-        solve.append("--fresh-osm")
+    if osm_source:
+        solve += ["--osm-source", osm_source]
 
     cmds = [prepare, solve]
     if visualize:
         # NIKDY --open (stejná zásada jako webui)
         vis = [PY, "visualize_routes.py", out_dir.as_posix()]
-        if fresh_osm:
-            vis.append("--fresh-osm")
+        if osm_source:
+            vis += ["--osm-source", osm_source]
         cmds.append(vis)
     return cmds, out_dir
 
@@ -124,8 +124,11 @@ def main() -> None:
                         help="Solver budget na jedno depo v minutách (default: 5)")
     parser.add_argument("--force-matrix", action="store_true",
                         help="Předá se solveru (Praha ho obvykle potřebuje)")
-    parser.add_argument("--fresh-osm", action="store_true",
-                        help="Předá se solveru i vizualizaci (porty 5001/8081)")
+    parser.add_argument("--osm-source", choices=["current", "stable"],
+                        default="current",
+                        help="Routing instance (default: current = čerstvá mapa). "
+                             "'stable' = zamrzlá mapa pro porovnatelná měření. "
+                             "Přestavba dat: python refresh_osm.py")
     parser.add_argument("--no-visualize", action="store_true",
                         help="Nevytvářet mapy (default: mapy se generují — sklad je používá)")
     parser.add_argument("--skip-tests", action="store_true",
@@ -164,7 +167,7 @@ def main() -> None:
         cmds, out_dir = build_depot_commands(
             depot, date_str, stamp,
             budget_min=args.budget, force_matrix=args.force_matrix,
-            fresh_osm=args.fresh_osm, visualize=not args.no_visualize,
+            osm_source=args.osm_source, visualize=not args.no_visualize,
         )
         status = "ok"
         for cmd in cmds:

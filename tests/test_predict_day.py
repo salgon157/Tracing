@@ -7,7 +7,8 @@ from predict_day import build_depot_commands, depots_with_input, _fmt_num
 
 
 def _cmds(**kw):
-    defaults = dict(budget_min=5.0, force_matrix=False, fresh_osm=False, visualize=True)
+    defaults = dict(budget_min=5.0, force_matrix=False,
+                    osm_source="current", visualize=True)
     defaults.update(kw)
     return build_depot_commands("CB", "2026-07-14", "1430", **defaults)
 
@@ -42,12 +43,18 @@ class TestBuildDepotCommands:
         assert solve[solve.index("--budget-min") + 1] == "5"
 
     def test_flags_passthrough(self):
-        cmds, _ = _cmds(force_matrix=True, fresh_osm=True)
+        cmds, _ = _cmds(force_matrix=True, osm_source="current")
         solve = cmds[1]
         assert "--force-matrix" in solve
-        assert "--fresh-osm" in solve
+        assert solve[solve.index("--osm-source") + 1] == "current"
         vis = cmds[2]
-        assert "--fresh-osm" in vis
+        assert vis[vis.index("--osm-source") + 1] == "current"
+
+    def test_osm_source_stable_passthrough(self):
+        # stable = zamrzlá mapa; musí se propsat do solveru i vizualizace
+        cmds, _ = _cmds(osm_source="stable")
+        assert cmds[1][cmds[1].index("--osm-source") + 1] == "stable"
+        assert cmds[2][cmds[2].index("--osm-source") + 1] == "stable"
 
     def test_visualize_never_open(self):
         cmds, out_dir = _cmds(visualize=True)
@@ -63,7 +70,7 @@ class TestBuildDepotCommands:
     def test_custom_root(self):
         cmds, out_dir = build_depot_commands(
             "MO", "2026-07-14", "0900", budget_min=10.0, force_matrix=False,
-            fresh_osm=False, visualize=False, root=Path("data/jinam"))
+            osm_source="current", visualize=False, root=Path("data/jinam"))
         assert "data/jinam" in cmds[0]
         assert out_dir.as_posix().startswith("data/jinam/results/MO/")
 

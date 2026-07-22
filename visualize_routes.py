@@ -464,22 +464,23 @@ def main():
                         help="Automaticky otevřít HTML v prohlížeči")
     parser.add_argument("--no-osrm", action="store_true",
                         help="Přeskočit OSRM — zobrazí vzdušné čáry místo silnic")
-    parser.add_argument("--osrm-url", default="http://localhost:5000",
-                        help="OSRM base URL (default: http://localhost:5000)")
+    parser.add_argument("--osrm-url", default=None,
+                        help="OSRM base URL — explicitní override (jinak se "
+                             "odvodí z --osm-source)")
+    parser.add_argument("--osm-source", choices=["current", "stable"], default="current",
+                        help="Routing instance (default: current = čerstvá mapa, "
+                             "port 5001). 'stable' = zamrzlá mapa, port 5000.")
     parser.add_argument("--fresh-osm", action="store_true",
-                        help="Použij čerstvou routing instanci (port 5001, C:\\osrm_current). "
-                             "Zkratka pro --osrm-url http://localhost:5001 — vyhrává nad ní.")
+                        help="ZASTARALÉ — alias pro --osm-source current (už je default).")
     args = parser.parse_args()
 
-    # --fresh-osm má přednost před --osrm-url, aby uživateli stačil jeden krátký flag
-    if args.fresh_osm:
-        args.osrm_url = "http://localhost:5001"
-        print(f"[OSM] zdroj: current (fresh) | OSRM={args.osrm_url}")
-        # Self-contained: orchestrator stáhne data a nastartuje Docker kontejnery,
-        # pokud neběží. Při --no-osrm nemá smysl spouštět routing — přeskoč.
-        if not args.no_osrm:
-            from osrm_orchestrator import ensure_fresh_routing_ready
-            ensure_fresh_routing_ready()
+    # Priorita: explicitní --osrm-url > --fresh-osm (alias) > --osm-source
+    # Routing data se tu NEPŘESTAVUJÍ (viz refresh_osm.py) — instance musí běžet.
+    if args.osrm_url is None:
+        from osm_routing import OSM_PRESETS
+        _source = "current" if args.fresh_osm else args.osm_source
+        args.osrm_url = OSM_PRESETS[_source]["osrm_url"]
+        print(f"[OSM] zdroj: {_source} | OSRM={args.osrm_url}")
 
     if args.result_dir:
         result_dir = Path(args.result_dir)

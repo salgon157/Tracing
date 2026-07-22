@@ -30,7 +30,7 @@ import pandas as pd
 import requests
 
 import vrp_solver_lines_v6 as solver
-from osm_routing import add_osm_args, apply_osm_source
+from osm_routing import add_osm_args, apply_osm_source, resolve_osm_source
 
 
 DEFAULT_DEPOTS = ("CB", "MO", "HK", "PR")
@@ -800,20 +800,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def ensure_routing_ready(args: argparse.Namespace) -> None:
-    osm_source = "current" if args.fresh_osm else "stable"
+    osm_source = resolve_osm_source(args)
     apply_osm_source(solver.CONFIG, osm_source)
     print(
         f"[OSM] source: {osm_source}"
-        f"{' (fresh)' if args.fresh_osm else ''}"
         f" | OSRM={solver.CONFIG['osrm_urls']['driving']}"
         f" | ORS={solver.CONFIG['osrm_urls']['driving-hgv']}"
     )
 
-    if args.fresh_osm:
-        from osrm_orchestrator import ensure_fresh_routing_ready
-
-        ensure_fresh_routing_ready()
-    else:
+    # Běh routing data nestahuje ani nepřestavuje (viz refresh_osm.py).
+    if True:
         osrm_ping_url = (
             f"{solver.CONFIG['osrm_url']}/route/v1/driving/"
             "14.4,50.0;14.5,50.1?overview=false"

@@ -39,7 +39,8 @@ from sklearn.cluster import KMeans
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
-from osm_routing import add_osm_args, apply_osm_source
+from osm_routing import (add_osm_args, apply_osm_source,
+                         resolve_osm_source, start_hint)
 
 SOLVER_VERSION = "v6"   # verze solveru — zvedni ručně při větších změnách logiky
 
@@ -2099,31 +2100,28 @@ def main():
     total_budget = CONFIG["total_time_budget_sec"]
     print(f"Budget: {total_budget // 60} min | Clusterů: {CONFIG['num_clusters']}")
 
-    # ── Volba OSM routing instance (stable vs current) ─────────────────────
-    osm_source = "current" if args.fresh_osm else "stable"
+    # ── Volba OSM routing instance (current = default, stable = na vyžádání) ──
+    osm_source = resolve_osm_source(args)
     apply_osm_source(CONFIG, osm_source)
     print(f"[OSM] zdroj: {osm_source}"
-          f"{' (fresh)' if args.fresh_osm else ''}"
           f"  | OSRM={CONFIG['osrm_urls']['driving']}"
           f"  | ORS={CONFIG['osrm_urls']['driving-hgv']}")
 
-    # ── Preflight: zajisti že routing instance odpovídá ──────────────────
-    # Pro --fresh-osm: orchestrator stáhne aktuální OSM data a nastartuje
-    # Docker kontejnery (osrm-current, ors-current). Pro stable: jen ping.
-    if args.fresh_osm:
-        from osrm_orchestrator import ensure_fresh_routing_ready
-        ensure_fresh_routing_ready()
-    else:
-        _osrm_ping_url = (
-            f"{CONFIG['osrm_url']}/route/v1/driving/14.4,50.0;14.5,50.1?overview=false"
+    # ── Preflight: jen ověř, že instance odpovídá ────────────────────────
+    # Běh routing data ZÁMĚRNĚ nestahuje ani nepřestavuje — jinak by se
+    # 30–60minutový rebuild spustil uprostřed plánování před uzávěrkou.
+    # Přestavba je samostatný krok: python refresh_osm.py (typicky týdně).
+    _osrm_ping_url = (
+        f"{CONFIG['osrm_url']}/route/v1/driving/14.4,50.0;14.5,50.1?overview=false"
+    )
+    try:
+        requests.get(_osrm_ping_url, timeout=2)
+    except requests.exceptions.RequestException:
+        raise SystemExit(
+            f"\n[CHYBA] Routing instance '{osm_source}' ({CONFIG['osrm_url']}) "
+            f"neodpovídá.\n"
+            f"        Nastartuj ji:  {start_hint(osm_source)}"
         )
-        try:
-            requests.get(_osrm_ping_url, timeout=2)
-        except requests.exceptions.RequestException:
-            raise SystemExit(
-                f"\n[CHYBA] Routing instance ({CONFIG['osrm_url']}) neodpovídá.\n"
-                f"        Spusť Docker kontejner: scripts/start_osrm_stable.bat"
-            )
 
     # Routing instance je nahoře — spusť integrační testy ORS vs OSRM.
     run_routing_tests(

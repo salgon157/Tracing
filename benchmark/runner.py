@@ -50,7 +50,7 @@ os.environ["SKIP_STARTUP_TESTS"] = "1"
 
 import numpy as np
 
-from osm_routing import add_osm_args, apply_osm_source
+from osm_routing import add_osm_args, apply_osm_source, resolve_osm_source
 
 try:
     import vrp_solver_lines_v6 as S
@@ -754,16 +754,19 @@ Doporučený postup (dvě fáze):
         "--report", action="store_true",
         help="Jen zobrazit výsledky z logu, nespouštět solver",
     )
-    add_osm_args(parser)
+    # Benchmark = měření výkonnosti algoritmu → zamrzlá mapa (stable),
+    # aby byla měření porovnatelná napříč časem.
+    add_osm_args(parser, default="stable")
     args = parser.parse_args()
 
     # ── Volba OSM routing instance (stable vs current) ────────────────────────
     # Mutuje S.CONFIG (importovaný modul vrp_solver_lines_v6) — runner pak při
     # každém běhu solveru použije správné URL bez dalšího zásahu.
-    apply_osm_source(S.CONFIG, "current" if args.fresh_osm else "stable")
+    osm_source = resolve_osm_source(args)
+    apply_osm_source(S.CONFIG, osm_source)
     if not args.report:
         # V report módu nesoláme nic, takže výpis URL by jen rušil
-        print(f"[OSM] zdroj: {'current (fresh)' if args.fresh_osm else 'stable'}"
+        print(f"[OSM] zdroj: {osm_source}"
               f"  | OSRM={S.CONFIG['osrm_urls']['driving']}"
               f"  | ORS={S.CONFIG['osrm_urls']['driving-hgv']}")
 
@@ -792,12 +795,8 @@ Doporučený postup (dvě fáze):
     if not args.datasets:
         parser.error("--datasets je povinný (nebo použij --report bez --datasets pro přehled logu)")
 
-    # Pro --fresh-osm: orchestrator zajistí čerstvá data + běžící Docker
-    # kontejnery (osrm-current, ors-current). Volá se až teď, abychom v report
-    # módu nepřekáželi. Pro stable cesta nedělá nic — uživatel řídí ručně.
-    if args.fresh_osm:
-        from osrm_orchestrator import ensure_fresh_routing_ready
-        ensure_fresh_routing_ready()
+    # Routing data se tu NEPŘESTAVUJÍ — instance musí běžet předem
+    # (stable: docker start osrm-server ors-hgv; přestavba: refresh_osm.py).
 
     orders_files  = [Path(f) for f in args.datasets]
     vehicles_file = Path(args.vehicles_file)

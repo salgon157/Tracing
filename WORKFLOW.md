@@ -67,28 +67,43 @@ python prepare_inputs_v6.py CB --allow-drops   # vědomě pokračovat i s vadný
 
 ---
 
-## 2. Routing instance (Docker) — stable vs fresh
+## 2. Routing instance (Docker) — current vs stable
 
-Solver potřebuje běžící routing (OSRM pro osobní, ORS pro `driving-hgv` kamiony).
+Existují DVĚ mapy. Provozní běhy jedou na čerstvé, benchmarky na zamrzlé.
 
-### STABLE (default) — ruční, neměnná data `C:\osrm`
-Musí běžet kontejnery na portech **5000 / 8080**:
+| preset | složka | porty | kontejnery | kdo ho používá |
+|---|---|---|---|---|
+| **current** (default) | `C:\osrm_current` | 5001 / 8081 | `osrm-current`, `ors-current` | denní běh, predikce, vizualizace |
+| **stable** | `C:\osrm` | 5000 / 8080 | `osrm-server`, `ors-hgv` | benchmarky (měření výkonnosti algoritmu) |
+
+**Běh routing data NIKDY nestahuje ani nepřestavuje.** Jen ověří, že instance
+odpovídá — jinak by se 30–60minutový rebuild spustil uprostřed plánování před
+uzávěrkou. Přestavba je samostatný krok (viz níže).
+
 ```powershell
-scripts\start_osrm_stable.bat
+python vrp_solver_lines_v6.py --orders-file ...                      # current (default)
+python vrp_solver_lines_v6.py --orders-file ... --osm-source stable  # zamrzlá mapa
 ```
-Solver bez přepínače použije stable a jen ověří dostupnost (preflight ping).
 
-### FRESH (`--fresh-osm`) — čerstvá OSM data, self-contained
+`--fresh-osm` zůstává jako zastaralý alias pro `--osm-source current`.
+
+### Přestavba čerstvé mapy — `refresh_osm.py` (typicky 1× týdně)
+
 ```powershell
-python vrp_solver_lines_v6.py --fresh-osm --orders-file data/prepared/CB/orders_CB_2026-04-29.csv
+python refresh_osm.py                # stáhne nová data (jsou-li >7 dní) + přestaví + restartuje kontejnery
+python refresh_osm.py --check        # jen zjistí stáří dat
+python refresh_osm.py --skip-update  # jen nastartuje/opraví kontejnery
+python refresh_osm.py --force        # přestaví i čerstvá data
 ```
-Přepínač `--fresh-osm` **automaticky**:
-1. Zkontroluje stáří OSM dat — pokud > **7 dní**, stáhne nová z Geofabriku.
-2. Nastartuje / opraví Docker kontejnery `osrm-current` (5001) a `ors-current` (8081).
-3. Persistentní ORS graph cache (named volume) — rebuild jen po novém PBF (~5 min).
-4. Spustí integrační routing testy, pak solver.
 
-Stable instance (`C:\osrm`, 5000/8080) zůstává **nedotčená**.
+Pusť v klidném okně (neděle večer). Na serveru naplánovaná úloha.
+Stabilní instance (`C:\osrm`) se **nikdy nedotkne** — je to zamrzlá mapa,
+díky které jsou benchmarky porovnatelné napříč časem.
+
+### Proč zrovna takhle
+- **denní plán i predikce = current** → počítají podle aktuální mapy a jsou
+  navzájem porovnatelné (predikce vs. realita v rámci téhož dne)
+- **benchmark = stable** → měříš algoritmus, ne změny v mapě
 
 ---
 
@@ -98,13 +113,13 @@ Stable instance (`C:\osrm`, 5000/8080) zůstává **nedotčená**.
 |---|---|
 | `--budget-min 5` | Časový budget solveru v minutách (default 30). Rychlé porovnávací běhy. |
 | `--output-dir CESTA` | Ruční výstupní složka (jinak auto-detekce). Nutné pro porovnávací běhy, ať se nepřepíšou. |
-| `--force-matrix` | **Nouzový** přepínač — vypne limit nedosažitelných párů pro všechny profily. Běžně NENÍ potřeba: limity jsou per profil (`driving` 1,5 %, `driving-hgv` 5 %) a pokrývají i Prahu. |
+| `--force-matrix` | **Nouzový** přepínač — vypne limit nedosažitelných párů pro všechny profily. Běžně NENÍ potřeba: limity jsou per profil (`driving` 0,1 %, `driving-hgv` 5 %) a pokrývají i Prahu. |
 | `--allow-profile-fallback` | Dovol tichý fallback kamionů na osobní profil když ORS selže. **DEFAULT je hard-fail** (jinak by kamiony jely po špatných trasách). Používej jen vědomě. |
 | `--zone-label CB` | Popisek zóny do výstupů (jinak z dat). |
 
-**Příklad — Praha přes fresh-osm:**
+**Příklad — reprodukce staršího výsledku na zamrzlé mapě:**
 ```powershell
-python vrp_solver_lines_v6.py --fresh-osm --orders-file data/prepared/PR/orders_PR_2026-04-29.csv
+python vrp_solver_lines_v6.py --osm-source stable --orders-file data/prepared/PR/orders_PR_2026-04-29.csv
 ```
 
 **Příklad — porovnání 5 vs 30 min (bez přepsání):**
@@ -124,7 +139,7 @@ python vrp_solver_lines_all_depots_v6.py --date 2026-04-29 --budget-min 5
 python vrp_solver_lines_all_depots_v6.py --dry-run          # jen ověří vstupy
 ```
 Přepínače: `--depots CB,MO,HK,PR`, `--budget-ratios 0.35,0.25,0.40`,
-`--force-matrix`, `--fresh-osm`, `--clusters auto`, `--workers N`.
+`--force-matrix`, `--osm-source current|stable`, `--clusters auto`, `--workers N`.
 
 ---
 
@@ -146,7 +161,9 @@ automaticky. Config bez PII → **je verzován**.
 - `start_cost_kc` — **fixní náklad za výjezd vozidla** (Kč, absolutně; modeluje
   mzdu řidiče / amortizaci). Per-type, takže dražší řidiče kamionů lze nastavit
   zvlášť. `0` = žádný fixní náklad.
-- `count_block_{DEPOT}` — počet aut daného typu pro depo.
+- `available_count` — počet aut daného typu (celofiremní sdílený pool).
+  Starý `count_block_{DEPOT}` byl fikce a je odstraněn.
+- Předchozí verze souboru: `data/static/vehicle_types_archiv/`.
 
 ---
 
