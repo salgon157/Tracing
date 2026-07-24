@@ -31,6 +31,16 @@ PREPARED_ROOT = DATA_ROOT / "prepared"
 RESULTS_ROOT  = DATA_ROOT / "results"
 RUN_LOG_PATH  = RESULTS_ROOT / "run_log.jsonl"
 
+# Predikční strom (paralelní k ostrému, viz predict_day.py / compare_prediction.py)
+PREDICTION_ROOT        = DATA_ROOT / "prediction"
+PREDICTION_RESULTS     = PREDICTION_ROOT / "results"
+PREDICTION_RUN_LOG     = PREDICTION_RESULTS / "run_log.jsonl"
+PREDICTION_COMPARISON  = PREDICTION_RESULTS / "comparison.jsonl"
+
+# Flotila a její archiv (config bez PII, verzovaný)
+VEHICLE_TYPES_PATH  = DATA_ROOT / "static" / "vehicle_types.csv"
+VEHICLE_TYPES_ARCHIV = DATA_ROOT / "static" / "vehicle_types_archiv"
+
 WEBUI_DIR  = Path(__file__).resolve().parents[1]   # .../webui
 STATIC_DIR = WEBUI_DIR / "static"
 JOBS_DIR   = WEBUI_DIR / "jobs"                     # runtime, gitignored

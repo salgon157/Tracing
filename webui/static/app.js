@@ -66,6 +66,23 @@ function fmtBytes(n) {
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " kB";
   return (n / 1024 / 1024).toFixed(1) + " MB";
 }
+function fmtNum(n) {
+  if (n == null || n === "") return "";
+  return Number(n).toLocaleString("cs-CZ", { maximumFractionDigits: 0 });
+}
+function fmtKc(n) {
+  if (n == null || n === "") return "";
+  return Number(n).toLocaleString("cs-CZ", { maximumFractionDigits: 0 });
+}
+function sgn(n) {
+  if (n == null) return "?";
+  const v = Number(n);
+  return (v > 0 ? "+" : "") + v.toLocaleString("cs-CZ", { maximumFractionDigits: 0 });
+}
+function mixStr(mix) {
+  if (!mix) return "";
+  return Object.entries(mix).map(([k, v]) => `${k}×${v}`).join(", ");
+}
 const TERMINAL = ["success", "failed", "cancelled", "interrupted"];
 
 /* ── Job detail + živý log ───────────────────────────────────────────────── */
@@ -148,7 +165,8 @@ async function watchJob(jobId, container, onDone) {
 
 /* ── Taby ────────────────────────────────────────────────────────────────── */
 
-const TABS = ["denni", "benchmarky", "vysledky", "uzavirky", "ulohy"];
+const TABS = ["denni", "predikce", "benchmarky", "vysledky", "uzavirky",
+              "flotila", "prostredi", "ulohy"];
 function activateTab(name) {
   if (!TABS.includes(name)) name = "denni";
   document.querySelectorAll(".tabs a").forEach(a =>
@@ -156,9 +174,12 @@ function activateTab(name) {
   document.querySelectorAll(".tab-panel").forEach(p =>
     p.classList.toggle("active", p.id === "tab-" + name));
   if (name === "denni") Daily.onShow();
+  if (name === "predikce") Prediction.onShow();
   if (name === "benchmarky") Bench.onShow();
   if (name === "vysledky") Results.onShow();
   if (name === "uzavirky") Closures.onShow();
+  if (name === "flotila") Fleet.onShow();
+  if (name === "prostredi") Env.onShow();
   if (name === "ulohy") Jobs.onShow();
 }
 window.addEventListener("hashchange", () => activateTab(location.hash.slice(1)));
@@ -558,13 +579,147 @@ const Closures = {
   },
 };
 
+/* ── Predikce ────────────────────────────────────────────────────────────── */
+
+const Prediction = {
+  init() {
+    document.getElementById("pred-run").onclick = () => this.run();
+    document.getElementById("pred-refresh").onclick = () => this.loadRuns();
+    document.getElementById("pred-cmp-run").onclick = () => this.runCompare();
+    document.getElementById("pred-cmp-refresh").onclick = () => this.loadComparison();
+  },
+  onShow() { this.loadRuns(); this.loadComparison(); },
+  async run() {
+    const depots = document.getElementById("pred-depots").value
+      .split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    const budget = document.getElementById("pred-budget").value.trim();
+    try {
+      const job = await apiPost("/api/prediction/run", {
+        depots,
+        budget_min: budget ? Number(budget) : null,
+        visualize: document.getElementById("pred-visualize").checked,
+        osm_source: document.getElementById("pred-stable").checked ? "stable" : "current",
+        skip_startup_tests: false,
+      });
+      watchJob(job.id, document.getElementById("pred-job"), () => this.loadRuns());
+    } catch (e) { toast(detailText(e)); }
+  },
+  async loadRuns() {
+    const el = document.getElementById("pred-runs");
+    try {
+      const runs = await apiGet("/api/prediction/runs");
+      if (!runs.length) { el.innerHTML = `<p class="muted">Zatím žádná predikce.</p>`; return; }
+      el.innerHTML = `<table><thead><tr><th>Datum</th><th>Depo</th><th>Čas</th>
+          <th>Obj.</th><th>Trasy</th><th>Auta</th><th>Cena Kč</th><th>km</th></tr></thead><tbody>${
+        runs.map(r => `<tr>
+          <td>${esc(r.date)}</td><td>${esc(r.zone)}</td><td class="hint">${esc(r.stamp)}</td>
+          <td>${esc(r.orders)}</td><td>${esc(r.lines)}</td>
+          <td class="hint">${esc(mixStr(r.vehicle_mix))}</td>
+          <td>${fmtKc(r.cost_kc)}</td><td>${fmtNum(r.total_km)}</td></tr>`).join("")}</tbody></table>`;
+    } catch (e) { el.textContent = detailText(e); }
+  },
+  async runCompare() {
+    const date = document.getElementById("pred-cmp-date").value.trim();
+    try {
+      const job = await apiPost("/api/prediction/compare", { date: date || null });
+      watchJob(job.id, document.getElementById("pred-cmp-job"), () => this.loadComparison());
+    } catch (e) { toast(detailText(e)); }
+  },
+  async loadComparison() {
+    const el = document.getElementById("pred-comparison");
+    const date = document.getElementById("pred-cmp-date").value.trim();
+    try {
+      const cs = await apiGet("/api/prediction/comparison" + (date ? "?date=" + encodeURIComponent(date) : ""));
+      if (!cs.length) { el.innerHTML = `<p class="muted">Zatím žádné porovnání. Klikni na „Přepočítat".</p>`; return; }
+      el.innerHTML = `<table><thead><tr><th>Datum</th><th>Depo</th>
+          <th>Trasy P/R</th><th>Malá P/R</th><th>Velká P/R</th><th>Obj. P/R</th><th>Cena P/R (Δ)</th></tr></thead><tbody>${
+        cs.map(c => {
+          const p = c.prediction || {}, r = c.real || {}, d = c.delta || {};
+          const pr = (a, b, dd) => `${a ?? "?"}/${b ?? "?"} <span class="hint">(${sgn(dd)})</span>`;
+          return `<tr>
+            <td>${esc(c.date)}</td><td>${esc(c.zone)}</td>
+            <td>${pr(p.lines_count, r.lines_count, d.lines)}</td>
+            <td>${pr(p.mala, r.mala, d.mala)}</td>
+            <td>${pr(p.velka, r.velka, d.velka)}</td>
+            <td>${esc(p.orders_count)}/${esc(r.orders_count)}</td>
+            <td>${fmtKc(p.total_cost_kc)} / ${fmtKc(r.total_cost_kc)} <span class="hint">(${sgn(d.cost_kc)})</span></td>
+          </tr>`;
+        }).join("")}</tbody></table>`;
+    } catch (e) { el.textContent = detailText(e); }
+  },
+};
+
+/* ── Flotila ─────────────────────────────────────────────────────────────── */
+
+const Fleet = {
+  init() { document.getElementById("fleet-refresh").onclick = () => this.load(); },
+  onShow() { this.load(); },
+  async load() {
+    const sumEl = document.getElementById("fleet-summary");
+    const tblEl = document.getElementById("fleet-table");
+    try {
+      const d = await apiGet("/api/fleet");
+      const s = d.summary || {};
+      sumEl.innerHTML = `<strong>${esc(s.vehicles_total)}</strong> vozidel
+        (${esc(s.small_count)} malých + ${esc(s.large_count)} velkých),
+        ${esc(s.types)} typů. <span class="hint">Ceny: ${esc(s.cost_source || "?")} ·
+        počty: ${esc(s.count_source || "?")}</span>`;
+      const cols = ["type_name", "max_kg", "cost_per_km", "start_cost_kc",
+                    "available_count", "profiles", "osrm_profile"];
+      const hdr = { type_name: "Typ", max_kg: "Kg", cost_per_km: "Kč/km",
+                    start_cost_kc: "Fix Kč", available_count: "Počet",
+                    profiles: "Kategorie", osrm_profile: "Routing" };
+      tblEl.innerHTML = `<table><thead><tr>${cols.map(c => `<th>${hdr[c]}</th>`).join("")}</tr></thead><tbody>${
+        (d.rows || []).map(r => `<tr>${cols.map(c => `<td>${esc(r[c])}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    } catch (e) { tblEl.textContent = detailText(e); }
+    const arcEl = document.getElementById("fleet-archive");
+    try {
+      const arc = await apiGet("/api/fleet/archive");
+      arcEl.innerHTML = arc.length
+        ? arc.map(a => `${esc(a.name)}`).join("<br>")
+        : "Žádné archivované verze.";
+    } catch (e) { arcEl.textContent = detailText(e); }
+  },
+};
+
+/* ── Prostředí ───────────────────────────────────────────────────────────── */
+
+const Env = {
+  init() { document.getElementById("env-refresh").onclick = () => this.load(); },
+  onShow() { this.load(); },
+  async load() {
+    const el = document.getElementById("env-status");
+    try {
+      const d = await apiGet("/api/env");
+      const dot = ok => ok
+        ? '<span class="status-pill st-success">běží</span>'
+        : '<span class="status-pill st-failed">neběží</span>';
+      el.innerHTML = (d.instances || []).map(i => `
+        <div class="card">
+          <h3>${esc(i.source)}${i.is_default ? ' <span class="hint">(default pro provozní běhy)</span>' : ""}
+            ${i.ready ? '<span class="status-pill st-success">připraveno</span>'
+                      : '<span class="status-pill st-failed">nedostupné</span>'}</h3>
+          <table><tbody>
+            <tr><td>OSRM (${esc(i.osrm_url)})</td><td>${dot(i.osrm_ok)}</td></tr>
+            <tr><td>ORS (${esc(i.ors_url)})</td><td>${dot(i.ors_ok)}</td></tr>
+          </tbody></table>
+          ${!i.ready && i.start_hint ? `<p class="hint">Nastartovat: <code>${esc(i.start_hint)}</code></p>` : ""}
+        </div>`).join("") ||
+        `<p class="muted">Žádné routing instance v konfiguraci.</p>`;
+    } catch (e) { el.textContent = detailText(e); }
+  },
+};
+
 /* ── Init ────────────────────────────────────────────────────────────────── */
 
 (async function init() {
   await Daily.init();
+  Prediction.init();
   Bench.init();
   Results.init();
   Closures.init();
+  Fleet.init();
+  Env.init();
   Jobs.init();
   pollHealth();
   activateTab(location.hash.slice(1) || "denni");

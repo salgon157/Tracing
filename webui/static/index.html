@@ -14,9 +14,12 @@
 
   <nav class="tabs">
     <a href="#denni"     data-tab="denni">Denní běh</a>
+    <a href="#predikce"  data-tab="predikce">Predikce</a>
     <a href="#benchmarky" data-tab="benchmarky">Benchmarky</a>
     <a href="#vysledky"  data-tab="vysledky">Výsledky</a>
     <a href="#uzavirky"  data-tab="uzavirky">Uzavírky</a>
+    <a href="#flotila"   data-tab="flotila">Flotila</a>
+    <a href="#prostredi" data-tab="prostredi">Prostředí</a>
     <a href="#ulohy"     data-tab="ulohy">Úlohy</a>
   </nav>
 
@@ -210,6 +213,81 @@
       </div>
 
       <div id="clo-job" class="job-detail hidden"></div>
+    </section>
+
+    <!-- ── PREDIKCE ──────────────────────────────────────────── -->
+    <section id="tab-predikce" class="tab-panel">
+      <h2>Predikce</h2>
+
+      <div class="card">
+        <h3>Spustit predikci</h3>
+        <p class="hint">Normální pipeline nad <code>data/prediction/</code> —
+          <strong>ostré historie se nedotkne</strong>. Depa bez zadání = všechna,
+          která mají predikční soubor v <code>aktivni/</code>.</p>
+        <div class="row">
+          <label>Depa:
+            <input type="text" id="pred-depots" placeholder="prázdné = všechna" style="width:12em">
+          </label>
+          <label>Budget (min):
+            <input type="number" id="pred-budget" placeholder="5" min="1" step="1" style="width:6em">
+          </label>
+        </div>
+        <div class="checks">
+          <label><input type="checkbox" id="pred-visualize" checked> Vygenerovat mapy</label>
+          <label><input type="checkbox" id="pred-stable"> Zamrzlá mapa (<code>--osm-source stable</code>)</label>
+        </div>
+        <div class="row"><button id="pred-run" class="btn-primary">Spustit predikci</button></div>
+      </div>
+
+      <div id="pred-job" class="job-detail hidden"></div>
+
+      <div class="card">
+        <h3>Výsledky predikce</h3>
+        <div class="row">
+          <button id="pred-refresh" class="btn-secondary">Obnovit</button>
+        </div>
+        <div id="pred-runs">Načítám…</div>
+      </div>
+
+      <div class="card">
+        <h3>Porovnání s realitou</h3>
+        <p class="hint">Spáruje poslední predikci a ostrý běh přes (depo, datum).
+          Δ = predikce − realita. Zapíše se do <code>comparison.jsonl</code>.</p>
+        <div class="row">
+          <label>Datum:
+            <input type="text" id="pred-cmp-date" placeholder="všechny dny" style="width:11em">
+          </label>
+          <button id="pred-cmp-run" class="btn-secondary">Přepočítat porovnání</button>
+          <button id="pred-cmp-refresh" class="btn-secondary">Jen načíst</button>
+        </div>
+        <div id="pred-cmp-job" class="job-detail hidden"></div>
+        <div id="pred-comparison"></div>
+      </div>
+    </section>
+
+    <!-- ── FLOTILA ───────────────────────────────────────────── -->
+    <section id="tab-flotila" class="tab-panel">
+      <h2>Flotila &amp; ceny</h2>
+      <p class="hint">Soubor <code>data/static/vehicle_types.csv</code> — s čím
+        solver počítá náklady. <strong>Jen ke čtení</strong>; editace se dělá mimo web.</p>
+      <div class="row"><button id="fleet-refresh" class="btn-secondary">Obnovit</button></div>
+      <div id="fleet-summary" class="muted"></div>
+      <div id="fleet-table"></div>
+
+      <div class="card">
+        <h3>Archiv verzí</h3>
+        <div id="fleet-archive" class="hint">Načítám…</div>
+      </div>
+    </section>
+
+    <!-- ── PROSTŘEDÍ ─────────────────────────────────────────── -->
+    <section id="tab-prostredi" class="tab-panel">
+      <h2>Prostředí (routing)</h2>
+      <p class="hint">Stav OSRM/ORS instancí. Provozní běhy jedou na
+        <strong>current</strong>, benchmarky na <strong>stable</strong>.
+        Panel jen pinguje — nic nespouští.</p>
+      <div class="row"><button id="env-refresh" class="btn-secondary">Obnovit</button></div>
+      <div id="env-status">Načítám…</div>
     </section>
 
     <!-- ── ÚLOHY ─────────────────────────────────────────────── -->

@@ -14,11 +14,15 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import api_closures, api_jobs, config, history, jobs, scan, staging
+from . import (api_closures, api_env, api_fleet, api_jobs, api_prediction,
+               config, history, jobs, scan, staging)
 
 app = FastAPI(title="VRP Plánovač — webové rozhraní", version="0.1.0")
 app.include_router(api_jobs.router)
 app.include_router(api_closures.router)
+app.include_router(api_prediction.router)
+app.include_router(api_env.router)
+app.include_router(api_fleet.router)
 
 
 @app.get("/api/health")

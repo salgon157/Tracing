@@ -56,6 +56,31 @@ def build_visualize(result_rel_dir: str, *,
     return argv
 
 
+def build_predict_day(*, depots=None, budget_min=None, no_visualize: bool = False,
+                      osm_source=None, skip_tests: bool = False) -> list[str]:
+    """predict_day.py — tenký wrapper (prepare+solve+visualize nad data/prediction).
+    depots = seznam kódů; prázdné → skript si najde všechna s daty."""
+    argv = [PY, "predict_day.py"]
+    for d in (depots or []):
+        argv.append(d)
+    if budget_min is not None:   argv += ["--budget", _fmt_num(budget_min)]
+    if osm_source:               argv += ["--osm-source", str(osm_source)]
+    if no_visualize:             argv.append("--no-visualize")
+    if skip_tests:               argv.append("--skip-tests")
+    return argv
+
+
+def build_compare_prediction(*, date=None, depots=None, pred_stamp=None,
+                             no_write: bool = False) -> list[str]:
+    """compare_prediction.py — porovná predikci s realitou (zapíše comparison.jsonl)."""
+    argv = [PY, "compare_prediction.py"]
+    if date:         argv += ["--date", str(date)]
+    if depots:       argv += ["--depots", str(depots)]
+    if pred_stamp:   argv += ["--pred-stamp", str(pred_stamp)]
+    if no_write:     argv.append("--no-write")
+    return argv
+
+
 def build_all_depots(*, date=None, depots=None, budget_min=None, budget_ratios=None,
                      clusters=None, workers=None, seed_restarts=None,
                      force_matrix: bool = False, fresh_osm: bool = False,
