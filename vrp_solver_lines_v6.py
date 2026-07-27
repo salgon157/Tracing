@@ -11,9 +11,12 @@ Depot kódy: CB (České Budějovice), HK (Hradec Králové), MO (Morava),
             PR (Praha), OM (Ovoce a mléko — zatím bez RiRo dat/lokací).
 
 Statické soubory:
-  data/static/vehicle_types.csv    → jeden řádek = jeden typ auta + počty per-depot
-                                     (count_block_CB / _HK / _MO / _PR / _OM)
-  data/static/locations_lookup.csv → GPS souřadnice lokací
+  data/static/vehicle_types.csv → jeden řádek = jeden typ auta (kapacita, Kč/km,
+                                  fixní náklad, available_count = sdílený pool)
+  data/static/closures.json     → aktivní uzavírky (objízdky)
+
+Pozn.: data/static/locations_*.csv už solver NEPOUŽÍVÁ — GPS i předpočítaný
+čas zastávky chodí přímo v RiRo souboru z ESO9 (od 17. 7. 2026).
 
 Poznámky:
 - Depot kód je businessové omezení a respektuje se už ve vstupním kroku.
