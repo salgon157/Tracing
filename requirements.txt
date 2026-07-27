@@ -1,0 +1,25 @@
+# VRP plánovač — Python závislosti
+# Vyvíjeno a testováno na Python 3.14.0 (Windows).
+# Instalace:  pip install -r requirements.txt
+#
+# Verze jsou ty, na kterých projekt reálně běží (červenec 2026).
+# Horní meze nejsou nastavené — při upgradu ověř `pytest tests webui/tests`.
+
+# ── Solver a výpočty ─────────────────────────────────────────────
+ortools>=9.15            # OR-Tools routing (jádro VRP solveru)
+numpy>=2.0               # matice vzdáleností/časů
+pandas>=2.0              # CSV/XLSX výstupy plánů
+scikit-learn>=1.5        # KMeans clustering (seed partition)
+openpyxl>=3.1            # zápis lines_plan.xlsx (backend pandas)
+
+# ── Routing (HTTP klient k OSRM/ORS) ─────────────────────────────
+requests>=2.32
+
+# ── Webové rozhraní (webui/) ─────────────────────────────────────
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.0
+python-multipart>=0.0.9  # upload RiRo souborů přes formulář
+
+# ── Testy ────────────────────────────────────────────────────────
+pytest>=8.0
