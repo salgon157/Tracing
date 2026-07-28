@@ -125,8 +125,13 @@ class TestCheckRowFormat:
             check_row_format(_raw_cols(n=32), 5)
 
     def test_wrong_column_count_rejected(self):
-        with pytest.raises(ValueError, match="nemá 30 sloupců"):
+        with pytest.raises(ValueError, match="nemá 31 sloupců"):
             check_row_format(_raw_cols(n=25), 5)
+
+    def test_previous_30col_format_rejected(self):
+        # formát ze 17.–23.7.2026: má SEC i GPS, ale chybí sloupec AE
+        with pytest.raises(ValueError, match="17"):
+            check_row_format(_raw_cols(n=30), 5)
 
     def test_error_mentions_line_number(self):
         with pytest.raises(ValueError, match="Řádek 42"):
@@ -187,9 +192,12 @@ class TestParseGps:
 def _make_raw_row(loc_code="loc1", from_sec="28800", to_sec="43200",
                   payload="KG:300#SEC:600", order_no="ORD001",
                   customer="Firma s.r.o.", note="", code_a="",
-                  lon="15.586947", lat="49.395796", city="Jihlava", line=1):
+                  lon="15.586947", lat="49.395796", city="Jihlava", line=1,
+                  delivery_date="20260728", prev_kg="-1000"):
     return {
         "_line": line,
+        "delivery_date": delivery_date,
+        "prev_kg": prev_kg,
         "location_code": loc_code,
         "customer_name": customer,
         "city": city,

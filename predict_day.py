@@ -67,7 +67,10 @@ def build_depot_commands(depot: str, date_str: str, stamp: str, *,
     orders  = root / "prepared" / depot / f"orders_{depot}_{date_str}.csv"
     out_dir = root / "results" / depot / f"{date_str}_{stamp}"
 
-    prepare = [PY, "prepare_inputs_v6.py", depot, "--data-root", root.as_posix()]
+    # --prediction: objednávky s dřívějším datem rozvozu jsou dopredikované
+    # (v ostrém běhu by to byla chyba exportu) a dostanou koeficient kg.
+    prepare = [PY, "prepare_inputs_v6.py", depot,
+               "--data-root", root.as_posix(), "--prediction"]
 
     solve = [PY, "vrp_solver_lines_v6.py",
              "--orders-file", orders.as_posix(),

@@ -5,9 +5,8 @@ prepare_inputs_v6.py — RiRo -> solver-ready orders per depot
 
 Použití:
   python prepare_inputs_v6.py CB
-  python prepare_inputs_v6.py HK
-  python prepare_inputs_v6.py CB --data-root data/prediction   (predikční režim)
   python prepare_inputs_v6.py CB --allow-drops                 (jeď i s vadnými řádky)
+  python prepare_inputs_v6.py CB --data-root data/prediction --prediction
 
 Vstupy:
   {data-root}/input/{DEPOT}/aktivni/riro-YYYYMMDD-{DEPOT}.csv   (právě jeden soubor)
@@ -16,8 +15,14 @@ Výstupy:
   {data-root}/prepared/{DEPOT}/orders_{DEPOT}_{YYYY-MM-DD}.csv
   {data-root}/prepared/{DEPOT}/prepare_stats_{DEPOT}_{YYYY-MM-DD}.json
 
-RiRo z ESO9 je jediný zdroj pravdy — nese GPS (sloupce R/S) i předpočítaný čas
-zastávky (SEC v payloadu). Statická data locations_*.csv už NEJSOU potřeba.
+RiRo z ESO9 je jediný zdroj pravdy — nese GPS (sloupce R/S), předpočítaný čas
+zastávky (SEC v payloadu), datum rozvozu (Y) i kg z minulého závozu (AE).
+Statická data locations_*.csv už NEJSOU potřeba.
+
+Predikční režim (--prediction): objednávky s DŘÍVĚJŠÍM datem rozvozu jsou
+dopredikované a jejich váha se přenásobí koeficientem nárůstu/poklesu kg
+spočítaným ze spárovaných objednávek. Bez tohoto flagu je jiné datum rozvozu
+chyba exportu a běh skončí.
 
 Přísný režim: když jakýkoliv řádek neprojde validací, skript vypíše které a proč
 a SKONČÍ CHYBOU — správně je jen když projdou všechny. --allow-drops to obejde.
@@ -43,19 +48,32 @@ COL_TW1_TO_SEC     = 12
 COL_LON            = 17    # R — dřív rezerva s -1000, od 17.7.2026 nese lon
 COL_LAT            = 18    # S — dřív rezerva s -1000, od 17.7.2026 nese lat
 COL_ORDER_NUMBER   = 23
+COL_DELIVERY_DATE  = 24    # Y — datum ROZVOZU (YYYYMMDD), ne datum zadání
 COL_NOTE           = 25
 COL_PAYLOAD_RAW    = 26    # "KG:51.475#SEC:261"
 COL_CODE_A         = 27
 COL_BLOCK_ID       = 28
-# Kontrola struktury: kolik polí musí řádek mít. Starý i finální formát mají
-# shodně 30 → formát se pozná podle OBSAHU (#SEC v payloadu), ne podle počtu.
-EXPECTED_COLS      = 30
+COL_PREV_KG        = 30    # AE — kg z minulého závozu; -1000 = minule nebyl
+# Kontrola struktury: kolik polí musí řádek mít. Formáty se překrývají
+# v počtu sloupců, proto se rozlišují i podle OBSAHU (#SEC v payloadu).
+EXPECTED_COLS      = 31    # od 28.7.2026: přibyl sloupec AE (kg z minula)
+PREVIOUS_COLS      = 30    # 17.–23.7.2026: stejné, ale bez AE
 TRANSITIONAL_COLS  = 32    # slepá ulička z 16.7.2026 (GPS nalepené na konec)
 EXPECTED_RECORD    = "RIRO_INPUT_LOCATIONSANDORDERS_V3.00"
 
 # Sanity rozsah ČR — chytí prohozené lat/lon i nesmyslné souřadnice
 LON_RANGE = (11.0, 20.0)
 LAT_RANGE = (47.0, 52.0)
+
+# Hodnota ve sloupci AE, když objednávka minulý závoz neměla.
+PREV_KG_NONE = -1000.0
+
+# Koeficient nárůstu/poklesu kg (jen predikční režim): suma dnes / suma minule
+# ze spárovaných objednávek. Ořez chrání před nesmyslným plánem ze špatných dat,
+# minimum párů před tím, aby pár výjimek určilo celý den.
+KG_COEF_MIN   = 0.5
+KG_COEF_MAX   = 2.0
+KG_COEF_MIN_PAIRS = 10
 
 DATA_DIR           = Path("data")
 INPUT_DIR          = DATA_DIR / "input"
@@ -128,6 +146,12 @@ def check_row_format(row: list, line_no: int) -> None:
             f"přechodný formát z 16.7.2026 (GPS nalepené na konci).\n"
             f"        Ten už není podporovaný. Exportuj finální formát z ESO9."
         )
+    if len(row) == PREVIOUS_COLS:
+        raise ValueError(
+            f"[CHYBA] Řádek {line_no} má {PREVIOUS_COLS} sloupců — to je formát "
+            f"ze 17.–23.7.2026, kterému chybí sloupec AE (kg z minulého závozu).\n"
+            f"        Exportuj aktuální formát z ESO9 ({EXPECTED_COLS} sloupců)."
+        )
     if len(row) != EXPECTED_COLS:
         raise ValueError(
             f"[CHYBA] Řádek {line_no} nemá {EXPECTED_COLS} sloupců, ale {len(row)}. "
@@ -182,11 +206,96 @@ def load_riro_csv(path: Path) -> list[dict]:
                 "lon": str(row[COL_LON]).strip(),
                 "lat": str(row[COL_LAT]).strip(),
                 "order_number": str(row[COL_ORDER_NUMBER]).strip(),
+                "delivery_date": str(row[COL_DELIVERY_DATE]).strip(),
                 "note": str(row[COL_NOTE]).strip(),
                 "payload_raw": str(row[COL_PAYLOAD_RAW]).strip(),
                 "code_a": str(row[COL_CODE_A]).strip(),
+                "prev_kg": str(row[COL_PREV_KG]).strip(),
             })
     return rows
+
+
+def parse_prev_kg(raw: str) -> float | None:
+    """kg z minulého závozu, nebo None když minule nebyl (-1000) / nevalidní."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if v == PREV_KG_NONE or v <= 0:
+        return None
+    return v
+
+
+def check_delivery_dates(raw_rows: list[dict], date_str: str,
+                         prediction: bool) -> list[dict]:
+    """Ověří sloupec Y (datum ROZVOZU) proti datu z názvu souboru.
+
+    Ostrý běh: jakékoli jiné datum je vada exportu → fatální chyba.
+    Predikce:  dřívější datum = dopredikovaná objednávka (vrátí se jejich seznam),
+               ale datum v budoucnu je vada i tady.
+
+    Vrací řádky označené jako dopredikované (v ostrém režimu vždy prázdné).
+    """
+    expected = date_str.replace("-", "")          # YYYY-MM-DD → YYYYMMDD
+    older, newer = [], []
+    for raw in raw_rows:
+        d = raw.get("delivery_date", "")
+        if not d or d == expected:
+            continue
+        (older if d < expected else newer).append(raw)
+
+    def _fail(rows: list[dict], popis: str) -> None:
+        ukazky = "\n".join(
+            f"          řádek {r['_line']:>4} | {r['order_number']} | "
+            f"{r['delivery_date']} | {r['location_code']}"
+            for r in rows[:5])
+        raise ValueError(
+            f"[CHYBA] Soubor obsahuje {len(rows)} objednávek {popis} "
+            f"(očekáváno {expected}, sloupec Y):\n{ukazky}"
+            + (f"\n          ... a dalších {len(rows) - 5}" if len(rows) > 5 else "")
+            + "\n        Sloupec Y je datum ROZVOZU a musí odpovídat datu závozu."
+              "\n        Oprav export z ESO9."
+        )
+
+    if newer:
+        _fail(newer, "s datem rozvozu v BUDOUCNU")
+    if older and not prediction:
+        _fail(older, "s JINÝM datem rozvozu")
+    return older if prediction else []
+
+
+def compute_kg_coefficient(raw_rows: list[dict]) -> dict:
+    """Koeficient nárůstu/poklesu kg = suma(dnes) / suma(minule).
+
+    Počítá se ze SPÁROVANÝCH objednávek — těch, které mají ve sloupci AE
+    kg z minulého závozu (tj. jely i minule). Ořezaný a s minimem párů,
+    aby pár výjimek nerozhodilo celý den.
+    """
+    kg_now = kg_prev = 0.0
+    pairs = 0
+    for raw in raw_rows:
+        prev = parse_prev_kg(raw.get("prev_kg", ""))
+        if prev is None:
+            continue
+        now = parse_payload(raw.get("payload_raw", "")).get("KG")
+        if now is None or now < 0:
+            continue
+        kg_now += now
+        kg_prev += prev
+        pairs += 1
+
+    raw_coef = kg_now / kg_prev if kg_prev > 0 else 1.0
+    applied = pairs >= KG_COEF_MIN_PAIRS and kg_prev > 0
+    coef = min(KG_COEF_MAX, max(KG_COEF_MIN, raw_coef)) if applied else 1.0
+    return {
+        "pairs": pairs,
+        "kg_now": round(kg_now, 1),
+        "kg_prev": round(kg_prev, 1),
+        "raw": round(raw_coef, 4),
+        "coefficient": round(coef, 4),
+        "applied": applied,
+        "clamped": applied and abs(coef - raw_coef) > 1e-9,
+    }
 
 def parse_gps(raw: dict) -> tuple[float, float] | None:
     """(lat, lon) ze sloupců R/S, nebo None když chybí/jsou mimo ČR.
@@ -201,13 +310,21 @@ def parse_gps(raw: dict) -> tuple[float, float] | None:
     return lat, lon
 
 
-def transform(raw_rows: list[dict], depot_code: str) -> tuple[list[dict], list[dict]]:
+def transform(raw_rows: list[dict], depot_code: str, *,
+              predicted_lines: set | None = None,
+              kg_coefficient: float = 1.0) -> tuple[list[dict], list[dict]]:
     """RiRo řádky → solver-ready objednávky.
 
     Vrací (orders, dropped). `dropped` nese pro každý vyřazený řádek důvod —
     volající rozhodne, jestli to je fatální (přísný režim) nebo jen varování.
     GPS i čas zastávky (SEC) jdou z riro; locations už se nepoužívají.
+
+    Predikční režim: `predicted_lines` je množina čísel řádků dopredikovaných
+    objednávek — jejich váha se přenásobí `kg_coefficient`. Čas zastávky (SEC)
+    se ZÁMĚRNĚ nemění: neznáme vzorec, kterým ho ESO9 počítá, a lineární
+    přepočet by byl nepřesný kvůli fixní složce (příjezd, papíry).
     """
+    predicted_lines = predicted_lines or set()
     orders: list[dict] = []
     dropped: list[dict] = []
 
@@ -252,6 +369,11 @@ def transform(raw_rows: list[dict], depot_code: str) -> tuple[list[dict], list[d
                  f"chybí/nevalidní KG: sloupec AA={raw['payload_raw']!r}")
             continue
 
+        # Dopredikovaná objednávka: přenásob váhu koeficientem (SEC beze změny).
+        is_predicted = raw.get("_line") in predicted_lines
+        if is_predicted and kg_coefficient != 1.0:
+            weight_kg = float(weight_kg) * kg_coefficient
+
         orders.append({
             "order_number": raw["order_number"],
             "location_code": raw["location_code"],
@@ -289,12 +411,15 @@ def save_orders(orders: list[dict], output_path: Path) -> None:
 
 def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
                         raw_rows: int, orders_count: int,
-                        dropped: list[dict]) -> dict:
+                        dropped: list[dict],
+                        prediction: bool = False,
+                        predicted_count: int = 0,
+                        kg_coef: dict | None = None) -> dict:
     """Bilance zpracování: kolik řádků riro prošlo a proč které vypadly."""
     def _count(reason: str) -> int:
         return sum(1 for d in dropped if d["reason"] == reason)
 
-    return {
+    stats = {
         "depot": depot,
         "date": date_str,
         "riro_file": riro_name,
@@ -306,6 +431,12 @@ def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
         "excluded_invalid_time_window_rows": _count("vadné časové okno"),
         "excluded_rows": dropped,
     }
+    if prediction:
+        stats["prediction"] = {
+            "predicted_orders": predicted_count,   # kolik jich má upravenou váhu
+            "kg_coefficient": kg_coef or {},
+        }
+    return stats
 
 
 def format_dropped_report(dropped: list[dict], raw_rows: int) -> str:
@@ -379,6 +510,11 @@ def main():
                         help="Pokračuj i když nějaký řádek neprojde validací. "
                              "DEFAULT je hard-fail — správně je jen když projdou "
                              "všechny řádky z ESO9.")
+    parser.add_argument("--prediction", action="store_true",
+                        help="Predikční režim: objednávky s DŘÍVĚJŠÍM datem rozvozu "
+                             "(sloupec Y) jsou dopredikované — jejich váha se "
+                             "přenásobí koeficientem nárůstu/poklesu kg. "
+                             "Bez tohoto flagu je jiné datum rozvozu chyba exportu.")
     args = parser.parse_args()
 
     depot_code = args.depot_code.upper()
@@ -387,14 +523,41 @@ def main():
     raw_rows = load_riro_csv(riro_path)
 
     print("=" * 64)
-    print("prepare_inputs_v6.py — RiRo -> orders per depot")
+    print("prepare_inputs_v6.py — RiRo -> orders per depot"
+          + ("  [PREDIKCE]" if args.prediction else ""))
     print("=" * 64)
     print(f"Depo:       {depot_code}")
     print(f"Datum:      {date_str}")
     print(f"Vstup:      {riro_path}")
     print(f"Raw rows:   {len(raw_rows)}")
 
-    orders, dropped = transform(raw_rows, depot_code)
+    # Sloupec Y = datum ROZVOZU. V ostrém běhu musí sedět na datum závozu,
+    # v predikci označuje dřívější datum dopredikované objednávky.
+    predicted_rows = check_delivery_dates(raw_rows, date_str, args.prediction)
+
+    kg_coef = {}
+    coefficient = 1.0
+    if args.prediction:
+        kg_coef = compute_kg_coefficient(raw_rows)
+        coefficient = kg_coef["coefficient"]
+        print(f"\nDopredikováno: {len(predicted_rows)} objednávek "
+              f"(dřívější datum rozvozu)")
+        print(f"Koeficient kg: {kg_coef['raw']:.3f} "
+              f"({kg_coef['kg_now']:,.0f} kg dnes / {kg_coef['kg_prev']:,.0f} kg minule, "
+              f"{kg_coef['pairs']} párů)")
+        if not kg_coef["applied"]:
+            print(f"  [!] Málo párů (< {KG_COEF_MIN_PAIRS}) — koeficient se NEPOUŽIJE (1.0)")
+        elif kg_coef["clamped"]:
+            print(f"  [!] Oříznuto na {coefficient:.3f} "
+                  f"(povolený rozsah {KG_COEF_MIN}–{KG_COEF_MAX})")
+        else:
+            print(f"  → aplikuje se {coefficient:.3f} na dopredikované objednávky")
+
+    orders, dropped = transform(
+        raw_rows, depot_code,
+        predicted_lines={r["_line"] for r in predicted_rows},
+        kg_coefficient=coefficient,
+    )
 
     # Přísný režim: ESO9 garantuje kompletní data, takže jakýkoliv vyřazený
     # řádek = problém ve zdroji, který má někdo opravit — ne tiše přejít.
@@ -419,6 +582,9 @@ def main():
     stats = build_prepare_stats(
         depot_code, date_str, riro_path.name,
         raw_rows=len(raw_rows), orders_count=len(orders), dropped=dropped,
+        prediction=args.prediction,
+        predicted_count=len(predicted_rows) if coefficient != 1.0 else 0,
+        kg_coef=kg_coef,
     )
     stats_file = output_dir / f"prepare_stats_{depot_code}_{date_str}.json"
     with open(stats_file, "w", encoding="utf-8") as f:

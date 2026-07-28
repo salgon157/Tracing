@@ -36,22 +36,24 @@ Pro ostatní depa vyměň `CB` → `HK` / `MO` / `PR`.
 - Výstupní složka se **auto-detekuje** z názvu orders souboru
   (`orders_CB_2026-04-29.csv` → `data/results/CB/2026-04-29/`).
 
-### Formát RiRo (finální, od 17. 7. 2026)
+### Formát RiRo (od 28. 7. 2026)
 
-RiRo z ESO9 je **jediný zdroj pravdy** — 30 sloupců, středníkem, bez hlavičky:
+RiRo z ESO9 je **jediný zdroj pravdy** — 31 sloupců, středníkem, bez hlavičky:
 
 | sloupec | obsah |
 |---|---|
 | **L / M** (11/12) | závozové okno od–do (sekundy od půlnoci) |
 | **R / S** (17/18) | **lon / lat** — GPS (dřív rezerva s `-1000`) |
+| **Y** (24) | **datum ROZVOZU** (YYYYMMDD) — musí sedět na datum závozu |
 | **AA** (26) | `KG:51.475#SEC:261` — váha + **kompletní čas zastávky v sekundách** |
+| **AE** (30) | kg z minulého závozu; `-1000` = minule bez závozu |
 
 - **`SEC` je celý čas zastávky** — solver ho použije tak, jak je (`ceil` na minuty).
   Žádný vzorec za váhu se nepřipočítává.
 - `data/static/locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
   (`build_static_data.py` a `convert_to_riro.py` jsou legacy, jen se nemažou.)
-- **Starý formát** (30 sloupců bez SEC) i **přechodný** (32 sloupců, GPS na konci)
-  jsou odmítnuty jasnou chybou. Archiv: `data/input/{DEPOT}/archiv_stary_format/`.
+- **Starší formáty** jsou odmítnuty jasnou chybou: 30 sloupců bez SEC (do 16. 7.),
+  32 sloupců s GPS na konci (16. 7.), 30 sloupců bez AE (17.–23. 7.). Archiv: `data/input/{DEPOT}/archiv_stary_format/`.
 - Historické `orders_*.csv` z dubna/července **nejde spustit** — nemají `service_sec`.
   Výsledky benchmarků z nich už máme; nová data jedou jen na předpočítaném čase.
 
@@ -64,6 +66,23 @@ Správně je jen když projdou všechny řádky z ESO9.
 ```powershell
 python prepare_inputs_v6.py CB --allow-drops   # vědomě pokračovat i s vadnými řádky
 ```
+
+Navíc: **objednávka s jiným datem rozvozu (sloupec Y) než datum závozu je vada
+exportu** → fatální chyba, nejde obejít `--allow-drops` (ten by objednávku
+zahodil a ona by se nerozvezla). Správná reakce je opravit export z ESO9.
+
+### Predikční režim (`--prediction`)
+
+Přidává ho `predict_day.py`, ručně ho nepotřebuješ. Mění dvě věci:
+
+1. **dřívější datum rozvozu = dopredikovaná objednávka** (v ostrém běhu chyba)
+2. **koeficient kg** — ze spárovaných objednávek (mají v AE kg z minula)
+   se spočítá `suma(dnes) / suma(minule)` a přenásobí se jím váha **pouze
+   dopredikovaných**. Ořez 0,5–2,0, minimálně 10 párů (jinak 1,0).
+
+Čas zastávky (SEC) se **nemění** — neznáme vzorec, kterým ho ESO9 počítá.
+Koeficient a počet upravených objednávek jde vidět v konzoli i v
+`prepare_stats_*.json`.
 
 ---
 
