@@ -68,6 +68,12 @@ LAT_RANGE = (47.0, 52.0)
 # Hodnota ve sloupci AE, když objednávka minulý závoz neměla.
 PREV_KG_NONE = -1000.0
 
+# Horní mez času zastávky. Legitimní SEC z ESO9 nikdy nepřekročil ~1,5 h
+# (max 5 160 s, 17.–28. 7. 2026); 31. 7. přišly vadné hodnoty až 96 742 s
+# (26,9 h) a nesplnitelná objednávka tehdy tiše shodila celý cluster v solveru.
+# Řádek nad limit = vadný payload -> přísný režim soubor odmítne celý.
+SERVICE_SEC_MAX = 7200      # 2 h
+
 # Koeficient nárůstu/poklesu kg (jen predikční režim): suma dnes / suma minule
 # ze spárovaných objednávek. Ořez chrání před nesmyslným plánem ze špatných dat,
 # minimum párů před tím, aby pár výjimek určilo celý den.
@@ -362,6 +368,11 @@ def transform(raw_rows: list[dict], depot_code: str, *,
         if service_sec is None or service_sec <= 0:
             drop(raw, "vadný payload",
                  f"chybí/nevalidní SEC: sloupec AA={raw['payload_raw']!r}")
+            continue
+        if service_sec > SERVICE_SEC_MAX:
+            drop(raw, "vadný payload",
+                 f"SEC={int(service_sec)} s = {service_sec / 3600:.1f} h zastávky — "
+                 f"nad limitem {SERVICE_SEC_MAX // 3600} h, vadný export z ESO9")
             continue
         weight_kg = parsed_payload.get("KG")
         if weight_kg is None or weight_kg < 0:

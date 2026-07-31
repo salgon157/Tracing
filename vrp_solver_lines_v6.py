@@ -35,6 +35,7 @@ import multiprocessing
 import math
 import time
 import random
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -387,6 +388,104 @@ def service_time_min(order: dict) -> int:
         )
     return math.ceil(sec_int / 60)
 
+
+# ============================================================
+#  POJISTKY — žádná objednávka se nesmí tiše ztratit
+#
+#  Vznik: 31. 7. 2026 poslalo ESO9 vadné SEC (až 96 742 s = 26,9 h).
+#  Servis delší než strop trasy udělá objednávku neobsloužitelnou,
+#  a protože jsou všechny objednávky povinné, OR-Tools prohlásí celý
+#  cluster za neřešitelný — a jeho objednávky (49 z 91!) se tiše
+#  ztratily z uloženého plánu. Tyhle závory to už nikdy nedovolí.
+# ============================================================
+
+def validate_orders_servable(orders: list,
+                             vehicle_time_by_id: dict | None = None) -> None:
+    """
+    Fail-fast PŘED solvem: každá objednávka musí být vůbec obsloužitelná.
+
+    1. servis < strop trasy (max_route_duration_h) — chytá vadné SEC z ESO9
+       (prepare má vlastní limit SERVICE_SEC_MAX, tohle je druhá závora
+       přímo v solveru, chytí i staré prepared soubory)
+    2. je-li k dispozici matice: objednávka dosažitelná ze skladu tam i zpět
+       alespoň v jedné vozidlové matici (sentinel UNREACHABLE_TIME_MIN)
+    """
+    max_dur_min = int(CONFIG["max_route_duration_h"] * 60)
+    bad_service = []
+    for o in orders:
+        svc = service_time_min(o)
+        if svc >= max_dur_min:
+            bad_service.append(
+                f"  - {o['order_number']} {o.get('customer_name', '')}: "
+                f"servis {svc} min ({int(o['service_sec']):,} s) "
+                f">= strop trasy {max_dur_min} min"
+            )
+
+    bad_reach = []
+    if vehicle_time_by_id:
+        mats = list(vehicle_time_by_id.values())
+        for i, o in enumerate(orders, start=1):   # node 0 = sklad
+            reachable = any(
+                m[0][i] < UNREACHABLE_TIME_MIN and m[i][0] < UNREACHABLE_TIME_MIN
+                for m in mats
+            )
+            if not reachable:
+                bad_reach.append(
+                    f"  - {o['order_number']} {o.get('customer_name', '')}: "
+                    f"lat={o['lat']}, lon={o['lon']} — nedosažitelná ze skladu "
+                    f"v žádném profilu"
+                )
+
+    if bad_service or bad_reach:
+        msg = ["", "=" * 65,
+               "[CHYBA] NEOBSLOUŽITELNÉ OBJEDNÁVKY — plánování zastaveno",
+               "=" * 65]
+        if bad_service:
+            msg.append(f"\nServis delší než strop trasy "
+                       f"({CONFIG['max_route_duration_h']} h) — vadné SEC z ESO9:")
+            msg.extend(bad_service)
+        if bad_reach:
+            msg.append("\nNedosažitelné ze skladu (zkontroluj GPS / routing instanci):")
+            msg.extend(bad_reach)
+        msg.append("\nŽádný plán se neuložil — plán bez těchto objednávek by "
+                   "znamenal nerozvezené zboží. Oprav data a spusť znovu.")
+        raise SystemExit("\n".join(msg))
+
+
+def verify_plan_complete(orders: list, routes: list) -> None:
+    """
+    Finální invariant PŘED uložením: každá objednávka ze vstupu je v plánu
+    právě jednou. Cokoli jiného = bug solveru nebo vadná data → neuložit NIC.
+    """
+    planned = Counter(s["id"] for r in routes
+                      for s in r.get("stops", []) if "id" in s)
+    input_ids = [o["id"] for o in orders]
+    input_set = set(input_ids)
+    missing = [oid for oid in input_ids if oid not in planned]
+    dupes   = [oid for oid, cnt in planned.items() if cnt > 1]
+    extra   = [oid for oid in planned if oid not in input_set]
+    if not missing and not dupes and not extra:
+        return
+
+    by_id = {o["id"]: o for o in orders}
+    msg = ["", "=" * 65,
+           "[CHYBA] PLÁN NENÍ KOMPLETNÍ — výstup se NEUKLÁDÁ",
+           "=" * 65,
+           f"Vstup: {len(input_ids)} objednávek | v plánu: {len(planned)}"]
+    if missing:
+        msg.append(f"\nChybí v plánu ({len(missing)}):")
+        for oid in missing:
+            o = by_id[oid]
+            msg.append(f"  - {oid} {o.get('customer_name', '')} "
+                       f"({o.get('city', '')}, {o['weight_kg']:.0f} kg)")
+    if dupes:
+        msg.append(f"\nDuplicitně naplánované ({len(dupes)}): " + ", ".join(dupes))
+    if extra:
+        msg.append(f"\nV plánu navíc, nejsou ve vstupu ({len(extra)}): "
+                   + ", ".join(extra))
+    msg.append("\nPlán s tiše vynechanými objednávkami = nerozvezené zboží. "
+               "Tohle je chyba solveru nebo dat — nahlas ji.")
+    raise SystemExit("\n".join(msg))
 
 
 def auto_n_clusters(n_orders: int, n_vehicles: int) -> int:
@@ -1072,6 +1171,33 @@ class SolutionState:
 #  PHASE C — výběr nejlepšího seedu
 # ============================================================
 
+def _unsolvable_cluster_report(seed_name: str, cluster_idx: int,
+                               c_orders: list, c_vehicles: list) -> str:
+    """Diagnostika pro fatální selhání clusteru — ať je hned vidět PROČ."""
+    max_dur_min = int(CONFIG["max_route_duration_h"] * 60)
+    total_kg  = sum(o["weight_kg"] for o in c_orders)
+    total_cap = sum(v["max_kg"] for v in c_vehicles)
+    worst_svc = sorted(c_orders, key=lambda o: o.get("service_sec", 0),
+                       reverse=True)[:5]
+    msg = ["", "=" * 65,
+           f"[CHYBA] Cluster {cluster_idx} seedu '{seed_name}' je NEŘEŠITELNÝ "
+           f"i po záchranném re-solve",
+           "=" * 65,
+           f"Objednávek: {len(c_orders)} ({total_kg:,.0f} kg) | "
+           f"vozidel: {len(c_vehicles)} (kapacita {total_cap:,.0f} kg)",
+           f"Strop trasy: {max_dur_min} min | nejdelší servisy:"]
+    for o in worst_svc:
+        svc_min = math.ceil(int(o.get("service_sec", 0)) / 60)
+        msg.append(f"  - {o['order_number']} {o.get('customer_name', '')}: "
+                   f"servis {svc_min} min, okno {o['time_from']}–{o['time_to']}, "
+                   f"{o['weight_kg']:.0f} kg")
+    msg.append("\nNejčastější příčiny: vadné SEC z ESO9 (servis > strop trasy), "
+               "nesplnitelná časová okna, málo aut/kapacity pro cluster.")
+    msg.append("Plán se NEUKLÁDÁ — jinak by objednávky clusteru tiše zmizely "
+               "a zboží by se nerozvezlo.")
+    return "\n".join(msg)
+
+
 def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_id,
                        n_clusters, time_budget_sec, n_workers) -> SolutionState:
     seed = CONFIG["random_seed"]
@@ -1154,6 +1280,38 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
     c_indices     = scd["cluster_indices"]
     vehicle_asgn  = scd["vehicle_assignments"]
     cluster_res   = results_by_seed[best_seed_name]
+
+    # ── Pojistka: žádný cluster nejlepšího seedu nesmí zůstat nevyřešený ──
+    # Dřív se objednávky nevyřešeného clusteru TIŠE ztratily z plánu
+    # (31. 7. 2026: 49 z 91 objednávek PR). Teď: záchranný re-solve s delším
+    # časem a náhradní strategií; když ani ten neuspěje, běh spadne s
+    # diagnostikou — poloviční plán se nikdy neuloží.
+    unsolved_cidx = [ci for ci in range(len(clusters))
+                     if not cluster_res.get(ci, {}).get("routes")]
+    if unsolved_cidx:
+        rescue_time = max(120, 3 * time_per_cluster)
+        for ci in unsolved_cidx:
+            c_orders, c_ix, c_vehicles = clusters[ci], c_indices[ci], vehicle_asgn[ci]
+            print(f"  [!] Cluster {ci} ({len(c_orders)} objednávek) nevyřešen — "
+                  f"záchranný re-solve ({rescue_time} s)...")
+            cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
+            sub_dist, sub_times = extract_submatrix(distances_km, cluster_v_times, c_ix)
+            routes_r, cost_r = [], 0
+            for strat in (
+                routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION,
+                routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
+            ):
+                routes_r, cost_r = solve_cluster(
+                    c_orders, c_vehicles, sub_dist, sub_times,
+                    rescue_time, strategy=strat)
+                if routes_r:
+                    break
+            if not routes_r:
+                raise SystemExit(_unsolvable_cluster_report(
+                    best_seed_name, ci, c_orders, c_vehicles))
+            print(f"      ✓ zachráněno: {len(routes_r)} tras, {cost_r:,.0f} Kč")
+            cluster_res[ci] = {"seed_name": best_seed_name, "cluster_idx": ci,
+                               "routes": routes_r, "cost": cost_r}
 
     cluster_labels_arr  = [0] * len(orders)
     cluster_routes_list = []
@@ -2136,6 +2294,10 @@ def main():
     block_id          = orders[0].get("block_id", "").strip() if orders else ""
     vehicles_expanded = load_vehicle_types_db(args.vehicle_types_file, block_id=block_id)
 
+    # Pojistka č. 1: neobsloužitelná objednávka (vadné SEC) = stop hned,
+    # ne tichá ztráta celého clusteru o pár minut později.
+    validate_orders_servable(orders)
+
     # Auto-detekce výstupní složky z názvu orders souboru
     # Pattern: orders_{DEPOT}_{YYYY-MM-DD}.csv → data/results/{DEPOT}/{YYYY-MM-DD}/
     # delivery_date se z názvu bere VŽDY (i s explicitním --output-dir) — jinak
@@ -2228,6 +2390,10 @@ def main():
         np.fill_diagonal(t_mat, 0)
         vehicle_time_by_id[v["id"]] = t_mat
 
+    # Pojistka č. 2: každá objednávka musí být dosažitelná ze skladu
+    # alespoň v jedné vozidlové matici (kontrola sentinelů po sanitizaci).
+    validate_orders_servable(orders, vehicle_time_by_id)
+
     t_after_osrm = time.time()
     osrm_elapsed = t_after_osrm - t_global_start
     remaining    = total_budget - osrm_elapsed
@@ -2272,6 +2438,10 @@ def main():
     print(f"\nCelková doba: {elapsed_min:.1f} min")
 
     print_results(all_routes, total_cost)
+
+    # Pojistka č. 4 (poslední závora): vstup == naplánováno, jinak se
+    # neuloží NIC. Pojistka č. 3 je záchranný re-solve ve phase C.
+    verify_plan_complete(orders, all_routes)
 
     from closures_utils import load_active_closures
     active_closures = load_active_closures()

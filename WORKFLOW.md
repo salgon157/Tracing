@@ -30,6 +30,20 @@ python visualize_routes.py data/results/CB/YYYY-MM-DD/ --open
 
 Pro ostatní depa vyměň `CB` → `HK` / `MO` / `PR`.
 
+
+**Run pro porovnání s predict**
+python -m pytest tests -q --ignore tests/test_ors_hgv_integration.py
+if ($?) {
+  $env:SKIP_STARTUP_TESTS = "1"
+  foreach ($d in "CB","HK","MO","PR") {
+    Write-Host "`n=== $d ===" -ForegroundColor Cyan
+    python prepare_inputs_v6.py $d
+    if (-not $?) { Write-Host "prepare $d selhalo - preskakuji"; continue }
+    python vrp_solver_lines_v6.py --orders-file "data/prepared/$d/orders_${d}_2026-07-31.csv" --budget-min 5
+  }
+  Remove-Item Env:\SKIP_STARTUP_TESTS
+}
+
 **Pravidla vstupu:**
 - V `data/input/{DEPOT}/aktivni/` musí být **právě jeden** CSV. Víc/míň → chyba.
 - Datum se bere z názvu souboru (`riro-YYYYMMDD-...`), depo z CLI argumentu.
@@ -70,6 +84,25 @@ python prepare_inputs_v6.py CB --allow-drops   # vědomě pokračovat i s vadný
 Navíc: **objednávka s jiným datem rozvozu (sloupec Y) než datum závozu je vada
 exportu** → fatální chyba, nejde obejít `--allow-drops` (ten by objednávku
 zahodil a ona by se nerozvezla). Správná reakce je opravit export z ESO9.
+
+### Pojistky proti tiché ztrátě objednávek
+
+31\. 7. 2026 poslalo ESO9 vadné SEC (až 96 742 s = **26,9 h** vykládky).
+Objednávka se servisem nad strop trasy (23,5 h) je neobsloužitelná, OR-Tools
+prohlásil celý cluster za neřešitelný a jeho objednávky — **49 z 91 v ostrém
+plánu PR** — tiše zmizely z výstupu. Od té doby jsou v pipeline čtyři závory;
+**poloviční plán se už nikdy neuloží**:
+
+1. **prepare: `SERVICE_SEC_MAX` (2 h)** — legitimní SEC nikdy nepřekročil
+   ~1,5 h; řádek nad limit = vadný payload → přísný režim odmítne celý soubor.
+2. **solver: `validate_orders_servable`** — před solvem: servis < strop trasy
+   (chytí i staré prepared soubory) a objednávka dosažitelná ze skladu tam
+   i zpět alespoň v jednom profilu.
+3. **phase C: záchranný re-solve** — nevyřešený cluster vítězného seedu dostane
+   druhý pokus s 3× časem a náhradní strategií; když neuspěje, běh **spadne
+   s diagnostikou** (dřív objednávky clusteru tiše zmizely).
+4. **finální invariant `verify_plan_complete`** — před uložením: každá vstupní
+   objednávka je v plánu právě jednou, jinak se neuloží nic a vypíše se seznam.
 
 ### Predikční režim (`--prediction`)
 

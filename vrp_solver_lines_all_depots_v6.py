@@ -907,10 +907,17 @@ def main() -> None:
         solver.run_startup_tests()
     ensure_routing_ready(args)
 
+    # Pojistka: neobsloužitelná objednávka (vadné SEC z ESO9) = stop hned,
+    # ne tichá ztráta celého clusteru o pár minut později.
+    solver.validate_orders_servable(orders)
+
     print("\n" + "-" * 65)
     print("[A] Routing matrices")
     print("-" * 65)
     distances_km, vehicle_time_by_id = build_matrices(orders, vehicles_expanded)
+
+    # Pojistka: dosažitelnost ze skladu alespoň v jedné vozidlové matici.
+    solver.validate_orders_servable(orders, vehicle_time_by_id)
 
     t_after_matrices = time.time()
     matrix_elapsed = t_after_matrices - t_global_start
