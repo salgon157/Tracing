@@ -155,6 +155,10 @@ CONFIG = {
     # Max délka jedné trasy
     "max_route_duration_h":          23.5,
 
+    # Nakládka ve skladu před výjezdem (minuty). Jen pro export do ESO
+    # (plán příjezd Depo = odjezd − nakládka) — do plánování tras se nepočítá.
+    "depot_loading_min":             40,
+
     # OSRM adresy per profil (driving = osobní/dodávka, driving-hgv = nákladní)
     # Pro driving-hgv spusť druhý OSRM kontejner na portu 5001 s truck profilem.
     # Pokud profil chybí, solver automaticky použije fallback na "driving".
@@ -1916,6 +1920,84 @@ def print_run_diff(current: dict, previous: dict) -> None:
     print("=" * 65)
 
 
+# Hlavička přesně podle vzoru z ESO (včetně jejich překlepů „objendávky"
+# a „odjedz" — parsují sloupce podle názvů, tak je neopravovat).
+ESO_EXPORT_HEADER = [
+    "č. objendávky", "adresa", "depo",
+    "číslo linky", "pořadí zastávky", "počet zastávek na lince",
+    "plán příjezd lokace", "plán odjezd lokace",
+    "plán příjezd Depo", "plán odjedz depo", "čas konec linky",
+    "typ vozidla", "nosnost vozu",
+]
+
+
+def _load_raw_max_kg_by_type(vehicle_types_file: str) -> dict:
+    """type_code -> max_kg PŘESNĚ jak je v CSV (bez capacity multiplieru) —
+    ESO chce papírovou nosnost vozu, ne interní plánovací rezervu."""
+    mapping: dict[str, float] = {}
+    try:
+        with open(vehicle_types_file, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                mapping[row["type_code"].strip()] = float(row["max_kg"])
+    except (OSError, KeyError, ValueError):
+        pass
+    return mapping
+
+
+def save_eso_export(routes, output_dir: Path, orders: list, zone_label: str,
+                    delivery_date: str = "",
+                    vehicle_types_file: str | None = None) -> Path:
+    """
+    Export plánu pro import do ESO: jeden řádek na zastávku (bez skladu),
+    středníky, cp1250, časy v SEKUNDÁCH od půlnoci.
+
+    Depo časy: „plán odjedz depo" = výjezd na trasu, „plán příjezd Depo" =
+    výjezd − nakládka (CONFIG depot_loading_min, teď 40 min), „čas konec
+    linky" = návrat do skladu. Nakládka je jen v exportu, plánování tras
+    neovlivňuje.
+    """
+    loading_sec = int(CONFIG.get("depot_loading_min", 40)) * 60
+    max_kg_by_type = _load_raw_max_kg_by_type(
+        vehicle_types_file or CONFIG["vehicle_types_file"])
+    depot_by_order = {o["id"]: o.get("block_id", "") for o in (orders or [])}
+
+    rows = []
+    for line_no, r in enumerate(routes, start=1):
+        stops = [s for s in r["stops"] if s.get("id")]
+        departure_sec = time_to_minutes(r["stops"][0]["arrival"]) * 60
+        loading_start = max(0, departure_sec - loading_sec)
+        line_end_sec  = time_to_minutes(r["stops"][-1]["arrival"]) * 60
+        # "TYPE_02" -> 2; když kód nemá číslo, nech prázdné ať to ESO neshodí
+        type_digits = re.sub(r"\D", "", r.get("type_code", ""))
+        type_num    = int(type_digits) if type_digits else ""
+        max_kg      = max_kg_by_type.get(r.get("type_code", ""), "")
+        for seq, s in enumerate(stops, start=1):
+            rows.append([
+                s["id"],
+                s.get("location_code", ""),
+                depot_by_order.get(s["id"], zone_label),
+                line_no,
+                seq,
+                len(stops),
+                time_to_minutes(s["arrival"]) * 60,
+                time_to_minutes(s["departure"]) * 60,
+                loading_start,
+                departure_sec,
+                line_end_sec,
+                type_num,
+                max_kg,
+            ])
+
+    suffix = f"_{zone_label}" if zone_label else ""
+    suffix += f"_{delivery_date}" if delivery_date else ""
+    filepath = output_dir / f"eso_export{suffix}.csv"
+    with open(filepath, "w", encoding="cp1250", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(ESO_EXPORT_HEADER)
+        writer.writerows(rows)
+    return filepath
+
+
 def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elapsed_min: float,
                  orders: list | None = None, delivery_date: str = "", closures: list | None = None,
                  run_log_path: Path = RUN_LOG_PATH):
@@ -1973,6 +2055,9 @@ def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elaps
     pd.DataFrame(summary_rows).to_csv(output_dir / "lines_summary.csv", index=False)
     pd.DataFrame(stop_rows).to_csv(output_dir / "lines_stops.csv", index=False)
     save_excel(routes, total_cost_kc, filepath=output_dir / "lines_plan.xlsx")
+    eso_path = save_eso_export(routes, output_dir, orders or [], zone_label,
+                               delivery_date=delivery_date)
+    print(f"  [ESO export] {eso_path}")
 
     total_km_all    = round(sum(r["total_km"] for r in routes), 1)
     total_hours_all = round(sum(r.get("duration_h", 0) for r in routes), 1)

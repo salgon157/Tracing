@@ -22,7 +22,8 @@ python prepare_inputs_v6.py CB
 # 3) Spust solver
 python vrp_solver_lines_v6.py --orders-file data/prepared/CB/orders_CB_YYYY-MM-DD.csv
 #    -> data/results/CB/YYYY-MM-DD/  (lines_summary.csv, lines_stops.csv,
-#                                     lines_plan.xlsx, zone_summary.json)
+#                                     lines_plan.xlsx, zone_summary.json,
+#                                     eso_export_CB_YYYY-MM-DD.csv)
 
 # 4) Vizualizace (HTML mapa)
 python visualize_routes.py data/results/CB/YYYY-MM-DD/ --open
@@ -103,6 +104,20 @@ plánu PR** — tiše zmizely z výstupu. Od té doby jsou v pipeline čtyři z�
    s diagnostikou** (dřív objednávky clusteru tiše zmizely).
 4. **finální invariant `verify_plan_complete`** — před uložením: každá vstupní
    objednávka je v plánu právě jednou, jinak se neuloží nic a vypíše se seznam.
+
+### Export plánu do ESO (`eso_export_{DEPO}_{DATUM}.csv`)
+
+Vzniká automaticky při každém uložení výsledků. Formát podle vzoru z ESO
+(srpen 2026): středníky, **cp1250**, hlavička doslova jako vzor (včetně jejich
+překlepů — parsují podle názvů sloupců). Jeden řádek na zastávku, sklad se
+nevypisuje. Časy v **sekundách od půlnoci**:
+
+- `plán příjezd/odjezd lokace` — příjezd a odjezd na zastávce
+- `plán odjedz depo` — výjezd na trasu; `plán příjezd Depo` — výjezd −
+  **nakládka** (`CONFIG depot_loading_min`, teď 40 min; jen v exportu,
+  plánování tras neovlivňuje); `čas konec linky` — návrat do skladu
+- `typ vozidla` — číslo z type_code (TYPE_02 → 2); `nosnost vozu` — max_kg
+  z `vehicle_types.csv` (papírová nosnost, bez plánovací rezervy)
 
 ### Predikční režim (`--prediction`)
 
