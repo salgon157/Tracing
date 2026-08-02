@@ -697,6 +697,11 @@ def prepare_run(args: argparse.Namespace) -> tuple[str, dict[str, Path], list[di
         # defaultu by driving-hgv (vlastní hodnota v BY_PROFILE) neovlivnilo.
         solver.FORCE_MATRIX = True
 
+    # Plánovací buffery z CLI — musí být před load_vehicle_types_db() níže,
+    # ta čte vehicle_capacity_multiplier z CONFIG.
+    for change in solver.apply_buffer_overrides(args):
+        print(f"[BUFFERS] {change}")
+
     date_str = args.date or latest_common_date(args.depots)
     args.date = date_str
 
@@ -794,6 +799,30 @@ def parse_args() -> argparse.Namespace:
         "--run-startup-tests",
         action="store_true",
         help="Run the existing pytest startup suite before solving.",
+    )
+    parser.add_argument(
+        "--no-buffers",
+        action="store_true",
+        help="Hard mode: capacity 100%% (not 102%%) and delivery windows exactly "
+             "as sent by ESO9 (no -5/+25 min shift).",
+    )
+    parser.add_argument(
+        "--capacity-multiplier",
+        type=float,
+        default=None,
+        help="Vehicle capacity multiplier. Default from CONFIG: 1.02.",
+    )
+    parser.add_argument(
+        "--tw-expand-before",
+        type=int,
+        default=None,
+        help="Minutes a driver may arrive BEFORE the window opens. Default: 5.",
+    )
+    parser.add_argument(
+        "--tw-expand-after",
+        type=int,
+        default=None,
+        help="Minutes a driver may arrive AFTER the window closes. Default: 25.",
     )
     add_osm_args(parser)
     return parser.parse_args()

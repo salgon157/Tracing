@@ -2175,6 +2175,45 @@ def print_effective_budgets(osrm_elapsed, remaining, budget_C, budget_D, budget_
     print(f"phase_E_time_per_cluster:    {time_per_cluster_E} sec")
     print("=" * 65)
 
+def apply_buffer_overrides(args, config: dict | None = None) -> list[str]:
+    """
+    Přepíše plánovací buffery v CONFIG podle CLI. Vrátí popis změn pro výpis
+    (prázdný seznam = běží se na defaultech z CONFIG).
+
+    Granulární přepínače mají přednost před --no-buffers, aby šlo udělat
+    např. „tvrdý režim, ale nech +10 min na konci okna".
+
+    MUSÍ se volat před load_vehicle_types_db() — ta z CONFIG čte násobič
+    nosnosti při expanzi vozového parku.
+    """
+    cfg = CONFIG if config is None else config
+    changes: list[str] = []
+
+    def _set(key: str, value, label: str, fmt: str = "{}") -> None:
+        old = cfg.get(key)
+        if old == value:
+            return
+        cfg[key] = value
+        changes.append(f"{label}: {fmt.format(old)} → {fmt.format(value)}")
+
+    if getattr(args, "no_buffers", False):
+        _set("vehicle_capacity_multiplier", 1.0, "nosnost vozidel", "{:.0%}")
+        _set("tw_expand_before_min", 0, "okno před", "{} min")
+        _set("tw_expand_after_min", 0, "okno po", "{} min")
+
+    if getattr(args, "capacity_multiplier", None) is not None:
+        _set("vehicle_capacity_multiplier", float(args.capacity_multiplier),
+             "nosnost vozidel", "{:.0%}")
+    if getattr(args, "tw_expand_before", None) is not None:
+        _set("tw_expand_before_min", int(args.tw_expand_before),
+             "okno před", "{} min")
+    if getattr(args, "tw_expand_after", None) is not None:
+        _set("tw_expand_after_min", int(args.tw_expand_after),
+             "okno po", "{} min")
+
+    return changes
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--orders-file", default=CONFIG["orders_file"],
@@ -2205,6 +2244,22 @@ def parse_args():
                              "dovol tichý fallback na osobní profil 'driving'. "
                              "DEFAULT je hard-fail — kamiony by jinak jely po trasách "
                              "pro osobáky (mosty, úzké uličky).")
+
+    # ── Plánovací buffery: override z CLI (default = hodnoty v CONFIG) ──
+    parser.add_argument("--no-buffers", action="store_true",
+                        help="TVRDÝ režim bez rezerv: nosnost 100 %% (ne 102 %%) a "
+                             "závozová okna přesně jak je poslalo ESO9 (bez posunu "
+                             "-5/+25 min). Zkratka za --capacity-multiplier 1.0 "
+                             "--tw-expand-before 0 --tw-expand-after 0.")
+    parser.add_argument("--capacity-multiplier", type=float, default=None,
+                        help="Násobič nosnosti vozidel (default z CONFIG: 1.02 = "
+                             "102 %%). 1.0 = plánuj přesně na papírovou nosnost.")
+    parser.add_argument("--tw-expand-before", type=int, default=None,
+                        help="O kolik minut smí řidič přijet PŘED začátek okna "
+                             "(default z CONFIG: 5). 0 = žádný posun.")
+    parser.add_argument("--tw-expand-after", type=int, default=None,
+                        help="O kolik minut smí řidič přijet PO konci okna "
+                             "(default z CONFIG: 25). 0 = žádný posun.")
     add_osm_args(parser)
     return parser.parse_args()
 
@@ -2327,6 +2382,14 @@ def main():
         print("[FORCE] Limit nedosažitelných párů v matici vypnut (--force-matrix). "
               "Páry s NaN durations dostanou sentinel UNREACHABLE_TIME_MIN, "
               "solver je nepřiřadí.")
+
+    # ── Plánovací buffery: CLI override PŘED načtením vozidel ─────────────
+    # (load_vehicle_types_db čte vehicle_capacity_multiplier z CONFIG)
+    _buffer_changes = apply_buffer_overrides(args)
+    if _buffer_changes:
+        print("[BUFFERY] Override z CLI:")
+        for ch in _buffer_changes:
+            print(f"          {ch}")
 
     # ── --budget-min: override total time budget ──────────────────────────
     if args.budget_min is not None:

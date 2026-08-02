@@ -183,6 +183,31 @@ díky které jsou benchmarky porovnatelné napříč časem.
 | `--force-matrix` | **Nouzový** přepínač — vypne limit nedosažitelných párů pro všechny profily. Běžně NENÍ potřeba: limity jsou per profil (`driving` 0,1 %, `driving-hgv` 5 %) a pokrývají i Prahu. |
 | `--allow-profile-fallback` | Dovol tichý fallback kamionů na osobní profil když ORS selže. **DEFAULT je hard-fail** (jinak by kamiony jely po špatných trasách). Používej jen vědomě. |
 | `--zone-label CB` | Popisek zóny do výstupů (jinak z dat). |
+| `--no-buffers` | **Tvrdý režim bez rezerv**: nosnost 100 % (místo 102 %) a závozová okna přesně jak je poslalo ESO9 (bez posunu −5/+25 min). |
+| `--capacity-multiplier 1.0` | Jen nosnost (default 1.02). |
+| `--tw-expand-before 0` / `--tw-expand-after 0` | Jen okna (default 5 / 25 min). |
+
+### Plánovací buffery — co znamenají
+
+Solver **nemění data**, jen si při plánování nechává rezervu:
+
+| buffer | default | co dělá |
+|---|---|---|
+| `vehicle_capacity_multiplier` | **1.02** = 102 % | plánuje na o 2 % vyšší nosnost (slack při balení, vzdušné mezery) |
+| `tw_expand_before_min` | **5 min** | řidič smí přijet 5 min před otevřením okna |
+| `tw_expand_after_min` | **25 min** | řidič smí přijet 25 min po zavření okna |
+
+Přepínače výše je přepíšou jen pro jeden běh, config zůstává. Granulární
+přepínač přebije `--no-buffers`, takže jde i „tvrdý režim, ale nech +10 min":
+
+```bash
+python vrp_solver_lines_v6.py --orders-file data/prepared/CB/orders_CB_2026-07-28.csv --no-buffers --tw-expand-after 10
+```
+
+Kolik to stojí, se liší den od dne — na CB 28. 7. (oba běhy 3 min budget)
+vyšel tvrdý režim na stejný počet linek a +679 Kč. Chová se to tak, jak má:
+přísnější podmínky nikdy nevyjdou levněji. Stejné přepínače má
+i `vrp_solver_lines_all_depots_v6.py`.
 
 **Příklad — reprodukce staršího výsledku na zamrzlé mapě:**
 ```powershell
