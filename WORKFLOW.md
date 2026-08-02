@@ -183,8 +183,8 @@ díky které jsou benchmarky porovnatelné napříč časem.
 | `--force-matrix` | **Nouzový** přepínač — vypne limit nedosažitelných párů pro všechny profily. Běžně NENÍ potřeba: limity jsou per profil (`driving` 0,1 %, `driving-hgv` 5 %) a pokrývají i Prahu. |
 | `--allow-profile-fallback` | Dovol tichý fallback kamionů na osobní profil když ORS selže. **DEFAULT je hard-fail** (jinak by kamiony jely po špatných trasách). Používej jen vědomě. |
 | `--zone-label CB` | Popisek zóny do výstupů (jinak z dat). |
-| `--no-buffers` | **Tvrdý režim bez rezerv**: nosnost 100 % (místo 102 %) a závozová okna přesně jak je poslalo ESO9 (bez posunu −5/+25 min). |
-| `--capacity-multiplier 1.0` | Jen nosnost (default 1.02). |
+| `--no-buffers` | **Tvrdý režim bez rezerv**: nosnost 100 % a závozová okna přesně jak je poslalo ESO9 (bez posunu −5/+25 min). |
+| `--capacity-multiplier 1.0` | Jen nosnost (default viz CONFIG). |
 | `--tw-expand-before 0` / `--tw-expand-after 0` | Jen okna (default 5 / 25 min). |
 
 ### Plánovací buffery — co znamenají
@@ -193,7 +193,7 @@ Solver **nemění data**, jen si při plánování nechává rezervu:
 
 | buffer | default | co dělá |
 |---|---|---|
-| `vehicle_capacity_multiplier` | **1.02** = 102 % | plánuje na o 2 % vyšší nosnost (slack při balení, vzdušné mezery) |
+| `vehicle_capacity_multiplier` | **1.03** = 103 % | plánuje na vyšší nosnost, než je papírová (slack při balení, vzdušné mezery) |
 | `tw_expand_before_min` | **5 min** | řidič smí přijet 5 min před otevřením okna |
 | `tw_expand_after_min` | **25 min** | řidič smí přijet 25 min po zavření okna |
 

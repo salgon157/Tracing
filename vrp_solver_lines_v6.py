@@ -139,8 +139,10 @@ CONFIG = {
 
     # Kapacitní násobič vozidel:
     #   effective_max_kg = csv.max_kg * vehicle_capacity_multiplier
-    #   1.02 = počítáme s 2 % vyšší kapacitou (slack při balení, vzdušné mezery)
-    "vehicle_capacity_multiplier":   1.02,
+    #   >1.0 = plánujeme na vyšší kapacitu, než je papírová nosnost
+    #   (slack při balení, vzdušné mezery). Ladí se za provozu — testy proto
+    #   nekontrolují konkrétní hodnotu. Jednorázově vypnout: --no-buffers.
+    "vehicle_capacity_multiplier":   1.03,
 
     # Pozn.: doba zastávky NENÍ v CONFIG — chodí předpočítaná z ESO9 v riro
     # (payload SEC) a prepare ji předává ve sloupci `service_sec`. Žádný vzorec.
