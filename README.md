@@ -67,6 +67,7 @@ proto se plánují odděleně.
 | **`prepare_inputs_v6.py`** | RiRo → solver-ready CSV. Validace GPS, oken, payloadu; bilance vyřazených do `prepare_stats_*.json`. |
 | **`visualize_routes.py`** | HTML mapa tras (Leaflet) z výsledkové složky. |
 | **`predict_day.py`** | Tenký wrapper: predikční běh nad `data/prediction/` (prepare+solve+mapy pro všechna depa). Odděleno od ostrého provozu. |
+| **`order_history.py`** | Šance závozu z historie objednávek (`data/historie_objednavky/*.xlsx`): stejný den v týdnu, roční okno, pauzy, svátky. Predikce podle ní losuje, které dopredikované objednávky do plánu půjdou. |
 | **`compare_prediction.py`** | Porovná predikci s realitou (Δ = predikce − realita), zapíše `comparison.jsonl`. Jediný vlastník porovnávacích vzorců. |
 | **`osm_routing.py`** | Definice routing instancí (`current` / `stable`) a jejich URL. Jediné místo, kde jsou porty. |
 | **`refresh_osm.py`** | **Týdenní** přestavba čerstvé mapy (stáhne OSM data, přestaví graf, restartuje kontejnery). Běhy ji nikdy nespouštějí samy. |

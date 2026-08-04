@@ -124,13 +124,31 @@ nevypisuje. Časy v **sekundách od půlnoci**:
 Přidává ho `predict_day.py`, ručně ho nepotřebuješ. Mění dvě věci:
 
 1. **dřívější datum rozvozu = dopredikovaná objednávka** (v ostrém běhu chyba)
-2. **koeficient kg** — ze spárovaných objednávek (mají v AE kg z minula)
-   se spočítá `suma(dnes) / suma(minule)` a přenásobí se jím váha **pouze
-   dopredikovaných**. Ořez 0,5–2,0, minimálně 10 párů (jinak 1,0).
+2. **los podle šance z historie** — každá dopredikovaná objednávka se do plánu
+   dostane **celá, nebo vůbec**. Kilogramy se neškálují.
 
-Čas zastávky (SEC) se **nemění** — neznáme vzorec, kterým ho ESO9 počítá.
-Koeficient a počet upravených objednávek jde vidět v konzoli i v
-`prepare_stats_*.json`.
+**Šance = zavezené dny / způsobilé dny stejného dne v týdnu** (počítá
+`order_history.py` z `data/historie_objednavky/*.xlsx`, sloupce `Datum`
+a `Zkratka` = location_code):
+
+| pravidlo | jak to funguje |
+|---|---|
+| **okno** | od prvního závozu, nejvýš **rok** zpět; končí posledním dnem, který historie pokrývá — dny za koncem dat nejsou „nezavezeno", ale „nevíme" |
+| **pauza** | mezera mezi závozy **delší než 2 měsíce** (61 dní) zahodí historii před ní — bereme to, jako bychom zákazníkovi začali vozit až po ní |
+| **svátky** | státní svátky se vynechávají z čitatele **i** jmenovatele; závoz uskutečněný ve svátek se nepočítá (10 pondělí, 2 svátky, jel oba + 7 z 8 zbylých → **7/8**) |
+| **bez historie** | nová adresa nebo žádný způsobilý den v okně → **100 %** (radši auto navíc než nerozvezený zákazník) |
+| **los** | deterministický ze `(datum závozu, adresa)` — stejný běh dá stejný plán; všechny objednávky jedné adresy sdílejí jeden los |
+
+Čas zastávky (SEC) ani váhy se **nemění** — objednávka jde do plánu tak, jak
+přišla z ESO9. Tabulka „která objednávka prošla a proč" je v konzoli, strojově
+pak v `prepare_stats_*.json` (blok `prediction`, včetně čitatele, jmenovatele,
+hozeného čísla a okna u každé objednávky).
+
+> Koeficient kg (dřívější metoda, sloupec AE) je **vypnutý** — `compute_kg_coefficient`
+> v kódu zůstává, ale `main()` ho už nevolá.
+
+Roční exporty do `data/historie_objednavky/` dodáváš ručně; složka je
+v `.gitignore` (GDPR). Načtení obou souborů trvá ~17 s na depo.
 
 ---
 

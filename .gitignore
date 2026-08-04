@@ -29,6 +29,10 @@ data/static/vehicle_registry.csv
 # Predikovane objednavky = realne radky zakazniku (PII) + generovane vystupy.
 data/prediction/
 
+# --- Historie objednavek (rocni exporty pro vypocet sance zavozu) ---
+# Kdo, kdy a kam se vozilo, vcetne GPS a kilogramu — cistokrevne PII.
+data/historie_objednavky/
+
 # --- Routovaci data (ORS/OSRM grafy, stahovana / v Docker volume) ---
 routing/
 

@@ -20,9 +20,10 @@ zastávky (SEC v payloadu), datum rozvozu (Y) i kg z minulého závozu (AE).
 Statická data locations_*.csv už NEJSOU potřeba.
 
 Predikční režim (--prediction): objednávky s DŘÍVĚJŠÍM datem rozvozu jsou
-dopredikované a jejich váha se přenásobí koeficientem nárůstu/poklesu kg
-spočítaným ze spárovaných objednávek. Bez tohoto flagu je jiné datum rozvozu
-chyba exportu a běh skončí.
+dopredikované a projdou losem podle šance, že adresa v daný den v týdnu
+opravdu objedná (spočítáno z historie závozů — viz order_history.py).
+Objednávka se do plánu dostane celá, nebo vůbec; kilogramy se neškálují.
+Bez tohoto flagu je jiné datum rozvozu chyba exportu a běh skončí.
 
 Přísný režim: když jakýkoliv řádek neprojde validací, skript vypíše které a proč
 a SKONČÍ CHYBOU — správně je jen když projdou všechny. --allow-drops to obejde.
@@ -273,6 +274,10 @@ def check_delivery_dates(raw_rows: list[dict], date_str: str,
 def compute_kg_coefficient(raw_rows: list[dict]) -> dict:
     """Koeficient nárůstu/poklesu kg = suma(dnes) / suma(minule).
 
+    VYPNUTO od srpna 2026 — main() tuhle funkci už nevolá. Predikce místo
+    škálování vah losuje celé objednávky podle šance z historie závozů
+    (order_history.py). Kód zůstává pro případ návratu k téhle metodě.
+
     Počítá se ze SPÁROVANÝCH objednávek — těch, které mají ve sloupci AE
     kg z minulého závozu (tj. jely i minule). Ořezaný a s minimem párů,
     aby pár výjimek nerozhodilo celý den.
@@ -424,9 +429,14 @@ def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
                         raw_rows: int, orders_count: int,
                         dropped: list[dict],
                         prediction: bool = False,
-                        predicted_count: int = 0,
-                        kg_coef: dict | None = None) -> dict:
-    """Bilance zpracování: kolik řádků riro prošlo a proč které vypadly."""
+                        prediction_block: dict | None = None) -> dict:
+    """
+    Bilance zpracování: kolik řádků riro prošlo a proč které vypadly.
+
+    `excluded_total` je počet řádků vyřazených VALIDACÍ (vadná data). Objednávky,
+    které v predikci neprošly losem, se do něj ZÁMĚRNĚ nepočítají — nejsou vadné
+    a compare_prediction.py by pak hlásil nesmysly. Ty jsou v bloku `prediction`.
+    """
     def _count(reason: str) -> int:
         return sum(1 for d in dropped if d["reason"] == reason)
 
@@ -443,10 +453,7 @@ def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
         "excluded_rows": dropped,
     }
     if prediction:
-        stats["prediction"] = {
-            "predicted_orders": predicted_count,   # kolik jich má upravenou váhu
-            "kg_coefficient": kg_coef or {},
-        }
+        stats["prediction"] = prediction_block or {}
     return stats
 
 
@@ -523,9 +530,10 @@ def main():
                              "všechny řádky z ESO9.")
     parser.add_argument("--prediction", action="store_true",
                         help="Predikční režim: objednávky s DŘÍVĚJŠÍM datem rozvozu "
-                             "(sloupec Y) jsou dopredikované — jejich váha se "
-                             "přenásobí koeficientem nárůstu/poklesu kg. "
-                             "Bez tohoto flagu je jiné datum rozvozu chyba exportu.")
+                             "(sloupec Y) jsou dopredikované a projdou losem podle "
+                             "šance z historie závozů — do plánu jdou celé, nebo "
+                             "vůbec. Bez tohoto flagu je jiné datum rozvozu chyba "
+                             "exportu.")
     args = parser.parse_args()
 
     depot_code = args.depot_code.upper()
@@ -546,29 +554,28 @@ def main():
     # v predikci označuje dřívější datum dopredikované objednávky.
     predicted_rows = check_delivery_dates(raw_rows, date_str, args.prediction)
 
-    kg_coef = {}
-    coefficient = 1.0
+    # Predikce: každá dopredikovaná objednávka projde losem podle šance,
+    # že adresa v daný den v týdnu opravdu objedná (spočítáno z historie
+    # závozů). Objednávka jde do plánu CELÁ, nebo vůbec — kg se neškálují.
+    prediction_block = None
+    rows_for_transform = raw_rows
     if args.prediction:
-        kg_coef = compute_kg_coefficient(raw_rows)
-        coefficient = kg_coef["coefficient"]
+        import order_history            # jen pro predikci — ostrý běh historii nečte
+
         print(f"\nDopredikováno: {len(predicted_rows)} objednávek "
               f"(dřívější datum rozvozu)")
-        print(f"Koeficient kg: {kg_coef['raw']:.3f} "
-              f"({kg_coef['kg_now']:,.0f} kg dnes / {kg_coef['kg_prev']:,.0f} kg minule, "
-              f"{kg_coef['pairs']} párů)")
-        if not kg_coef["applied"]:
-            print(f"  [!] Málo párů (< {KG_COEF_MIN_PAIRS}) — koeficient se NEPOUŽIJE (1.0)")
-        elif kg_coef["clamped"]:
-            print(f"  [!] Oříznuto na {coefficient:.3f} "
-                  f"(povolený rozsah {KG_COEF_MIN}–{KG_COEF_MAX})")
-        else:
-            print(f"  → aplikuje se {coefficient:.3f} na dopredikované objednávky")
+        history = order_history.load_history(order_history.find_history_files())
+        print(f"Historie:      {', '.join(history.files)} "
+              f"({len(history.by_location):,} adres, data do {history.max_date})")
 
-    orders, dropped = transform(
-        raw_rows, depot_code,
-        predicted_lines={r["_line"] for r in predicted_rows},
-        kg_coefficient=coefficient,
-    )
+        records = order_history.evaluate_predictions(predicted_rows, history, date_str)
+        print(order_history.format_prediction_report(records, date_str))
+        prediction_block = order_history.build_prediction_stats(records, history)
+
+        skipped_lines = {r["line"] for r in records if not r["selected"]}
+        rows_for_transform = [r for r in raw_rows if r["_line"] not in skipped_lines]
+
+    orders, dropped = transform(rows_for_transform, depot_code)
 
     # Přísný režim: ESO9 garantuje kompletní data, takže jakýkoliv vyřazený
     # řádek = problém ve zdroji, který má někdo opravit — ne tiše přejít.
@@ -594,8 +601,7 @@ def main():
         depot_code, date_str, riro_path.name,
         raw_rows=len(raw_rows), orders_count=len(orders), dropped=dropped,
         prediction=args.prediction,
-        predicted_count=len(predicted_rows) if coefficient != 1.0 else 0,
-        kg_coef=kg_coef,
+        prediction_block=prediction_block,
     )
     stats_file = output_dir / f"prepare_stats_{depot_code}_{date_str}.json"
     with open(stats_file, "w", encoding="utf-8") as f:

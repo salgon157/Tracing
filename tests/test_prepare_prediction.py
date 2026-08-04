@@ -4,8 +4,11 @@ test_prepare_prediction.py — predikční režim prepare_inputs_v6.py
 Dvě věci, které ostrý běh nemá:
   1. sloupec Y (datum ROZVOZU) — dřívější datum = dopredikovaná objednávka,
      zatímco v ostrém běhu je jakékoli jiné datum vada exportu
-  2. koeficient nárůstu/poklesu kg — spočítá se ze spárovaných objednávek
-     a přenásobí váhu POUZE dopredikovaným (čas zastávky SEC zůstává)
+  2. blok `prediction` ve stats — od srpna 2026 nese výsledek losu podle
+     šance z historie závozů (viz tests/test_order_history.py)
+
+Koeficient kg (compute_kg_coefficient) už main() nevolá, ale funkce zůstává
+v kódu — testy níž ji drží funkční pro případ návratu k téhle metodě.
 """
 import pytest
 
@@ -188,14 +191,30 @@ class TestCoefficientApplication:
 
 class TestPrepareStatsPrediction:
     def test_prediction_block_present(self):
-        coef = {"pairs": 82, "coefficient": 0.915, "applied": True}
+        block = {"mode": "chance_from_history", "predicted_orders": 5,
+                 "included": 3, "skipped_by_chance": 2}
         s = build_prepare_stats("CB", "2026-07-28", "riro.csv", raw_rows=125,
-                                orders_count=125, dropped=[], prediction=True,
-                                predicted_count=5, kg_coef=coef)
+                                orders_count=123, dropped=[], prediction=True,
+                                prediction_block=block)
         assert s["prediction"]["predicted_orders"] == 5
-        assert s["prediction"]["kg_coefficient"]["coefficient"] == 0.915
+        assert s["prediction"]["skipped_by_chance"] == 2
 
     def test_production_has_no_prediction_block(self):
         s = build_prepare_stats("CB", "2026-07-28", "riro.csv", raw_rows=129,
                                 orders_count=129, dropped=[])
         assert "prediction" not in s
+
+    def test_skipped_by_chance_not_counted_as_excluded(self):
+        # losem vynechaná objednávka NENÍ vadný řádek — kdyby se přičetla do
+        # excluded_total, compare_prediction.py by hlásil neexistující chyby dat
+        block = {"predicted_orders": 10, "included": 7, "skipped_by_chance": 3}
+        s = build_prepare_stats("CB", "2026-07-28", "riro.csv", raw_rows=100,
+                                orders_count=97, dropped=[], prediction=True,
+                                prediction_block=block)
+        assert s["excluded_total"] == 0
+        assert s["excluded_rows"] == []
+
+    def test_empty_block_tolerated(self):
+        s = build_prepare_stats("CB", "2026-07-28", "riro.csv", raw_rows=10,
+                                orders_count=10, dropped=[], prediction=True)
+        assert s["prediction"] == {}
