@@ -1,14 +1,15 @@
 """
 test_prepare_prediction.py — predikční režim prepare_inputs_v6.py
 
-Dvě věci, které ostrý běh nemá:
+Tři věci, které ostrý běh nemá:
   1. sloupec Y (datum ROZVOZU) — dřívější datum = dopredikovaná objednávka,
      zatímco v ostrém běhu je jakékoli jiné datum vada exportu
-  2. blok `prediction` ve stats — od srpna 2026 nese výsledek losu podle
-     šance z historie závozů (viz tests/test_order_history.py)
+  2. LOS podle šance z historie závozů — objednávka jde do plánu celá,
+     nebo vůbec (viz tests/test_order_history.py)
+  3. KOEFICIENT kg — vahám objednávek, které losem prošly, se přenásobí
+     poměrem suma(dnes)/suma(minule); jejich váha je z minulého týdne
 
-Koeficient kg (compute_kg_coefficient) už main() nevolá, ale funkce zůstává
-v kódu — testy níž ji drží funkční pro případ návratu k téhle metodě.
+Pořadí je los → koeficient. SEC se nemění nikdy (neznáme vzorec ESO9).
 """
 import pytest
 
@@ -19,6 +20,7 @@ from prepare_inputs_v6 import (
     build_prepare_stats,
     check_delivery_dates,
     compute_kg_coefficient,
+    format_kg_coefficient_summary,
     parse_prev_kg,
     transform,
 )
@@ -218,3 +220,90 @@ class TestPrepareStatsPrediction:
         s = build_prepare_stats("CB", "2026-07-28", "riro.csv", raw_rows=10,
                                 orders_count=10, dropped=[], prediction=True)
         assert s["prediction"] == {}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Kombinace los + koeficient (srpen 2026)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestLosPlusCoefficient:
+    """Objednávka, která projde losem, dostane přenásobenou váhu.
+    Ta, která neprojde, do transform vůbec nevstoupí."""
+
+    def _pairs(self, n=KG_COEF_MIN_PAIRS, now=12, prev=10):
+        # reálné objednávky na dnešek — z nich se počítá koeficient
+        return [_row(line=1000 + i, payload=f"KG:{now}#SEC:300",
+                     prev_kg=str(prev), order_no=f"REAL{i}")
+                for i in range(n)]
+
+    def test_only_selected_rows_are_scaled(self):
+        # los vybral řádek 1, řádek 2 vyřadil (do transform nejde)
+        rows = self._pairs() + [
+            _row(line=1, payload="KG:100#SEC:600", order_no="VYBRANA",
+                 delivery_date="20260721"),
+        ]
+        coef = compute_kg_coefficient(rows)
+        assert coef["coefficient"] == pytest.approx(1.2)
+
+        orders, _ = transform(rows, "CB", predicted_lines={1},
+                              kg_coefficient=coef["coefficient"])
+        by_id = {o["order_number"]: o for o in orders}
+        assert by_id["VYBRANA"]["weight_kg"] == pytest.approx(120.0)
+        assert by_id["REAL0"]["weight_kg"] == pytest.approx(12.0)   # reálná beze změny
+
+    def test_service_sec_survives_both_steps(self):
+        rows = self._pairs() + [_row(line=1, payload="KG:100#SEC:777",
+                                     order_no="P", delivery_date="20260721")]
+        orders, _ = transform(rows, "CB", predicted_lines={1}, kg_coefficient=2.0)
+        assert [o for o in orders if o["order_number"] == "P"][0]["service_sec"] == 777
+
+    def test_unapplied_coefficient_leaves_weights_alone(self):
+        # málo párů -> koeficient 1.0 -> los rozhoduje, váhy zůstávají
+        rows = self._pairs(n=KG_COEF_MIN_PAIRS - 1, now=20, prev=10)
+        rows.append(_row(line=1, payload="KG:100#SEC:600", order_no="P",
+                         delivery_date="20260721"))
+        coef = compute_kg_coefficient(rows)
+        assert coef["applied"] is False
+        orders, _ = transform(rows, "CB", predicted_lines={1},
+                              kg_coefficient=coef["coefficient"])
+        assert [o for o in orders if o["order_number"] == "P"][0]["weight_kg"] \
+            == pytest.approx(100.0)
+
+
+class TestCoefficientSummary:
+    def _coef(self, **kw):
+        base = {"pairs": 110, "kg_now": 14196.0, "kg_prev": 12999.0,
+                "raw": 1.0921, "coefficient": 1.0921, "applied": True,
+                "clamped": False}
+        base.update(kw)
+        return base
+
+    def test_shows_source_and_effect(self):
+        rows = [_row(line=1, payload="KG:100#SEC:600"),
+                _row(line=2, payload="KG:200#SEC:600")]
+        out = format_kg_coefficient_summary(self._coef(), rows, {1, 2})
+        assert "1.0921" in out
+        assert "110 spárovaných" in out
+        assert "300 kg" in out and "328 kg" in out        # 300 -> 327.6
+        assert "SEC" in out
+
+    def test_counts_only_selected(self):
+        rows = [_row(line=1, payload="KG:100#SEC:600"),
+                _row(line=2, payload="KG:900#SEC:600")]
+        out = format_kg_coefficient_summary(self._coef(), rows, {1})
+        assert "na 1 dopredikovaných" in out
+        assert "100 kg" in out
+
+    def test_not_applied_explains_why(self):
+        out = format_kg_coefficient_summary(
+            self._coef(applied=False, pairs=3), [], set())
+        assert "NEPOUŽIT" in out
+        assert "3 spárovaných" in out
+        assert str(KG_COEF_MIN_PAIRS) in out
+
+    def test_clamped_is_visible(self):
+        out = format_kg_coefficient_summary(
+            self._coef(raw=3.5, coefficient=KG_COEF_MAX, clamped=True),
+            [_row(line=1, payload="KG:100#SEC:600")], {1})
+        assert "OŘEZÁNO" in out
+        assert str(KG_COEF_MAX) in out

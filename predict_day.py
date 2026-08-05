@@ -68,8 +68,9 @@ def build_depot_commands(depot: str, date_str: str, stamp: str, *,
     out_dir = root / "results" / depot / f"{date_str}_{stamp}"
 
     # --prediction: objednávky s dřívějším datem rozvozu jsou dopredikované
-    # (v ostrém běhu by to byla chyba exportu) a projdou losem podle šance
-    # z historie závozů — do plánu jdou celé, nebo vůbec.
+    # (v ostrém běhu by to byla chyba exportu). Projdou losem podle šance
+    # z historie závozů — do plánu jdou celé, nebo vůbec — a těm, které
+    # prošly, se váha přenásobí koeficientem kg (jejich kg jsou z minula).
     prepare = [PY, "prepare_inputs_v6.py", depot,
                "--data-root", root.as_posix(), "--prediction"]
 

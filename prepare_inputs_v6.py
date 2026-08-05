@@ -274,13 +274,14 @@ def check_delivery_dates(raw_rows: list[dict], date_str: str,
 def compute_kg_coefficient(raw_rows: list[dict]) -> dict:
     """Koeficient nárůstu/poklesu kg = suma(dnes) / suma(minule).
 
-    VYPNUTO od srpna 2026 — main() tuhle funkci už nevolá. Predikce místo
-    škálování vah losuje celé objednávky podle šance z historie závozů
-    (order_history.py). Kód zůstává pro případ návratu k téhle metodě.
+    Predikce ho používá jako DRUHÝ krok po losu: objednávky, které losem
+    prošly, mají váhu z minulého týdne a koeficient ji převede na dnešek.
+    (Los podle šance z historie řeší order_history.py.)
 
     Počítá se ze SPÁROVANÝCH objednávek — těch, které mají ve sloupci AE
-    kg z minulého závozu (tj. jely i minule). Ořezaný a s minimem párů,
-    aby pár výjimek nerozhodilo celý den.
+    kg z minulého závozu (tj. jely i minule). V praxi jsou to reálné
+    objednávky na dnešek; dopredikované řádky v AE nic nemají. Ořezaný
+    a s minimem párů, aby pár výjimek nerozhodilo celý den.
     """
     kg_now = kg_prev = 0.0
     pairs = 0
@@ -457,6 +458,44 @@ def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
     return stats
 
 
+def format_kg_coefficient_summary(coef: dict, rows: list[dict],
+                                  predicted_lines: set[int]) -> str:
+    """
+    Souhrn za koeficient kg — jeden odstavec pod tabulku losu.
+
+    Ukazuje, z čeho se koeficient spočítal a co udělal s vahami
+    dopredikovaných objednávek, které prošly losem.
+    """
+    touched = [r for r in rows if r.get("_line") in predicted_lines]
+    kg_before = 0.0
+    for raw in touched:
+        kg = parse_payload(raw.get("payload_raw", "")).get("KG")
+        if kg is not None and kg >= 0:
+            kg_before += float(kg)
+    factor = coef["coefficient"]
+    delta = kg_before * (factor - 1.0)
+
+    lines = [f"\n{'─' * 64}", "KOEFICIENT KG"]
+    if not coef.get("applied"):
+        why = (f"jen {coef.get('pairs', 0)} spárovaných objednávek "
+               f"(potřeba {KG_COEF_MIN_PAIRS})"
+               if coef.get("pairs", 0) < KG_COEF_MIN_PAIRS
+               else "chybí kg z minulého závozu")
+        lines.append(f"  NEPOUŽIT ({why}) — váhy zůstávají beze změny")
+        return "\n".join(lines)
+
+    lines.append(f"  {coef['kg_now']:,.0f} kg dnes / {coef['kg_prev']:,.0f} kg minule "
+                 f"= {coef['raw']:.4f}  ({coef['pairs']} spárovaných objednávek)")
+    if coef.get("clamped"):
+        lines.append(f"  OŘEZÁNO na {factor:.4f} "
+                     f"(povolené rozmezí {KG_COEF_MIN}–{KG_COEF_MAX})")
+    lines.append(f"  aplikováno ×{factor:.4f} na {len(touched)} dopredikovaných: "
+                 f"{kg_before:,.0f} kg → {kg_before * factor:,.0f} kg "
+                 f"({delta:+,.0f} kg)")
+    lines.append("  čas zastávky (SEC) se nemění")
+    return "\n".join(lines)
+
+
 def format_dropped_report(dropped: list[dict], raw_rows: int) -> str:
     """Lidsky čitelný seznam vyřazených řádků — konkrétní řádek, důvod, hodnoty."""
     lines = [f"\n{'=' * 64}",
@@ -554,11 +593,19 @@ def main():
     # v predikci označuje dřívější datum dopredikované objednávky.
     predicted_rows = check_delivery_dates(raw_rows, date_str, args.prediction)
 
-    # Predikce: každá dopredikovaná objednávka projde losem podle šance,
-    # že adresa v daný den v týdnu opravdu objedná (spočítáno z historie
-    # závozů). Objednávka jde do plánu CELÁ, nebo vůbec — kg se neškálují.
+    # Predikce běží ve dvou krocích:
+    #   1) LOS — každá dopredikovaná objednávka projde losem podle šance, že
+    #      adresa v daný den v týdnu opravdu objedná (z historie závozů).
+    #      Objednávka jde do plánu CELÁ, nebo vůbec.
+    #   2) KOEFICIENT kg — vahám těch, které prošly, se přenásobí poměrem
+    #      suma(dnes)/suma(minule) ze spárovaných objednávek (sloupec AE).
+    #      Váha dopredikované je z minulého týdne, koeficient ji převede na
+    #      dnešek. Čas zastávky (SEC) se nemění — neznáme vzorec ESO9.
+    # Los je první schválně: vyloučené řádky do transform vůbec nevstoupí.
     prediction_block = None
     rows_for_transform = raw_rows
+    predicted_lines: set[int] = set()
+    kg_coef = {"coefficient": 1.0, "applied": False}
     if args.prediction:
         import order_history            # jen pro predikci — ostrý běh historii nečte
 
@@ -574,8 +621,17 @@ def main():
 
         skipped_lines = {r["line"] for r in records if not r["selected"]}
         rows_for_transform = [r for r in raw_rows if r["_line"] not in skipped_lines]
+        predicted_lines = {r["line"] for r in records if r["selected"]}
 
-    orders, dropped = transform(rows_for_transform, depot_code)
+        # Koeficient se počítá ze VŠECH řádků (páruje jen ty s hodnotou v AE,
+        # což jsou v praxi reálné objednávky na dnešek — dopredikované AE nemají).
+        kg_coef = compute_kg_coefficient(raw_rows)
+        prediction_block["kg_coefficient"] = kg_coef
+        print(format_kg_coefficient_summary(kg_coef, rows_for_transform, predicted_lines))
+
+    orders, dropped = transform(rows_for_transform, depot_code,
+                                predicted_lines=predicted_lines,
+                                kg_coefficient=kg_coef["coefficient"])
 
     # Přísný režim: ESO9 garantuje kompletní data, takže jakýkoliv vyřazený
     # řádek = problém ve zdroji, který má někdo opravit — ne tiše přejít.

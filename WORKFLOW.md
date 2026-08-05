@@ -121,11 +121,13 @@ nevypisuje. Časy v **sekundách od půlnoci**:
 
 ### Predikční režim (`--prediction`)
 
-Přidává ho `predict_day.py`, ručně ho nepotřebuješ. Mění dvě věci:
+Přidává ho `predict_day.py`, ručně ho nepotřebuješ. Mění tři věci:
 
 1. **dřívější datum rozvozu = dopredikovaná objednávka** (v ostrém běhu chyba)
 2. **los podle šance z historie** — každá dopredikovaná objednávka se do plánu
-   dostane **celá, nebo vůbec**. Kilogramy se neškálují.
+   dostane **celá, nebo vůbec**
+3. **koeficient kg** — vahám těch, které losem prošly, se přenásobí poměrem
+   `suma(dnes) / suma(minule)` (viz níže)
 
 **Šance = zavezené dny / způsobilé dny stejného dne v týdnu** (počítá
 `order_history.py` z `data/historie_objednavky/*.xlsx`, sloupce `Datum`
@@ -139,13 +141,23 @@ a `Zkratka` = location_code):
 | **bez historie** | nová adresa nebo žádný způsobilý den v okně → **100 %** (radši auto navíc než nerozvezený zákazník) |
 | **los** | deterministický ze `(datum závozu, adresa)` — stejný běh dá stejný plán; všechny objednávky jedné adresy sdílejí jeden los |
 
-Čas zastávky (SEC) ani váhy se **nemění** — objednávka jde do plánu tak, jak
-přišla z ESO9. Tabulka „která objednávka prošla a proč" je v konzoli, strojově
-pak v `prepare_stats_*.json` (blok `prediction`, včetně čitatele, jmenovatele,
+Tabulka „která objednávka prošla a proč" je v konzoli, strojově pak
+v `prepare_stats_*.json` (blok `prediction`, včetně čitatele, jmenovatele,
 hozeného čísla a okna u každé objednávky).
 
-> Koeficient kg (dřívější metoda, sloupec AE) je **vypnutý** — `compute_kg_coefficient`
-> v kódu zůstává, ale `main()` ho už nevolá.
+**Koeficient kg — druhý krok po losu.** Váha dopredikované objednávky je
+z minulého týdne; koeficient ji převede na dnešek:
+
+- počítá se jako `suma(kg dnes) / suma(kg minule)` ze **spárovaných**
+  objednávek — těch, které mají ve sloupci **AE** kg z minulého závozu
+  (v praxi reálné objednávky na dnešek; dopredikované řádky v AE nic nemají)
+- ořez **0,5–2,0**, minimálně **10 párů** (jinak se nepoužije, tedy ×1,0)
+- aplikuje se **jen na dopredikované, které prošly losem**; reálné objednávky
+  mají skutečnou váhu a nikdo se jich nedotkne
+- **čas zastávky (SEC) se nemění nikdy** — neznáme vzorec, kterým ho ESO9 počítá
+
+Souhrn („z čeho spočítán, kolik kg to přidalo") je v konzole pod tabulkou losu
+a v `prepare_stats_*.json` pod `prediction.kg_coefficient`.
 
 Roční exporty do `data/historie_objednavky/` dodáváš ručně; složka je
 v `.gitignore` (GDPR). Načtení obou souborů trvá ~17 s na depo.
