@@ -38,21 +38,16 @@ PREDICTION_RUN_LOG     = PREDICTION_RESULTS / "run_log.jsonl"
 PREDICTION_COMPARISON  = PREDICTION_RESULTS / "comparison.jsonl"
 
 # Flotila a její archiv (config bez PII, verzovaný).
-# Aktivní soubor je datovaný — vehicle_types-YYYYMMDD.csv; bere se ten
-# s nejvyšším datem v názvu, stejně jako v solveru.
+# V data/static smí být PRÁVĚ JEDEN vehicle_types-*.csv — stejné pravidlo
+# jako v solveru. Který to je, řeší vrstva nad programem, ne my.
 VEHICLE_TYPES_DIR    = DATA_ROOT / "static"
 VEHICLE_TYPES_GLOB   = "vehicle_types-*.csv"
 VEHICLE_TYPES_ARCHIV = DATA_ROOT / "static" / "vehicle_types_archiv"
 
 
-def latest_vehicle_types() -> Path | None:
-    """Nejnovější datovaný soubor vozového parku, None když žádný není."""
-    dated = sorted(
-        (p for p in VEHICLE_TYPES_DIR.glob(VEHICLE_TYPES_GLOB)
-         if re.match(r"^vehicle_types-\d{8}\.csv$", p.name, re.IGNORECASE)),
-        key=lambda p: p.name,
-    )
-    return dated[-1] if dated else None
+def vehicle_types_files() -> list[Path]:
+    """Všechny soubory vozového parku v data/static (má být právě jeden)."""
+    return sorted(VEHICLE_TYPES_DIR.glob(VEHICLE_TYPES_GLOB))
 
 WEBUI_DIR  = Path(__file__).resolve().parents[1]   # .../webui
 STATIC_DIR = WEBUI_DIR / "static"

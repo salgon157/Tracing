@@ -120,7 +120,7 @@ CONFIG = {
     # Hodnota se za běhu přepíše na args.orders_file (viz main()).
     "orders_file":                   "",
     # Prázdné = automaticky nejnovější vehicle_types-YYYYMMDD.csv
-    # z data/static (find_latest_vehicle_types). Přepsat lze --vehicle-types-file.
+    # z data/static (find_vehicle_types_file). Přepsat lze --vehicle-types-file.
     "vehicle_types_file":            "",
 
     # Časový buffer na každý úsek: fixní + procentuální (v OSRM/ORS matrici)
@@ -221,43 +221,49 @@ CONFIG = {
 # ============================================================
 
 
-# ── Vozový park: datované soubory se středníkem ──────────────────────────────
-# Od 6. 8. 2026 chodí aktivní vozový park jako `vehicle_types-YYYYMMDD.csv`
-# (středníky, sloupec valid_for_date navíc). Program si sám bere ten
-# s nejvyšším datem v názvu; starší se ručně přesouvají do
-# `data/static/vehicle_types_archiv/`. Starý čárkový formát se odmítá —
-# tichý fallback by znamenal plánování na neaktuální flotile.
+# ── Vozový park: právě jeden soubor v data/static ────────────────────────────
+# Aktivní vozový park je `vehicle_types-*.csv` (středníky, sloupec
+# valid_for_date navíc) a ve složce smí být PRÁVĚ JEDEN. Který to je,
+# neřeší tenhle program — postará se o to vrstva nad ním; my jen ověříme,
+# že je jednoznačný. Co neplatí, patří do `data/static/vehicle_types_archiv/`.
+# Starý čárkový formát se odmítá — tichý fallback by znamenal plánování
+# na neaktuální flotile.
 VEHICLE_TYPES_DIR     = Path("data/static")
 VEHICLE_TYPES_PATTERN = "vehicle_types-*.csv"
-VEHICLE_TYPES_RE      = re.compile(r"^vehicle_types-(\d{8})\.csv$", re.IGNORECASE)
 
 
-def find_latest_vehicle_types(static_dir: Path | str | None = None) -> Path:
+def find_vehicle_types_file(static_dir: Path | str | None = None) -> Path:
     """
-    Najde `vehicle_types-YYYYMMDD.csv` s nejvyšším datem v názvu.
+    Najde jediný soubor vozového parku v data/static.
 
-    Datum se bere z NÁZVU, ne ze sloupce valid_for_date — název je to,
-    co určuje pořadí, a nemusí se kvůli němu soubor otevírat.
+    Víc souborů je vada, ne situace k řešení heuristikou: kdyby program
+    sám vybíral (podle data v názvu, času úpravy…), plánoval by podle
+    souboru, o kterém nikdo nerozhodl.
     """
     # Modulová konstanta se čte AŽ TADY, ne jako default parametru — jinak
     # by nešla přepsat (testy, jiný kořen dat).
     static_path = Path(static_dir if static_dir is not None else VEHICLE_TYPES_DIR)
-    dated: list[tuple[str, Path]] = []
-    if static_path.exists():
-        for candidate in static_path.glob(VEHICLE_TYPES_PATTERN):
-            match = VEHICLE_TYPES_RE.match(candidate.name)
-            if match:
-                dated.append((match.group(1), candidate))
-    if not dated:
+    found = sorted(static_path.glob(VEHICLE_TYPES_PATTERN)) if static_path.exists() else []
+
+    if not found:
         raise FileNotFoundError(
             f"[CHYBA] V {static_path} není žádný soubor vozového parku.\n"
-            f"        Očekávám název ve tvaru vehicle_types-YYYYMMDD.csv "
+            f"        Očekávám právě jeden {VEHICLE_TYPES_PATTERN} "
             f"(středníky, sloupec valid_for_date).\n"
-            f"        Starší soubory patří do "
+            f"        Co už neplatí, patří do "
             f"{static_path / 'vehicle_types_archiv'}."
         )
-    dated.sort(key=lambda item: item[0])
-    return dated[-1][1]
+    if len(found) > 1:
+        names = "\n".join(f"          - {f.name}" for f in found)
+        raise ValueError(
+            f"[CHYBA] V {static_path} je {len(found)} souborů vozového parku:\n"
+            f"{names}\n"
+            f"        Nech tam PRÁVĚ JEDEN — ostatní přesuň do "
+            f"{static_path / 'vehicle_types_archiv'}.\n"
+            f"        Program schválně nevybírá sám: plánovat podle souboru,\n"
+            f"        o kterém nikdo nerozhodl, je horší než se zastavit."
+        )
+    return found[0]
 
 
 # Hodnota, která vypadá jako datum (17.04.2026, 17.4.2026, 2026-04-17, XII.00)
@@ -305,12 +311,12 @@ def load_vehicle_types_db(path: str | None = None, block_id: str = "") -> list:
     Načte vozový park — každý řádek = jeden typ vozidla.
 
     Bez `path` si sám vezme nejnovější `vehicle_types-YYYYMMDD.csv`
-    z data/static (viz find_latest_vehicle_types). Vrátí list
+    z data/static (viz find_vehicle_types_file). Vrátí list
     pseudo-vozidel expandovaných podle count_block_{block_id}
     (pokud sloupec existuje), jinak podle available_count.
     """
     vehicles = []
-    p = Path(path) if path else find_latest_vehicle_types()
+    p = Path(path) if path else find_vehicle_types_file()
     if not p.exists():
         raise FileNotFoundError(
             f"[CHYBA] {p} nenalezen.\n"
@@ -2047,7 +2053,7 @@ def _load_raw_max_kg_by_type(vehicle_types_file: str | None = None) -> dict:
     ESO chce papírovou nosnost vozu, ne interní plánovací rezervu."""
     mapping: dict[str, float] = {}
     try:
-        path = Path(vehicle_types_file) if vehicle_types_file else find_latest_vehicle_types()
+        path = Path(vehicle_types_file) if vehicle_types_file else find_vehicle_types_file()
         with open(path, encoding="utf-8-sig") as f:
             for row in csv.DictReader(f, delimiter=";"):
                 mapping[row["type_code"].strip()] = float(row["max_kg"])
@@ -2556,7 +2562,7 @@ def main():
     # Bez --vehicle-types-file se vezme nejnovější datovaný soubor; ať je
     # v logu i v run recordu vidět, se kterým vozovým parkem se plánovalo.
     vehicle_types_path = (Path(args.vehicle_types_file) if args.vehicle_types_file
-                          else find_latest_vehicle_types())
+                          else find_vehicle_types_file())
     CONFIG["vehicle_types_file"] = str(vehicle_types_path)
     print(f"  Vozový park: {vehicle_types_path}")
     vehicles_expanded = load_vehicle_types_db(str(vehicle_types_path), block_id=block_id)

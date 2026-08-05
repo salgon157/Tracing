@@ -72,7 +72,14 @@ def _read_fleet(path) -> dict:
 
 @router.get("")
 def fleet() -> dict:
-    return _read_fleet(config.latest_vehicle_types())
+    files = config.vehicle_types_files()
+    if len(files) > 1:
+        # UI nesmí ukazovat jiný soubor, než se kterým počítá solver —
+        # ten při víc souborech odmítne běžet, tak to tu jen zobrazíme.
+        return {"rows": [], "summary": {},
+                "error": f"v data/static je {len(files)} souborů vozového parku "
+                         f"({', '.join(f.name for f in files)}) — nech tam právě jeden"}
+    return _read_fleet(files[0] if files else None)
 
 
 @router.get("/archive")

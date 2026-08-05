@@ -36,15 +36,18 @@ class TestFleet:
         assert len(d["rows"]) == 2
         assert d["source_file"] == "vehicle_types-20260806.csv"
 
-    def test_picks_newest_by_date_in_name(self, tmp_path, monkeypatch):
+    def test_two_files_reported_as_error(self, tmp_path, monkeypatch):
+        # v data/static smí být právě jeden — UI nesmí ukazovat jiný soubor,
+        # než se kterým počítá solver (ten při víc souborech odmítne běžet)
         self._write(tmp_path / "vehicle_types-20260806.csv",
                     ["T1;Nova;1350;11.0;1000;50;Malé auto;driving;c;n;20260805\n"])
         self._write(tmp_path / "vehicle_types-20260701.csv",
                     ["T1;Stara;1350;11.0;1000;9;Malé auto;driving;c;n;20260630\n"])
         monkeypatch.setattr(config, "VEHICLE_TYPES_DIR", tmp_path)
         d = api_fleet.fleet()
-        assert d["source_file"] == "vehicle_types-20260806.csv"
-        assert d["summary"]["vehicles_total"] == 50
+        assert d["rows"] == []
+        assert "2 souborů" in d["error"]
+        assert "právě jeden" in d["error"]
 
     def test_missing_file_tolerant(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "VEHICLE_TYPES_DIR", tmp_path)

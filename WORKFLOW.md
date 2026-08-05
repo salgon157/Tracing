@@ -298,10 +298,11 @@ automaticky. Config bez PII → **je verzován**.
 
 ## 6. Vozový park a náklady vozidel
 
-**Aktivní soubor je datovaný: `data/static/vehicle_types-YYYYMMDD.csv`**
-(od 6. 8. 2026). Program si sám vezme ten s **nejvyšším datem v názvu** —
-nový export stačí nakopírovat do `data/static/`, nic se nepřejmenovává.
-Co už neplatí, přesuň ručně do `data/static/vehicle_types_archiv/`.
+**V `data/static/` smí být PRÁVĚ JEDEN `vehicle_types-*.csv`** — ten se
+použije. Program **sám nevybírá**: víc souborů je vada, kterou nahlásí
+a zastaví se. Který soubor tam bude, řeší vrstva nad ním; plánovat podle
+souboru, o kterém nikdo nerozhodl, je horší než se zastavit.
+Co už neplatí, přesuň do `data/static/vehicle_types_archiv/`.
 
 Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 

@@ -123,8 +123,8 @@ def load_type_profiles(path: Path | None = VEHICLE_TYPES) -> dict[str, str]:
     profiles: dict[str, str] = {}
     if path is None:
         try:
-            from vrp_solver_lines_v6 import find_latest_vehicle_types
-            path = find_latest_vehicle_types()
+            from vrp_solver_lines_v6 import find_vehicle_types_file
+            path = find_vehicle_types_file()
         except (ImportError, FileNotFoundError):
             return profiles
     if not path.exists():

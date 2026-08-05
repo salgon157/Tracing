@@ -558,8 +558,8 @@ def main() -> None:
     n_orders = sum(count_csv_rows(path) for path in order_files.values())
     # Prázdné = nejnovější datovaný soubor (stejná volba jako v solveru)
     if not args.vehicle_types_file:
-        from vrp_solver_lines_v6 import find_latest_vehicle_types
-        args.vehicle_types_file = str(find_latest_vehicle_types())
+        from vrp_solver_lines_v6 import find_vehicle_types_file
+        args.vehicle_types_file = str(find_vehicle_types_file())
     n_vehicles = count_available_vehicles(Path(args.vehicle_types_file))
     base_clusters = auto_clusters(n_orders, n_vehicles)
     variants = build_variants(

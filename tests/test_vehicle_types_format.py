@@ -1,10 +1,10 @@
 """
-test_vehicle_types_format.py — datovaný vozový park se středníky
+test_vehicle_types_format.py — vozový park se středníky
 
-Od 6. 8. 2026 chodí aktivní vozový park jako `vehicle_types-YYYYMMDD.csv`:
-středníky místo čárek + sloupec `valid_for_date` navíc. Program si sám bere
-soubor s nejvyšším datem v NÁZVU; starší se ručně přesouvají do
-`data/static/vehicle_types_archiv/`.
+Aktivní vozový park je `vehicle_types-*.csv` (středníky místo čárek +
+sloupec `valid_for_date`) a v `data/static` smí být PRÁVĚ JEDEN. Program
+sám nevybírá — víc souborů je vada, kterou nahlásí; který soubor tam bude,
+řeší vrstva nad ním. Co neplatí, patří do `vehicle_types_archiv/`.
 
 Starý čárkový formát se odmítá jasnou chybou — tichý fallback by znamenal
 plánování s prázdnou flotilou nebo na neaktuálních počtech aut.
@@ -14,7 +14,7 @@ import pytest
 from vrp_solver_lines_v6 import (
     CONFIG,
     _load_raw_max_kg_by_type,
-    find_latest_vehicle_types,
+    find_vehicle_types_file,
     load_vehicle_types_db,
 )
 
@@ -41,43 +41,51 @@ def _row(code="TYPE_02", name="Dodávka", max_kg=1350, count=5,
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Výběr nejnovějšího souboru podle data v názvu
+#  Výběr souboru: musí být právě jeden
 # ═════════════════════════════════════════════════════════════════════════════
 
-class TestFindLatest:
-    def test_picks_highest_date(self, tmp_path):
+class TestFindVehicleTypes:
+    def test_single_file_found(self, tmp_path):
+        _write(tmp_path / "vehicle_types-20260806.csv", [_row()])
+        assert find_vehicle_types_file(tmp_path).name == "vehicle_types-20260806.csv"
+
+    def test_name_does_not_have_to_be_dated(self, tmp_path):
+        # datum v názvu už nic neurčuje — vybírá se podle toho, že je jediný
+        _write(tmp_path / "vehicle_types-aktualni.csv", [_row()])
+        assert find_vehicle_types_file(tmp_path).name == "vehicle_types-aktualni.csv"
+
+    def test_two_files_are_an_error(self, tmp_path):
         _write(tmp_path / "vehicle_types-20260701.csv", [_row()])
         _write(tmp_path / "vehicle_types-20260806.csv", [_row()])
-        _write(tmp_path / "vehicle_types-20260315.csv", [_row()])
-        assert find_latest_vehicle_types(tmp_path).name == "vehicle_types-20260806.csv"
+        with pytest.raises(ValueError) as e:
+            find_vehicle_types_file(tmp_path)
+        msg = str(e.value)
+        assert "PRÁVĚ JEDEN" in msg
+        assert "vehicle_types-20260701.csv" in msg
+        assert "vehicle_types-20260806.csv" in msg
 
-    def test_sorts_by_date_not_alphabetically(self, tmp_path):
-        # 20261101 > 20260901 i když textově "1" < "9" na druhé pozici
-        _write(tmp_path / "vehicle_types-20260901.csv", [_row()])
-        _write(tmp_path / "vehicle_types-20261101.csv", [_row()])
-        assert find_latest_vehicle_types(tmp_path).name == "vehicle_types-20261101.csv"
+    def test_never_picks_silently(self, tmp_path):
+        # dřív se bral nejnovější podle data — to už NESMÍ projít
+        _write(tmp_path / "vehicle_types-20260101.csv", [_row()])
+        _write(tmp_path / "vehicle_types-20261231.csv", [_row()])
+        with pytest.raises(ValueError):
+            find_vehicle_types_file(tmp_path)
 
-    def test_ignores_undated_and_other_files(self, tmp_path):
+    def test_ignores_other_files(self, tmp_path):
         _write(tmp_path / "vehicle_types-20260806.csv", [_row()])
-        _write(tmp_path / "vehicle_types_old.csv", [_row()])
-        _write(tmp_path / "vehicle_types.csv", [_row()])
+        _write(tmp_path / "vehicle_types_old.csv", [_row()])       # podtržítko
+        _write(tmp_path / "vehicle_types.csv", [_row()])            # bez pomlčky
         (tmp_path / "poznamka.txt").write_text("x", encoding="utf-8")
-        assert find_latest_vehicle_types(tmp_path).name == "vehicle_types-20260806.csv"
+        assert find_vehicle_types_file(tmp_path).name == "vehicle_types-20260806.csv"
 
     def test_empty_dir_explains_expected_name(self, tmp_path):
         with pytest.raises(FileNotFoundError) as e:
-            find_latest_vehicle_types(tmp_path)
-        assert "vehicle_types-YYYYMMDD.csv" in str(e.value)
-
-    def test_only_undated_file_is_not_enough(self, tmp_path):
-        # samotný vehicle_types.csv (starý název) se ignoruje — je to vada
-        _write(tmp_path / "vehicle_types.csv", [_row()])
-        with pytest.raises(FileNotFoundError):
-            find_latest_vehicle_types(tmp_path)
+            find_vehicle_types_file(tmp_path)
+        assert "vehicle_types-*.csv" in str(e.value)
 
     def test_missing_dir(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            find_latest_vehicle_types(tmp_path / "neni")
+            find_vehicle_types_file(tmp_path / "neni")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -101,11 +109,10 @@ class TestLoadNewFormat:
         p = _write(tmp_path / "vehicle_types-20260806.csv", [_row(valid="20260805")])
         assert len(load_vehicle_types_db(str(p))) == 5
 
-    def test_auto_picks_latest_without_path(self, tmp_path, monkeypatch):
-        _write(tmp_path / "vehicle_types-20260701.csv", [_row(count=9)])
+    def test_auto_finds_single_file_without_path(self, tmp_path, monkeypatch):
         _write(tmp_path / "vehicle_types-20260806.csv", [_row(count=4)])
         monkeypatch.setattr("vrp_solver_lines_v6.VEHICLE_TYPES_DIR", tmp_path)
-        assert len(load_vehicle_types_db()) == 4        # z novějšího souboru
+        assert len(load_vehicle_types_db()) == 4
 
     def test_raw_max_kg_reads_semicolons(self, tmp_path):
         # ESO export potřebuje papírovou nosnost — bez capacity multiplieru
@@ -152,14 +159,14 @@ class TestOldFormatRejected:
 class TestRealFleetFile:
     def test_production_file_loads(self):
         # ostrý soubor v data/static musí jít načíst — jinak nepojede nic
-        path = find_latest_vehicle_types()
+        path = find_vehicle_types_file()
         vehicles = load_vehicle_types_db(str(path))
         assert vehicles, "vozový park je prázdný"
         assert all(v["max_kg"] > 0 for v in vehicles)
         assert all(v["cost_per_km"] > 0 for v in vehicles)
 
     def test_config_default_is_empty_means_auto(self):
-        # prázdná cesta v CONFIG = ber nejnovější; kdyby tam byl natvrdo
+        # prázdná cesta v CONFIG = najdi jediný soubor; kdyby tam byl natvrdo
         # starý název, program by po výměně souboru tiše spadl
         assert CONFIG["vehicle_types_file"] in ("", None) or \
             "vehicle_types-" in CONFIG["vehicle_types_file"]
