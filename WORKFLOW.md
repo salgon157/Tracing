@@ -166,6 +166,19 @@ a v `prepare_stats_*.json` pod `prediction.kg_coefficient`.
 > koeficient pak stojí na menším vzorku. Seznam je i ve stats
 > (`prediction.kg_coefficient.suspect_rows`).
 
+**Porovnávací predikční běhy:**
+
+```powershell
+python predict_day.py --label s-koeficientem          # odliší výstupní složku
+python predict_day.py --input-date 20260803           # přepočítá starší den
+```
+
+`--label` přilepí příponu k názvu výstupní složky
+(`results/CB/2026-08-05_1430_s-koeficientem/`), takže jde pustit dvě verze
+predikce vedle sebe a porovnat je. `--input-date` vezme
+`riro-YYYYMMDD-*.csv` ze složky depa místo jediného souboru z `aktivni/` —
+ta zůstane netknutá pro běžný běh.
+
 Roční exporty do `data/historie_objednavky/` dodáváš ručně; složka je
 v `.gitignore` (GDPR). Načtení obou souborů trvá ~17 s na depo.
 

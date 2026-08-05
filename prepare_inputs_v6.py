@@ -137,13 +137,17 @@ def find_active_riro_file(depot_code: str, input_dir: Path = INPUT_DIR) -> tuple
         )
 
     riro_path = files[0]
-    m = re.match(r"riro-(\d{4})(\d{2})(\d{2})-", riro_path.name, re.IGNORECASE)
+    return riro_path, parse_date_from_filename(riro_path.name)
+
+
+def parse_date_from_filename(name: str) -> str:
+    """'riro-20260803-CB.csv' -> '2026-08-03'. Datum závozu je vždy z NÁZVU."""
+    m = re.match(r"riro-(\d{4})(\d{2})(\d{2})-", name, re.IGNORECASE)
     if not m:
         raise ValueError(
-            f"[CHYBA] Název souboru '{riro_path.name}' nesedí na pattern riro-YYYYMMDD-*.csv"
+            f"[CHYBA] Název souboru '{name}' nesedí na pattern riro-YYYYMMDD-*.csv"
         )
-    date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    return riro_path, date_str
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
 def check_row_format(row: list, line_no: int) -> None:
     """Struktura JEDNOHO řádku — počet sloupců."""
@@ -622,11 +626,23 @@ def main():
                              "šance z historie závozů — do plánu jdou celé, nebo "
                              "vůbec. Bez tohoto flagu je jiné datum rozvozu chyba "
                              "exportu.")
+    parser.add_argument("--riro-file", default="",
+                        help="Konkrétní RiRo soubor místo jediného z aktivni/. "
+                             "Pro přepočet staršího dne, aniž bys přehazoval "
+                             "soubory ve složkách. Datum se bere z názvu.")
     args = parser.parse_args()
 
     depot_code = args.depot_code.upper()
     data_root = Path(args.data_root)
-    riro_path, date_str = find_active_riro_file(depot_code, data_root / "input")
+    if args.riro_file:
+        # Ruční volba souboru — datum pořád z názvu, ať je pojmenování
+        # výstupů a párování v run logu stejné jako u běžného běhu.
+        riro_path = Path(args.riro_file)
+        if not riro_path.exists():
+            raise SystemExit(f"[CHYBA] RiRo soubor neexistuje: {riro_path}")
+        date_str = parse_date_from_filename(riro_path.name)
+    else:
+        riro_path, date_str = find_active_riro_file(depot_code, data_root / "input")
     raw_rows = load_riro_csv(riro_path)
 
     print("=" * 64)

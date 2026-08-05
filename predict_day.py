@@ -26,12 +26,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from prepare_inputs_v6 import find_active_riro_file
+from prepare_inputs_v6 import find_active_riro_file, parse_date_from_filename
 
 PY              = sys.executable
 PREDICTION_ROOT = Path("data/prediction")
@@ -58,14 +59,42 @@ def depots_with_input(root: Path = PREDICTION_ROOT) -> list[str]:
     return found
 
 
+def find_riro_for_date(depot: str, yyyymmdd: str,
+                       root: Path = PREDICTION_ROOT) -> Path:
+    """
+    Najde riro-YYYYMMDD-*.csv ve složce depa (o úroveň nad aktivni/).
+
+    Umožňuje přepočítat starší den, aniž by se přehazovaly soubory
+    v aktivni/ — ta zůstane netknutá pro běžný běh.
+    """
+    depot_dir = root / "input" / depot
+    matches = sorted(depot_dir.glob(f"riro-{yyyymmdd}-*.csv"))
+    if not matches:
+        raise FileNotFoundError(
+            f"[CHYBA] V {depot_dir} není riro-{yyyymmdd}-*.csv")
+    if len(matches) > 1:
+        names = ", ".join(m.name for m in matches)
+        raise ValueError(
+            f"[CHYBA] Pro {yyyymmdd} je v {depot_dir} víc souborů: {names}")
+    return matches[0]
+
+
 def build_depot_commands(depot: str, date_str: str, stamp: str, *,
                          budget_min: float, force_matrix: bool,
                          osm_source: str, visualize: bool,
-                         root: Path = PREDICTION_ROOT) -> tuple[list[list[str]], Path]:
+                         root: Path = PREDICTION_ROOT,
+                         label: str = "",
+                         riro_file: Path | None = None) -> tuple[list[list[str]], Path]:
     """Složí příkazy pro jedno depo — tytéž jako denní běh, jen pod {root}.
-    Vrací (seznam argv, výstupní složka)."""
+    Vrací (seznam argv, výstupní složka).
+
+    `label` se přilepí k názvu výstupní složky, ať jde odlišit, čím se běh
+    lišil (např. jinou verzí predikce). `riro_file` obejde aktivni/ složku
+    a použije konkrétní soubor — pro přepočet staršího dne.
+    """
     orders  = root / "prepared" / depot / f"orders_{depot}_{date_str}.csv"
-    out_dir = root / "results" / depot / f"{date_str}_{stamp}"
+    suffix  = f"_{label}" if label else ""
+    out_dir = root / "results" / depot / f"{date_str}_{stamp}{suffix}"
 
     # --prediction: objednávky s dřívějším datem rozvozu jsou dopredikované
     # (v ostrém běhu by to byla chyba exportu). Projdou losem podle šance
@@ -73,6 +102,8 @@ def build_depot_commands(depot: str, date_str: str, stamp: str, *,
     # prošly, se váha přenásobí koeficientem kg (jejich kg jsou z minula).
     prepare = [PY, "prepare_inputs_v6.py", depot,
                "--data-root", root.as_posix(), "--prediction"]
+    if riro_file is not None:
+        prepare += ["--riro-file", riro_file.as_posix()]
 
     solve = [PY, "vrp_solver_lines_v6.py",
              "--orders-file", orders.as_posix(),
@@ -138,7 +169,19 @@ def main() -> None:
                         help="Nevytvářet mapy (default: mapy se generují — sklad je používá)")
     parser.add_argument("--skip-tests", action="store_true",
                         help="Přeskočit startup testy úplně")
+    parser.add_argument("--label", default="",
+                        help="Přípona výstupní složky, ať jde běh odlišit "
+                             "(např. --label s-koeficientem → "
+                             "results/CB/2026-08-05_1430_s-koeficientem/).")
+    parser.add_argument("--input-date", default="",
+                        help="Přepočítat starší den: vezme "
+                             "riro-YYYYMMDD-*.csv ze složky depa místo "
+                             "jediného souboru z aktivni/. Formát: 20260803.")
     args = parser.parse_args()
+
+    label = re.sub(r"[^\w.-]+", "-", args.label.strip()).strip("-")
+    if args.input_date and not re.fullmatch(r"\d{8}", args.input_date):
+        sys.exit("[CHYBA] --input-date musí být ve tvaru YYYYMMDD, např. 20260803.")
 
     if not Path("vrp_solver_lines_v6.py").exists():
         sys.exit("[CHYBA] Spusť z kořene repa (tam, kde je vrp_solver_lines_v6.py).")
@@ -162,8 +205,13 @@ def main() -> None:
 
     results: list[tuple[str, Path | None, str]] = []   # (depo, out_dir, status)
     for depot in depots:
+        riro_file = None
         try:
-            _, date_str = find_active_riro_file(depot, PREDICTION_ROOT / "input")
+            if args.input_date:
+                riro_file = find_riro_for_date(depot, args.input_date)
+                date_str = parse_date_from_filename(riro_file.name)
+            else:
+                _, date_str = find_active_riro_file(depot, PREDICTION_ROOT / "input")
         except (FileNotFoundError, ValueError) as e:
             print(f"\n[{depot}] PŘESKOČENO — {e}")
             results.append((depot, None, "bez vstupu"))
@@ -173,6 +221,7 @@ def main() -> None:
             depot, date_str, stamp,
             budget_min=args.budget, force_matrix=args.force_matrix,
             osm_source=args.osm_source, visualize=not args.no_visualize,
+            label=label, riro_file=riro_file,
         )
         status = "ok"
         for cmd in cmds:

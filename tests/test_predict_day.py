@@ -3,7 +3,14 @@ test_predict_day.py — testy tenkého predikčního wrapperu (čisté funkce, b
 """
 from pathlib import Path
 
-from predict_day import build_depot_commands, depots_with_input, _fmt_num
+import pytest
+
+from predict_day import (
+    build_depot_commands,
+    depots_with_input,
+    find_riro_for_date,
+    _fmt_num,
+)
 
 
 def _cmds(**kw):
@@ -94,3 +101,60 @@ class TestFmtNum:
 
     def test_fraction(self):
         assert _fmt_num(2.5) == "2.5"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  --label a --input-date (srpen 2026)
+#
+#  Umožňují pustit dvě verze predikce vedle sebe a přepočítat starší den,
+#  aniž by se přehazovaly soubory v aktivni/.
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestLabelAndInputDate:
+    def test_label_appended_to_output_dir(self):
+        _, out_dir = build_depot_commands(
+            "CB", "2026-08-05", "1430", budget_min=5, force_matrix=False,
+            osm_source="current", visualize=False, label="s-koeficientem")
+        assert out_dir.name == "2026-08-05_1430_s-koeficientem"
+
+    def test_no_label_keeps_original_naming(self):
+        _, out_dir = build_depot_commands(
+            "CB", "2026-08-05", "1430", budget_min=5, force_matrix=False,
+            osm_source="current", visualize=False)
+        assert out_dir.name == "2026-08-05_1430"
+
+    def test_riro_file_passed_to_prepare(self, tmp_path):
+        riro = tmp_path / "riro-20260803-CB.csv"
+        cmds, _ = build_depot_commands(
+            "CB", "2026-08-03", "1430", budget_min=5, force_matrix=False,
+            osm_source="current", visualize=False, riro_file=riro)
+        prepare = cmds[0]
+        assert "--riro-file" in prepare
+        assert prepare[prepare.index("--riro-file") + 1] == riro.as_posix()
+
+    def test_no_riro_file_means_aktivni(self):
+        cmds, _ = build_depot_commands(
+            "CB", "2026-08-05", "1430", budget_min=5, force_matrix=False,
+            osm_source="current", visualize=False)
+        assert "--riro-file" not in cmds[0]
+
+    def test_find_riro_for_date(self, tmp_path):
+        depot_dir = tmp_path / "input" / "CB"
+        depot_dir.mkdir(parents=True)
+        (depot_dir / "riro-20260803-CB.csv").write_text("x", encoding="utf-8")
+        (depot_dir / "riro-20260805-CB.csv").write_text("y", encoding="utf-8")
+        found = find_riro_for_date("CB", "20260803", root=tmp_path)
+        assert found.name == "riro-20260803-CB.csv"
+
+    def test_find_riro_missing_date(self, tmp_path):
+        (tmp_path / "input" / "CB").mkdir(parents=True)
+        with pytest.raises(FileNotFoundError, match="20260803"):
+            find_riro_for_date("CB", "20260803", root=tmp_path)
+
+    def test_find_riro_ambiguous(self, tmp_path):
+        depot_dir = tmp_path / "input" / "CB"
+        depot_dir.mkdir(parents=True)
+        (depot_dir / "riro-20260803-CB.csv").write_text("x", encoding="utf-8")
+        (depot_dir / "riro-20260803-Praha.csv").write_text("y", encoding="utf-8")
+        with pytest.raises(ValueError, match="víc souborů"):
+            find_riro_for_date("CB", "20260803", root=tmp_path)
