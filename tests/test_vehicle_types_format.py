@@ -163,3 +163,80 @@ class TestRealFleetFile:
         # starý název, program by po výměně souboru tiše spadl
         assert CONFIG["vehicle_types_file"] in ("", None) or \
             "vehicle_types-" in CONFIG["vehicle_types_file"]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Vadné číslo v povinném sloupci = fatální (ne tiché přeskočení)
+#
+#  Vzniklo z reálného rizika: cost_per_km 17.4 zobrazí český Excel jako
+#  17. duben a při uložení to zapíše natvrdo. Dřív takový řádek jen zmizel
+#  a plánovalo se s menší flotilou, aniž by si toho někdo všiml.
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestBrokenRowsFatal:
+    def test_excel_date_in_cost_stops_run(self, tmp_path):
+        p = _write(tmp_path / "vehicle_types-20260806.csv", [
+            _row(code="TYPE_02", count=53),
+            "TYPE_03;Nákladní 2t;2000;17.04.2026;1000;1;1;1;"
+            "Velké auto;c;n;1.0;driving;20260805\n",
+        ])
+        with pytest.raises(ValueError) as e:
+            load_vehicle_types_db(str(p))
+        msg = str(e.value)
+        assert "TYPE_03" in msg
+        assert "17.04.2026" in msg
+        assert "DATUM" in msg and "Excel" in msg
+
+    def test_report_names_line_and_column(self, tmp_path):
+        p = _write(tmp_path / "vehicle_types-20260806.csv", [
+            _row(), _row(), "TYPE_04;Kamion;NENI_CISLO;19.5;1000;1;1;1;"
+                            "Velké auto;c;n;1.0;driving;20260805\n",
+        ])
+        with pytest.raises(ValueError) as e:
+            load_vehicle_types_db(str(p))
+        msg = str(e.value)
+        assert "řádek   4" in msg          # hlavička = 1, pak dva _row()
+        assert "max_kg" in msg and "NENI_CISLO" in msg
+
+    def test_broken_count_also_fatal(self, tmp_path):
+        p = _write(tmp_path / "vehicle_types-20260806.csv", [
+            "TYPE_02;Dodávka;1350;11.0;1000;X;5;5;"
+            "Malé auto;c;n;1.0;driving;20260805\n",
+        ])
+        with pytest.raises(ValueError, match="VADNÝCH ŘÁDKŮ"):
+            load_vehicle_types_db(str(p))
+
+    def test_all_broken_rows_listed_at_once(self, tmp_path):
+        # ať uživatel nemusí opravovat po jednom a spouštět znovu
+        p = _write(tmp_path / "vehicle_types-20260806.csv", [
+            "TYPE_02;Dodávka;1350;17.04.2026;1000;5;5;5;M;c;n;1.0;driving;20260805\n",
+            "TYPE_03;Nákladní;2000;19.05.2026;1000;1;1;1;V;c;n;1.0;driving;20260805\n",
+        ])
+        with pytest.raises(ValueError) as e:
+            load_vehicle_types_db(str(p))
+        msg = str(e.value)
+        assert "2 VADNÝCH" in msg
+        assert "TYPE_02" in msg and "TYPE_03" in msg
+
+    def test_zero_count_is_not_an_error(self, tmp_path):
+        # typ, který dnes není k dispozici, je legitimní — jen se nepoužije
+        p = _write(tmp_path / "vehicle_types-20260806.csv", [
+            _row(code="TYPE_02", count=5),
+            _row(code="TYPE_06", count=0),
+        ])
+        vehicles = load_vehicle_types_db(str(p))
+        assert len(vehicles) == 5
+        assert all(v["type_code"] == "TYPE_02" for v in vehicles)
+
+    def test_comment_row_is_not_an_error(self, tmp_path):
+        p = _write(tmp_path / "vehicle_types-20260806.csv", [
+            "#TYPE_09;poznamka;;;;;;;;;;;;\n",
+            _row(count=2),
+        ])
+        assert len(load_vehicle_types_db(str(p))) == 2
+
+    def test_healthy_file_unaffected(self, tmp_path):
+        # závora nesmí nic měnit na správných datech
+        p = _write(tmp_path / "vehicle_types-20260806.csv",
+                   [_row(count=3), _row(code="TYPE_06", count=1)])
+        assert len(load_vehicle_types_db(str(p))) == 4

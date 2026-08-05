@@ -301,6 +301,15 @@ Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 
 - **Starý čárkový formát se odmítá** jasnou chybou. Tichý fallback by znamenal
   plánování s prázdnou flotilou nebo na neaktuálních počtech aut.
+- **Nečitelné číslo v povinném sloupci = běh stojí.** Řádek se nepřeskočí —
+  chybějící typ vozidla by tiše zmenšil flotilu a plán by počítal s auty,
+  která nemáme. Hláška vypíše řádek, sloupec i hodnotu; když vypadá jako
+  datum (`17.04.2026`), upozorní na Excel jako příčinu.
+
+> **Pozor na Excel.** `cost_per_km` má hodnoty jako `17.4` — české locale je
+> zobrazí jako 17. duben. Prohlížet soubor můžeš, ale **neukládej ho z Excelu**;
+> uložením se to zobrazení zapíše natvrdo. Uprav ho v textovém editoru, nebo
+> exportuj z ESO9 znovu. `git diff` na `data/static/` ukáže, jestli se změnil.
 - Který soubor běh použil, je vidět v konzoli (`Vozový park: …`) a v run logu.
 - Ruční volba jiného souboru: `--vehicle-types-file CESTA`.
 - Starý `count_block_{DEPOT}` byl fikce a je odstraněn.

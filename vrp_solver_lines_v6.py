@@ -260,6 +260,46 @@ def find_latest_vehicle_types(static_dir: Path | str | None = None) -> Path:
     return dated[-1][1]
 
 
+# Hodnota, která vypadá jako datum (17.04.2026, 17.4.2026, 2026-04-17, XII.00)
+# — typický otisk Excelu, který desetinné číslo přeformátoval na datum.
+_LOOKS_LIKE_DATE_RE = re.compile(
+    r"^\s*(\d{1,4}[./-]\d{1,2}([./-]\d{1,4})?|[IVXLC]+\.\d+)\s*$"
+)
+
+
+def _broken_vehicle_rows_report(path: Path, broken: list[dict]) -> str:
+    """
+    Hlášení pro řádky vozového parku s nečitelným číslem.
+
+    Fatální schválně: tiché přeskočení by znamenalo plánovat s menší
+    flotilou, než firma reálně má — a nikdo by si toho nevšiml.
+    """
+    lines = ["", "=" * 65,
+             f"[CHYBA] VOZOVÝ PARK MÁ {len(broken)} VADNÝCH ŘÁDKŮ — nic se neplánuje",
+             "=" * 65,
+             f"Soubor: {path}", ""]
+    excel_suspected = False
+    for item in broken:
+        lines.append(f"  řádek {item['line']:>3} | {item['type_code']}:")
+        for col, value in item["values"].items():
+            flag = ""
+            if _LOOKS_LIKE_DATE_RE.match(str(value)):
+                flag = "   <<< vypadá jako DATUM"
+                excel_suspected = True
+            lines.append(f"      {col:<16} = {value!r}{flag}")
+        lines.append(f"      ({item['error']})")
+    if excel_suspected:
+        lines += ["",
+                  "Hodnota ve tvaru data znamená, že soubor prošel Excelem —",
+                  "ten české locale bere '17.4' jako 17. duben a při uložení",
+                  "to zapíše natvrdo. Exportuj vozový park znovu z ESO9,",
+                  "nebo ho oprav v textovém editoru (ne v Excelu)."]
+    lines += ["",
+              "Řádek se ZÁMĚRNĚ nepřeskakuje: chybějící typ vozidla by tiše",
+              "zmenšil flotilu a plán by počítal s auty, která nemáme."]
+    return "\n".join(lines)
+
+
 def load_vehicle_types_db(path: str | None = None, block_id: str = "") -> list:
     """
     Načte vozový park — každý řádek = jeden typ vozidla.
@@ -304,26 +344,35 @@ def load_vehicle_types_db(path: str | None = None, block_id: str = "") -> list:
         else:
             print("  [vehicle] Počty vozidel z available_count (sdílený pool)")
 
-        for row in reader:
+        broken: list[dict] = []
+        for line_no, row in enumerate(reader, start=2):    # 1 = hlavička
             type_code = str(row.get("type_code", "")).strip()
             if not type_code or type_code.startswith("#"):
                 continue
 
+            count_col = block_col if use_block_col else "available_count"
             try:
                 max_kg_raw = float(row["max_kg"])
                 # Kapacitní násobič — solver počítá s mírně vyšší kapacitou
                 # (slack při balení, vzdušné mezery). Config: vehicle_capacity_multiplier.
                 max_kg = max_kg_raw * float(CONFIG.get("vehicle_capacity_multiplier", 1.0))
                 cost_per_km = float(row["cost_per_km"])
-                if use_block_col:
-                    count = int(float(row[block_col]))
-                else:
-                    count = int(float(row["available_count"]))
-            except (ValueError, KeyError) as e:
-                print(f"  [!] vehicle_types: přeskakuji řádek {row} — {e}")
+                count = int(float(row[count_col]))
+            except (ValueError, KeyError, TypeError) as e:
+                # Vadné číslo v povinném sloupci NESMÍ řádek tiše vyhodit —
+                # typ vozidla by zmizel z flotily a plánovalo by se s menším
+                # parkem, aniž by si toho někdo všiml. Typická příčina:
+                # soubor prošel Excelem, který 17.4 přepsal na 17.04.2026.
+                broken.append({
+                    "line": line_no,
+                    "type_code": type_code,
+                    "values": {col: row.get(col, "") for col in
+                               ("max_kg", "cost_per_km", count_col)},
+                    "error": str(e),
+                })
                 continue
 
-            if count <= 0:
+            if count <= 0:      # legitimní: typ, který dnes není k dispozici
                 continue
 
             time_multiplier = float(row.get("time_multiplier") or 1.0)
@@ -347,8 +396,10 @@ def load_vehicle_types_db(path: str | None = None, block_id: str = "") -> list:
                     "osrm_profile":    osrm_profile,
                 })
 
+    if broken:
+        raise ValueError(_broken_vehicle_rows_report(p, broken))
     if not vehicles:
-        raise ValueError(f"[CHYBA] {path} neobsahuje žádné dostupné typy vozidel.")
+        raise ValueError(f"[CHYBA] {p} neobsahuje žádné dostupné typy vozidel.")
     return vehicles
 
 
