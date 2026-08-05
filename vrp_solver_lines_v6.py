@@ -119,7 +119,9 @@ CONFIG = {
     # (např. data/prepared/CB/orders_CB_2026-04-10.csv).
     # Hodnota se za běhu přepíše na args.orders_file (viz main()).
     "orders_file":                   "",
-    "vehicle_types_file":            "data/static/vehicle_types.csv",
+    # Prázdné = automaticky nejnovější vehicle_types-YYYYMMDD.csv
+    # z data/static (find_latest_vehicle_types). Přepsat lze --vehicle-types-file.
+    "vehicle_types_file":            "",
 
     # Časový buffer na každý úsek: fixní + procentuální (v OSRM/ORS matrici)
     "time_buffer_fixed_min":         0,
@@ -219,32 +221,88 @@ CONFIG = {
 # ============================================================
 
 
-def load_vehicle_types_db(path: str, block_id: str = "") -> list:
+# ── Vozový park: datované soubory se středníkem ──────────────────────────────
+# Od 6. 8. 2026 chodí aktivní vozový park jako `vehicle_types-YYYYMMDD.csv`
+# (středníky, sloupec valid_for_date navíc). Program si sám bere ten
+# s nejvyšším datem v názvu; starší se ručně přesouvají do
+# `data/static/vehicle_types_archiv/`. Starý čárkový formát se odmítá —
+# tichý fallback by znamenal plánování na neaktuální flotile.
+VEHICLE_TYPES_DIR     = Path("data/static")
+VEHICLE_TYPES_PATTERN = "vehicle_types-*.csv"
+VEHICLE_TYPES_RE      = re.compile(r"^vehicle_types-(\d{8})\.csv$", re.IGNORECASE)
+
+
+def find_latest_vehicle_types(static_dir: Path | str | None = None) -> Path:
     """
-    Načte vehicle_types.csv — každý řádek = jeden typ vozidla.
-    Vrátí list pseudo-vozidel expandovaných podle count_block_{block_id}
+    Najde `vehicle_types-YYYYMMDD.csv` s nejvyšším datem v názvu.
+
+    Datum se bere z NÁZVU, ne ze sloupce valid_for_date — název je to,
+    co určuje pořadí, a nemusí se kvůli němu soubor otevírat.
+    """
+    # Modulová konstanta se čte AŽ TADY, ne jako default parametru — jinak
+    # by nešla přepsat (testy, jiný kořen dat).
+    static_path = Path(static_dir if static_dir is not None else VEHICLE_TYPES_DIR)
+    dated: list[tuple[str, Path]] = []
+    if static_path.exists():
+        for candidate in static_path.glob(VEHICLE_TYPES_PATTERN):
+            match = VEHICLE_TYPES_RE.match(candidate.name)
+            if match:
+                dated.append((match.group(1), candidate))
+    if not dated:
+        raise FileNotFoundError(
+            f"[CHYBA] V {static_path} není žádný soubor vozového parku.\n"
+            f"        Očekávám název ve tvaru vehicle_types-YYYYMMDD.csv "
+            f"(středníky, sloupec valid_for_date).\n"
+            f"        Starší soubory patří do "
+            f"{static_path / 'vehicle_types_archiv'}."
+        )
+    dated.sort(key=lambda item: item[0])
+    return dated[-1][1]
+
+
+def load_vehicle_types_db(path: str | None = None, block_id: str = "") -> list:
+    """
+    Načte vozový park — každý řádek = jeden typ vozidla.
+
+    Bez `path` si sám vezme nejnovější `vehicle_types-YYYYMMDD.csv`
+    z data/static (viz find_latest_vehicle_types). Vrátí list
+    pseudo-vozidel expandovaných podle count_block_{block_id}
     (pokud sloupec existuje), jinak podle available_count.
     """
     vehicles = []
-    p = Path(path)
+    p = Path(path) if path else find_latest_vehicle_types()
     if not p.exists():
         raise FileNotFoundError(
-            f"[CHYBA] {path} nenalezen.\n"
-            "Vytvoř soubor data/static/vehicle_types.csv."
+            f"[CHYBA] {p} nenalezen.\n"
+            f"        Vozový park patří do {VEHICLE_TYPES_DIR} pod názvem "
+            f"vehicle_types-YYYYMMDD.csv."
         )
 
     with open(p, encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, delimiter=";")
         required = {"type_code", "type_name", "max_kg", "cost_per_km", "available_count"}
-        if not required.issubset(set(reader.fieldnames or [])):
-            raise ValueError(f"[CHYBA] {path} nemá povinné sloupce: {sorted(required)}")
+        fields = set(reader.fieldnames or [])
+        if not required.issubset(fields):
+            # Jediné pole s čárkami uvnitř = soubor je ve starém formátu.
+            # Radši jasná chyba než plánovat s prázdnou flotilou.
+            if len(reader.fieldnames or []) == 1 and "," in (reader.fieldnames or [""])[0]:
+                raise ValueError(
+                    f"[CHYBA] {p} je ve STARÉM formátu (oddělovač čárka).\n"
+                    f"        Od 6. 8. 2026 je vozový park středníkový a má "
+                    f"sloupec valid_for_date.\n"
+                    f"        Exportuj soubor znovu jako "
+                    f"vehicle_types-YYYYMMDD.csv."
+                )
+            raise ValueError(f"[CHYBA] {p} nemá povinné sloupce: {sorted(required)}")
 
         block_col = f"count_block_{block_id}" if block_id else ""
         use_block_col = block_col and block_col in (reader.fieldnames or [])
         if use_block_col:
             print(f"  [vehicle] Používám per-block počty ze sloupce '{block_col}'")
+        elif block_col:
+            print(f"  [vehicle] Sloupec '{block_col}' nenalezen — beru available_count")
         else:
-            print(f"  [vehicle] Sloupec '{block_col}' nenalezen — fallback na available_count")
+            print("  [vehicle] Počty vozidel z available_count (sdílený pool)")
 
         for row in reader:
             type_code = str(row.get("type_code", "")).strip()
@@ -1933,15 +1991,16 @@ ESO_EXPORT_HEADER = [
 ]
 
 
-def _load_raw_max_kg_by_type(vehicle_types_file: str) -> dict:
+def _load_raw_max_kg_by_type(vehicle_types_file: str | None = None) -> dict:
     """type_code -> max_kg PŘESNĚ jak je v CSV (bez capacity multiplieru) —
     ESO chce papírovou nosnost vozu, ne interní plánovací rezervu."""
     mapping: dict[str, float] = {}
     try:
-        with open(vehicle_types_file, encoding="utf-8") as f:
-            for row in csv.DictReader(f):
+        path = Path(vehicle_types_file) if vehicle_types_file else find_latest_vehicle_types()
+        with open(path, encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f, delimiter=";"):
                 mapping[row["type_code"].strip()] = float(row["max_kg"])
-    except (OSError, KeyError, ValueError):
+    except (OSError, KeyError, ValueError, TypeError, AttributeError):
         pass
     return mapping
 
@@ -1960,7 +2019,7 @@ def save_eso_export(routes, output_dir: Path, orders: list, zone_label: str,
     """
     loading_sec = int(CONFIG.get("depot_loading_min", 40)) * 60
     max_kg_by_type = _load_raw_max_kg_by_type(
-        vehicle_types_file or CONFIG["vehicle_types_file"])
+        vehicle_types_file or CONFIG["vehicle_types_file"] or None)
     depot_by_order = {o["id"]: o.get("block_id", "") for o in (orders or [])}
 
     rows = []
@@ -2221,7 +2280,8 @@ def parse_args():
     parser.add_argument("--orders-file", default=CONFIG["orders_file"],
                         help="Solver-ready orders CSV pro jeden block")
     parser.add_argument("--vehicle-types-file", default=CONFIG["vehicle_types_file"],
-                        help="CSV s typy vozidel")
+                        help="CSV s vozovým parkem (středníky). Bez zadání se "
+                             "vezme nejnovější data/static/vehicle_types-YYYYMMDD.csv")
     parser.add_argument("--output-dir", default="output",
                         help="Složka pro výstupy")
     parser.add_argument("--zone-label", default="",
@@ -2442,7 +2502,13 @@ def main():
 
     orders            = load_orders_day(args.orders_file)
     block_id          = orders[0].get("block_id", "").strip() if orders else ""
-    vehicles_expanded = load_vehicle_types_db(args.vehicle_types_file, block_id=block_id)
+    # Bez --vehicle-types-file se vezme nejnovější datovaný soubor; ať je
+    # v logu i v run recordu vidět, se kterým vozovým parkem se plánovalo.
+    vehicle_types_path = (Path(args.vehicle_types_file) if args.vehicle_types_file
+                          else find_latest_vehicle_types())
+    CONFIG["vehicle_types_file"] = str(vehicle_types_path)
+    print(f"  Vozový park: {vehicle_types_path}")
+    vehicles_expanded = load_vehicle_types_db(str(vehicle_types_path), block_id=block_id)
 
     # Pojistka č. 1: neobsloužitelná objednávka (vadné SEC) = stop hned,
     # ne tichá ztráta celého clusteru o pár minut později.

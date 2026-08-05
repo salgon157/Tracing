@@ -34,7 +34,7 @@ from pathlib import Path
 PREDICTION_LOG  = Path("data/prediction/results/run_log.jsonl")
 REAL_LOG        = Path("data/results/run_log.jsonl")
 COMPARISON_PATH = Path("data/prediction/results/comparison.jsonl")
-VEHICLE_TYPES   = Path("data/static/vehicle_types.csv")
+VEHICLE_TYPES   = None      # None = nejnovější vehicle_types-YYYYMMDD.csv
 
 # Poslední segment output_dir: {YYYY-MM-DD} nebo {YYYY-MM-DD}_{HHMM}
 _DIR_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})(?:_(\d{4}))?$")
@@ -110,13 +110,24 @@ def select_run(runs: list[dict], stamp: str | None = None) -> dict | None:
 #  Typy vozidel — agregace malá/velká
 # ────────────────────────────────────────────────────────────────
 
-def load_type_profiles(path: Path = VEHICLE_TYPES) -> dict[str, str]:
-    """type_name -> 'mala' | 'velka' (podle sloupce profiles ve vehicle_types.csv)."""
+def load_type_profiles(path: Path | None = VEHICLE_TYPES) -> dict[str, str]:
+    """
+    type_name -> 'mala' | 'velka' (podle sloupce profiles ve vozovém parku).
+
+    Bez cesty se vezme nejnovější vehicle_types-YYYYMMDD.csv. Chybějící
+    soubor není fatální — porovnání pak jen neagreguje malá/velká.
+    """
     profiles: dict[str, str] = {}
+    if path is None:
+        try:
+            from vrp_solver_lines_v6 import find_latest_vehicle_types
+            path = find_latest_vehicle_types()
+        except (ImportError, FileNotFoundError):
+            return profiles
     if not path.exists():
         return profiles
     with open(path, encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
+        for row in csv.DictReader(f, delimiter=";"):
             name = str(row.get("type_name", "")).strip()
             prof = str(row.get("profiles", "")).strip().lower()
             if not name:

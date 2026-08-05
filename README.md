@@ -122,7 +122,7 @@ data/
 ├── prepared/{DEPO}/          solver-ready CSV + prepare_stats      [NEverzováno]
 ├── results/{DEPO}/{datum}/   plány, mapy, run_log.jsonl            [NEverzováno]
 ├── prediction/               tentýž strom pro predikce             [NEverzováno]
-└── static/                   vehicle_types.csv, closures.json      [verzováno]
+└── static/                   vehicle_types-YYYYMMDD.csv, closures.json  [verzováno]
 ```
 
 `data/prediction/` je **paralelní vesmír** k ostrému provozu — predikce nikdy
@@ -141,7 +141,7 @@ nezapíše do produkčních výsledků ani do ostré historie.
 - `data/static/vehicle_registry.csv` — jména řidičů a SPZ
 - `webui/jobs/`, `experiments/*/results/` — runtime logy a výstupy
 
-Verzuje se **jen kód a config bez PII** (`vehicle_types.csv`, `closures.json`).
+Verzuje se **jen kód a config bez PII** (`vehicle_types-YYYYMMDD.csv`, `closures.json`).
 Repo je **Private**.
 
 ---

@@ -120,12 +120,13 @@ class TestEffectOnPlanning:
     def test_capacity_multiplier_reaches_vehicles(self, tmp_path, cfg):
         # ověř skutečný dopad: násobič se propíše do max_kg vozidel
         from vrp_solver_lines_v6 import load_vehicle_types_db
-        p = tmp_path / "vt.csv"
+        p = tmp_path / "vehicle_types-20260806.csv"
         p.write_text(
-            "type_code,type_name,max_kg,cost_per_km,start_cost_kc,"
-            "available_count,total_count,active_count,profiles,"
-            "cost_per_km_source,available_count_source,time_multiplier,osrm_profile\n"
-            "TYPE_02,Dodávka,1000,11.0,1000,1,1,1,Malé auto,x,y,1.0,driving\n",
+            "type_code;type_name;max_kg;cost_per_km;start_cost_kc;"
+            "available_count;total_count;active_count;profiles;"
+            "cost_per_km_source;available_count_source;time_multiplier;"
+            "osrm_profile;valid_for_date\n"
+            "TYPE_02;Dodávka;1000;11.0;1000;1;1;1;Malé auto;x;y;1.0;driving;20260805\n",
             encoding="utf-8")
 
         original = CONFIG["vehicle_capacity_multiplier"]

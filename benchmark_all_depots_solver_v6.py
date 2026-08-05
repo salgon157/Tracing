@@ -161,7 +161,7 @@ def count_csv_rows(path: Path) -> int:
 def count_available_vehicles(vehicle_types_file: Path) -> int:
     total = 0
     with open(vehicle_types_file, encoding="utf-8-sig", newline="") as handle:
-        for row in csv.DictReader(handle):
+        for row in csv.DictReader(handle, delimiter=";"):
             type_code = str(row.get("type_code", "")).strip()
             if not type_code or type_code.startswith("#"):
                 continue
@@ -454,8 +454,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--vehicle-types-file",
-        default="data/static/vehicle_types.csv",
-        help="Vehicle types CSV. Uses available_count for planning.",
+        default="",
+        help="Vehicle types CSV (semicolon). Empty = latest vehicle_types-YYYYMMDD.csv.",
     )
     parser.add_argument(
         "--cluster-factors",
@@ -556,6 +556,10 @@ def main() -> None:
 
     order_files = resolve_order_files(args.depots, args.date)
     n_orders = sum(count_csv_rows(path) for path in order_files.values())
+    # Prázdné = nejnovější datovaný soubor (stejná volba jako v solveru)
+    if not args.vehicle_types_file:
+        from vrp_solver_lines_v6 import find_latest_vehicle_types
+        args.vehicle_types_file = str(find_latest_vehicle_types())
     n_vehicles = count_available_vehicles(Path(args.vehicle_types_file))
     base_clusters = auto_clusters(n_orders, n_vehicles)
     variants = build_variants(

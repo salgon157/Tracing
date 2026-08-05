@@ -371,7 +371,8 @@ def prepare_matrices(orders, vehicles_expanded):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--orders", required=True)
-    p.add_argument("--vehicle-types", default="data/static/vehicle_types.csv")
+    p.add_argument("--vehicle-types", default="",
+                   help="Vozový park; prázdné = nejnovější vehicle_types-YYYYMMDD.csv")
     p.add_argument("--mode", choices=["broken", "fix"], default="broken",
                    help="broken = produkční parametry | fix = opravené parametry")
     p.add_argument("--budget-sec",  type=int, default=None,

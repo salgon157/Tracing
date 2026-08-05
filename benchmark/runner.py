@@ -724,9 +724,9 @@ Doporučený postup (dvě fáze):
         help=f"Cílový počet běhů per (config × dataset) (default: {DEFAULT_TARGET_RUNS})",
     )
     parser.add_argument(
-        "--vehicles-file", default="data/static/vehicle_types.csv",
+        "--vehicles-file", default="",
         metavar="CSV",
-        help="Cesta k vehicle_types.csv (default: data/static/vehicle_types.csv)",
+        help="Vozový park; prázdné = nejnovější data/static/vehicle_types-YYYYMMDD.csv",
     )
     parser.add_argument(
         "--top", type=int, default=0,

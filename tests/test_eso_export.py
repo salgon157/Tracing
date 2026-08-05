@@ -33,10 +33,10 @@ def _route(stops, depot_departure="07:20", depot_return="12:00",
 
 @pytest.fixture
 def vehicle_types_csv(tmp_path):
-    p = tmp_path / "vehicle_types.csv"
-    p.write_text("type_code,type_name,max_kg\n"
-                 "TYPE_02,Dodávka 1.35t,1350\n"
-                 "TYPE_04,Kamion,3000\n", encoding="utf-8")
+    p = tmp_path / "vehicle_types-20260806.csv"
+    p.write_text("type_code;type_name;max_kg;valid_for_date\n"
+                 "TYPE_02;Dodávka 1.35t;1350;20260805\n"
+                 "TYPE_04;Kamion;3000;20260805\n", encoding="utf-8")
     return str(p)
 
 

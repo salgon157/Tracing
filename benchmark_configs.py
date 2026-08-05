@@ -173,7 +173,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocks-dir",     default="data/prepared",
                         help="Složka s orders_block_*.csv soubory")
-    parser.add_argument("--vehicles-file",  default="data/static/vehicle_types.csv")
+    parser.add_argument("--vehicles-file",  default="",
+                        help="Vozový park; prázdné = nejnovější vehicle_types-YYYYMMDD.csv")
     parser.add_argument("--time-limit",     type=int, default=3600,
                         help="Celkový budget v sekundách (default: 3600 = 60 min)")
     parser.add_argument("--blocks",         nargs="*", default=None,

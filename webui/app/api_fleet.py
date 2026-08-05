@@ -1,7 +1,8 @@
 """
-/api/fleet/* — READ-ONLY pohled na flotilu (data/static/vehicle_types.csv).
+/api/fleet/* — READ-ONLY pohled na flotilu.
 
-Přesně ten soubor, se kterým solver počítá náklady. UI ho jen zobrazuje —
+Přesně ten soubor, se kterým solver počítá náklady: nejnovější
+data/static/vehicle_types-YYYYMMDD.csv (středníky). UI ho jen zobrazuje —
 editace se dělá mimo web (validace by chtěla zvláštní pozornost). Archiv
 předchozích verzí je vedle.
 """
@@ -18,12 +19,15 @@ router = APIRouter(prefix="/api/fleet")
 
 
 def _read_fleet(path) -> dict:
-    """Řádky vehicle_types.csv + souhrn malá/velká. Tolerantní k absenci."""
+    """Řádky vozového parku + souhrn malá/velká. Tolerantní k absenci."""
+    if path is None:
+        return {"rows": [], "summary": {},
+                "error": "žádný vehicle_types-YYYYMMDD.csv v data/static"}
     if not path.exists():
         return {"rows": [], "summary": {}, "error": f"{path.name} neexistuje"}
     try:
         with open(path, encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
+            rows = list(csv.DictReader(f, delimiter=";"))
     except OSError as e:
         return {"rows": [], "summary": {}, "error": str(e)}
 
@@ -53,6 +57,7 @@ def _read_fleet(path) -> dict:
     return {
         "rows": rows,
         "fieldnames": list(rows[0].keys()) if rows else [],
+        "source_file": path.name,
         "summary": {
             "types": len(rows),
             "vehicles_total": total_cnt,
@@ -67,7 +72,7 @@ def _read_fleet(path) -> dict:
 
 @router.get("")
 def fleet() -> dict:
-    return _read_fleet(config.VEHICLE_TYPES_PATH)
+    return _read_fleet(config.latest_vehicle_types())
 
 
 @router.get("/archive")

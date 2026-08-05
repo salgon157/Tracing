@@ -264,16 +264,27 @@ automaticky. Config bez PII → **je verzován**.
 
 ---
 
-## 6. Náklady vozidel
+## 6. Vozový park a náklady vozidel
 
-`data/static/vehicle_types.csv`:
-- `cost_per_km` — sazba za km.
-- `start_cost_kc` — **fixní náklad za výjezd vozidla** (Kč, absolutně; modeluje
-  mzdu řidiče / amortizaci). Per-type, takže dražší řidiče kamionů lze nastavit
-  zvlášť. `0` = žádný fixní náklad.
-- `available_count` — počet aut daného typu (celofiremní sdílený pool).
-  Starý `count_block_{DEPOT}` byl fikce a je odstraněn.
-- Předchozí verze souboru: `data/static/vehicle_types_archiv/`.
+**Aktivní soubor je datovaný: `data/static/vehicle_types-YYYYMMDD.csv`**
+(od 6. 8. 2026). Program si sám vezme ten s **nejvyšším datem v názvu** —
+nový export stačí nakopírovat do `data/static/`, nic se nepřejmenovává.
+Co už neplatí, přesuň ručně do `data/static/vehicle_types_archiv/`.
+
+Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
+
+| sloupec | význam |
+|---|---|
+| `cost_per_km` | sazba za km |
+| `start_cost_kc` | **fixní náklad za výjezd** (Kč; mzda řidiče / amortizace). Per-type, dražší řidiče kamionů lze nastavit zvlášť. `0` = žádný |
+| `available_count` | počet aut daného typu (celofiremní sdílený pool) |
+| `valid_for_date` | datum platnosti (`YYYYMMDD`, jako sloupec Y v riro) — **zatím se nepoužívá**, jen se veze |
+
+- **Starý čárkový formát se odmítá** jasnou chybou. Tichý fallback by znamenal
+  plánování s prázdnou flotilou nebo na neaktuálních počtech aut.
+- Který soubor běh použil, je vidět v konzoli (`Vozový park: …`) a v run logu.
+- Ruční volba jiného souboru: `--vehicle-types-file CESTA`.
+- Starý `count_block_{DEPOT}` byl fikce a je odstraněn.
 
 ---
 

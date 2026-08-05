@@ -14,18 +14,19 @@ from webui.app import api_fleet, api_prediction, commands, config
 
 class TestFleet:
     def _write(self, path, rows):
-        header = ("type_code,type_name,max_kg,cost_per_km,start_cost_kc,"
-                  "available_count,profiles,osrm_profile,"
-                  "cost_per_km_source,available_count_source\n")
+        # nový formát: středníky + valid_for_date (od 6. 8. 2026)
+        header = ("type_code;type_name;max_kg;cost_per_km;start_cost_kc;"
+                  "available_count;profiles;osrm_profile;"
+                  "cost_per_km_source;available_count_source;valid_for_date\n")
         path.write_text(header + "".join(rows), encoding="utf-8")
 
     def test_reads_and_summarizes(self, tmp_path, monkeypatch):
-        p = tmp_path / "vehicle_types.csv"
+        p = tmp_path / "vehicle_types-20260806.csv"
         self._write(p, [
-            "T1,Dodávka,1350,11.0,1000,50,Malé auto,driving,src_c,src_n\n",
-            "T2,Kamion,8000,35.0,1000,2,Velké auto,driving-hgv,src_c,src_n\n",
+            "T1;Dodávka;1350;11.0;1000;50;Malé auto;driving;src_c;src_n;20260805\n",
+            "T2;Kamion;8000;35.0;1000;2;Velké auto;driving-hgv;src_c;src_n;20260805\n",
         ])
-        monkeypatch.setattr(config, "VEHICLE_TYPES_PATH", p)
+        monkeypatch.setattr(config, "VEHICLE_TYPES_DIR", tmp_path)
         d = api_fleet.fleet()
         assert d["summary"]["types"] == 2
         assert d["summary"]["vehicles_total"] == 52
@@ -33,9 +34,20 @@ class TestFleet:
         assert d["summary"]["large_count"] == 2
         assert d["summary"]["cost_source"] == "src_c"
         assert len(d["rows"]) == 2
+        assert d["source_file"] == "vehicle_types-20260806.csv"
+
+    def test_picks_newest_by_date_in_name(self, tmp_path, monkeypatch):
+        self._write(tmp_path / "vehicle_types-20260806.csv",
+                    ["T1;Nova;1350;11.0;1000;50;Malé auto;driving;c;n;20260805\n"])
+        self._write(tmp_path / "vehicle_types-20260701.csv",
+                    ["T1;Stara;1350;11.0;1000;9;Malé auto;driving;c;n;20260630\n"])
+        monkeypatch.setattr(config, "VEHICLE_TYPES_DIR", tmp_path)
+        d = api_fleet.fleet()
+        assert d["source_file"] == "vehicle_types-20260806.csv"
+        assert d["summary"]["vehicles_total"] == 50
 
     def test_missing_file_tolerant(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(config, "VEHICLE_TYPES_PATH", tmp_path / "neni.csv")
+        monkeypatch.setattr(config, "VEHICLE_TYPES_DIR", tmp_path)
         d = api_fleet.fleet()
         assert d["rows"] == []
         assert "error" in d
