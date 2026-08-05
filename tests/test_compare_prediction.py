@@ -4,6 +4,8 @@ Syntetické run logy, žádný dotyk s reálnými daty.
 """
 import json
 
+import compare_prediction as cp
+
 from compare_prediction import (
     aggregate_mix,
     build_comparison,
@@ -157,3 +159,27 @@ class TestExcludedFor:
         assert excluded_for({"input": {"zone": "CB",
                                        "delivery_date": "2026-07-15"},
                              "results": {}}) is None
+
+
+class TestLabelledOutputDirs:
+    """predict_day --label přidá k názvu složky příponu; párování predikce
+    s realitou na tom nesmí spadnout (jinak by označený běh nešel porovnat)."""
+
+    def _rec(self, leaf):
+        return {"results": {"output_dir": f"data/prediction/results/CB/{leaf}"}}
+
+    def test_label_does_not_break_date(self):
+        assert cp.rec_date(self._rec("2026-08-05_1430_s-koeficientem")) == "2026-08-05"
+
+    def test_label_keeps_stamp_readable(self):
+        assert cp.rec_stamp(self._rec("2026-08-05_1430_s-koeficientem")) == "1430"
+
+    def test_plain_and_stamped_still_work(self):
+        assert cp.rec_date(self._rec("2026-08-05")) == "2026-08-05"
+        assert cp.rec_stamp(self._rec("2026-08-05")) is None
+        assert cp.rec_stamp(self._rec("2026-08-05_1430")) == "1430"
+
+    def test_suffix_without_stamp(self):
+        # ostré porovnávací běhy (2026-08-03_s-buffery) stamp nemají
+        assert cp.rec_date(self._rec("2026-08-03_s-buffery")) == "2026-08-03"
+        assert cp.rec_stamp(self._rec("2026-08-03_s-buffery")) is None

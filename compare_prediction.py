@@ -36,8 +36,11 @@ REAL_LOG        = Path("data/results/run_log.jsonl")
 COMPARISON_PATH = Path("data/prediction/results/comparison.jsonl")
 VEHICLE_TYPES   = None      # None = nejnovější vehicle_types-YYYYMMDD.csv
 
-# Poslední segment output_dir: {YYYY-MM-DD} nebo {YYYY-MM-DD}_{HHMM}
-_DIR_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})(?:_(\d{4}))?$")
+# Poslední segment output_dir: {YYYY-MM-DD}, {YYYY-MM-DD}_{HHMM} nebo
+# {YYYY-MM-DD}_{HHMM}_{label} (predict_day --label pro porovnávací běhy).
+# Bez volitelného labelu by se označené predikce nespárovaly s realitou.
+_DIR_DATE_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2})(?:_(\d{4}))?(?:_(?P<label>[^\\/]+))?$")
 
 
 # ────────────────────────────────────────────────────────────────
