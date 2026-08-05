@@ -233,6 +233,55 @@ def parse_prev_kg(raw: str) -> float | None:
     return v
 
 
+def find_suspect_prev_kg(raw_rows: list[dict]) -> list[dict]:
+    """
+    Řádky, kde sloupec AE není ani kg, ani smluvená značka `-1000`.
+
+    Legitimní hodnoty jsou: kladné číslo (kg z minulého závozu), `-1000`
+    (minule bez závozu) a prázdno (údaj nedodán). Cokoli jiného je vada —
+    typicky stopa po Excelu, který číslo převedl na datum (`XII.00`).
+    Řádek se pak jen nezapočítá do koeficientu, plán se nerozbije, ale
+    když takových přibývá, koeficient stojí na míň datech, než si myslíme.
+    """
+    suspect = []
+    for raw in raw_rows:
+        value = str(raw.get("prev_kg", "")).strip()
+        if not value:
+            continue
+        try:
+            number = float(value)
+        except ValueError:
+            reason = "nečíselná hodnota (nejspíš datum z Excelu)"
+        else:
+            if number == PREV_KG_NONE or number > 0:
+                continue
+            reason = ("nula" if number == 0
+                      else f"záporná hodnota jiná než {int(PREV_KG_NONE)}")
+        suspect.append({
+            "line": raw.get("_line"),
+            "order_number": raw.get("order_number", ""),
+            "location_code": raw.get("location_code", ""),
+            "value": value,
+            "reason": reason,
+        })
+    return suspect
+
+
+def format_prev_kg_warning(suspect: list[dict], raw_rows: int) -> str:
+    """Varování (ne chyba) — vadné AE plán nezastaví, jen zmenší vzorek."""
+    lines = [f"\n{'─' * 64}",
+             f"[!] VAROVÁNÍ: {len(suspect)} z {raw_rows} řádků má vadný sloupec AE",
+             "    (kg z minulého závozu — nezapočítá se do koeficientu)"]
+    for s in suspect[:10]:
+        lines.append(f"      řádek {s['line']:>4} | obj {s['order_number']} "
+                     f"| {s['location_code']}: {s['value']!r} — {s['reason']}")
+    if len(suspect) > 10:
+        lines.append(f"      … a dalších {len(suspect) - 10}")
+    lines.append("    Typická příčina: export prošel Excelem a ten číslo "
+                 "přeformátoval na datum.")
+    return "\n".join(lines)
+
+
 def check_delivery_dates(raw_rows: list[dict], date_str: str,
                          prediction: bool) -> list[dict]:
     """Ověří sloupec Y (datum ROZVOZU) proti datu z názvu souboru.
@@ -624,8 +673,13 @@ def main():
         predicted_lines = {r["line"] for r in records if r["selected"]}
 
         # Koeficient se počítá ze VŠECH řádků (páruje jen ty s hodnotou v AE,
-        # což jsou v praxi reálné objednávky na dnešek — dopredikované AE nemají).
+        # což jsou v praxi reálné objednávky na dnešek — dopredikované mají -1000).
+        suspect_prev_kg = find_suspect_prev_kg(raw_rows)
+        if suspect_prev_kg:
+            print(format_prev_kg_warning(suspect_prev_kg, len(raw_rows)))
+
         kg_coef = compute_kg_coefficient(raw_rows)
+        kg_coef["suspect_rows"] = suspect_prev_kg
         prediction_block["kg_coefficient"] = kg_coef
         print(format_kg_coefficient_summary(kg_coef, rows_for_transform, predicted_lines))
 

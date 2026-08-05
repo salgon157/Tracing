@@ -159,6 +159,13 @@ z minulého týdne; koeficient ji převede na dnešek:
 Souhrn („z čeho spočítán, kolik kg to přidalo") je v konzole pod tabulkou losu
 a v `prepare_stats_*.json` pod `prediction.kg_coefficient`.
 
+> **Varování na vadné AE.** Legitimní hodnoty jsou kladné číslo, `-1000`
+> (minule bez závozu) a prázdno. Cokoli jiného — typicky `XII.00`, což je
+> číslo, které Excel přeformátoval na datum — prepare vypíše jako varování
+> se seznamem řádků. Plán to nezastaví (řádek se jen nezapočítá), ale
+> koeficient pak stojí na menším vzorku. Seznam je i ve stats
+> (`prediction.kg_coefficient.suspect_rows`).
+
 Roční exporty do `data/historie_objednavky/` dodáváš ručně; složka je
 v `.gitignore` (GDPR). Načtení obou souborů trvá ~17 s na depo.
 

@@ -20,7 +20,9 @@ from prepare_inputs_v6 import (
     build_prepare_stats,
     check_delivery_dates,
     compute_kg_coefficient,
+    find_suspect_prev_kg,
     format_kg_coefficient_summary,
+    format_prev_kg_warning,
     parse_prev_kg,
     transform,
 )
@@ -307,3 +309,49 @@ class TestCoefficientSummary:
             [_row(line=1, payload="KG:100#SEC:600")], {1})
         assert "OŘEZÁNO" in out
         assert str(KG_COEF_MAX) in out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Varování na vadný sloupec AE (stopa po Excelu)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestSuspectPrevKg:
+    def test_valid_values_are_quiet(self):
+        rows = [_row(line=1, prev_kg="359.30"),      # kg z minula
+                _row(line=2, prev_kg="-1000"),       # minule bez závozu
+                _row(line=3, prev_kg="")]            # údaj nedodán
+        assert find_suspect_prev_kg(rows) == []
+
+    def test_excel_date_flagged(self):
+        # reálný nález z MO 5. 8. 2026 — Excel přeformátoval číslo na datum
+        rows = [_row(line=7, prev_kg="XII.00", order_no="O123")]
+        out = find_suspect_prev_kg(rows)
+        assert len(out) == 1
+        assert out[0]["line"] == 7
+        assert out[0]["value"] == "XII.00"
+        assert "Excelu" in out[0]["reason"]
+
+    def test_zero_and_other_negatives_flagged(self):
+        rows = [_row(line=1, prev_kg="0"), _row(line=2, prev_kg="-5")]
+        out = find_suspect_prev_kg(rows)
+        assert {o["line"] for o in out} == {1, 2}
+        assert "nula" in out[0]["reason"]
+
+    def test_minus_1000_never_flagged(self):
+        # smluvená značka, ne vada — nesmí zahltit varování
+        rows = [_row(line=i, prev_kg="-1000") for i in range(50)]
+        assert find_suspect_prev_kg(rows) == []
+
+    def test_warning_names_rows_and_cause(self):
+        suspect = find_suspect_prev_kg([_row(line=7, prev_kg="XII.00",
+                                             order_no="O123")])
+        out = format_prev_kg_warning(suspect, raw_rows=163)
+        assert "VAROVÁNÍ" in out and "163" in out
+        assert "O123" in out and "XII.00" in out
+        assert "Excelem" in out
+
+    def test_warning_truncates_long_list(self):
+        suspect = find_suspect_prev_kg(
+            [_row(line=i, prev_kg="XII.00") for i in range(25)])
+        out = format_prev_kg_warning(suspect, raw_rows=100)
+        assert "a dalších 15" in out
