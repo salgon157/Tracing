@@ -34,6 +34,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -79,13 +80,55 @@ def resolve_depots_and_date(requested: list[str],
     return depots, next(iter(dates.values()))
 
 
-def run_cmd(cmd: list[str], env: dict, label: str) -> None:
-    print(f"\n[{label}] $ {' '.join(cmd[1:])}")
+def step_header(title: str, detail: str = "") -> None:
+    """Oddělovač kroku — ať se v dlouhém výstupu solveru dá zorientovat."""
+    print("\n" + "▶" + "─" * 65)
+    print(f"▶ {title}")
+    if detail:
+        print(f"▶ {detail}")
+    print("▶" + "─" * 65)
+
+
+def run_cmd(cmd: list[str], env: dict, label: str) -> float:
+    """Spustí podproces, vrátí dobu běhu v sekundách."""
+    print(f"  $ {' '.join(cmd[1:])}")
+    started = time.time()
     result = subprocess.run(cmd, env=env)
+    elapsed = time.time() - started
     if result.returncode != 0:
         raise SystemExit(
             f"[ABORT] Krok '{label}' selhal (kód {result.returncode}) — "
-            "predikce dne se zastavuje, nic dalšího se nespouští.")
+            "běh se zastavuje, nic dalšího se nespouští.")
+    return elapsed
+
+
+def fmt_mix(counts: dict[str, int], small_codes: set[str] | None = None) -> str:
+    """{'TYPE_02': 14} -> 'TYPE_02×14'; malá/velká odděleně, když je znám klíč."""
+    if not counts:
+        return "—"
+    items = sorted(counts.items())
+    if small_codes is None:
+        return ", ".join(f"{t}×{n}" for t, n in items)
+    small = [f"{t}×{n}" for t, n in items if t in small_codes]
+    large = [f"{t}×{n}" for t, n in items if t not in small_codes]
+    parts = []
+    if small:
+        parts.append("malá " + " ".join(small))
+    if large:
+        parts.append("velká " + " ".join(large))
+    return " | ".join(parts) or "—"
+
+
+def summarize_run(lines: list[dict], small_codes: set[str],
+                  elapsed: float, prefix: str = "  →") -> None:
+    """Krátká bilance jednoho solver běhu — hned pod jeho výstupem."""
+    used = fb.vehicles_used_by_type(lines)
+    kg = sum(l["total_kg"] for l in lines)
+    doubles = sum(1 for l in lines if l.get("double_run"))
+    print(f"{prefix} {len(lines)} linek"
+          + (f" (z toho {doubles} dvojlinek)" if doubles else "")
+          + f", {kg:,.0f} kg  |  {fmt_mix(used, small_codes)}"
+          + f"  |  {elapsed / 60:.1f} min")
 
 
 def build_solver_cmd(depot: str, date_str: str, out_dir: Path,
@@ -201,48 +244,84 @@ def main_predict(args: argparse.Namespace) -> None:
           f"| velká: {sum(large_avail.values())} ks")
     print("=" * 66)
 
+    t_start = time.time()
+
     # ── prepare (jednou per depo — P1 i P2 jedou nad týmiž objednávkami) ──
-    for depot in depots:
+    step_header(f"PŘÍPRAVA DAT — {len(depots)} dep",
+                "riro → orders CSV (los podle historie + koeficient kg)")
+    for i, depot in enumerate(depots, 1):
+        print(f"\n  [{i}/{len(depots)}] prepare {depot}")
         run_cmd([PY, "prepare_inputs_v6.py", depot,
                  "--data-root", PREDICTION_ROOT.as_posix(), "--prediction"],
                 env, f"prepare {depot}")
 
     # ── P1: neomezená velká ──────────────────────────────────────────────
+    p1_overrides = fb.p1_overrides(fleet_rows)
     p1_fleet = fb.write_fleet_file(fleet_rows, session / "fleet_P1.csv",
-                                   fb.p1_overrides(fleet_rows))
+                                   p1_overrides)
+    step_header(f"P1 — přání dep ({len(depots)} běhů)",
+                f"velká auta neomezená ({fb.UNLIMITED_LARGE_COUNT} ks/typ), "
+                f"malá plný sklad · L0 (100 %, okna −5/+25)")
     p1_by_depot: dict[str, list[dict]] = {}
-    for depot in depots:
+    for i, depot in enumerate(depots, 1):
+        print(f"\n  [{i}/{len(depots)}] P1 {depot}")
         out_dir = PREDICTION_ROOT / "results" / depot / f"{date_str}_{stamp}_P1"
-        run_cmd(build_solver_cmd(depot, date_str, out_dir, p1_fleet,
-                                 args.budget, args.osm_source,
-                                 args.force_matrix),
-                env, f"P1 {depot}")
+        elapsed = run_cmd(build_solver_cmd(depot, date_str, out_dir, p1_fleet,
+                                           args.budget, args.osm_source,
+                                           args.force_matrix),
+                          env, f"P1 {depot}")
         p1_by_depot[depot] = lines_from_run(out_dir)
+        summarize_run(p1_by_depot[depot], small_codes, elapsed)
 
     # ── Rezervace velkých ────────────────────────────────────────────────
     allocation = fb.allocate_reservations(p1_by_depot, large_avail)
+    step_header("REZERVACE VELKÝCH AUT",
+                "přetečené typy ořezané žebříčkem podle naloženosti linek")
+    for depot in depots:
+        wish = allocation["wishes"].get(depot, {})
+        res = allocation["reservations"].get(depot, {})
+        changed = "" if wish == res else "   ← ořezáno"
+        print(f"  {depot}: přání {fmt_mix(wish):<28} → rezervace "
+              f"{fmt_mix(res)}{changed}")
+    free = {t: n for t, n in allocation["free_pool"].items() if n > 0}
+    print(f"  volný pool (bere kdokoli): {fmt_mix(free)}")
+    for t in allocation["truncated"]:
+        print(f"  [!] {t['type']}: přání {t['wanted']} > sklad {t['available']}")
 
     # ── P2: sekvenčně s budgetem ─────────────────────────────────────────
+    step_header(f"P2 — generálka s ubíráním ({len(depots)} běhů)",
+                f"pořadí uzávěrek {' → '.join(depots)} · velká podle rezervací, "
+                f"malá neomezená (deficit se MĚŘÍ)")
     budget = fb.FleetBudget.from_fleet(fleet_rows)
     p2_by_depot: dict[str, list[dict]] = {}
     for i, depot in enumerate(depots):
         # chráněná = depa, která v sekvenci teprve přijdou
-        caps = fb.caps_for_depot(depot, depots[i + 1:], budget,
+        protected = depots[i + 1:]
+        caps = fb.caps_for_depot(depot, protected, budget,
                                  allocation["reservations"],
                                  small_codes, small_full)
+        large_caps = {t: n for t, n in caps.items()
+                      if t not in small_codes and n > 0}
+        print(f"\n  [{i + 1}/{len(depots)}] P2 {depot}"
+              f"   velká k dispozici: {fmt_mix(large_caps)}"
+              + (f"   (chráněno pro {', '.join(protected)})" if protected else ""))
         p2_fleet = fb.write_fleet_file(fleet_rows,
                                        session / f"fleet_P2_{depot}.csv", caps)
         out_dir = PREDICTION_ROOT / "results" / depot / f"{date_str}_{stamp}_P2"
-        run_cmd(build_solver_cmd(depot, date_str, out_dir, p2_fleet,
-                                 args.budget, args.osm_source,
-                                 args.force_matrix),
-                env, f"P2 {depot}")
+        elapsed = run_cmd(build_solver_cmd(depot, date_str, out_dir, p2_fleet,
+                                           args.budget, args.osm_source,
+                                           args.force_matrix),
+                          env, f"P2 {depot}")
         depot_lines = lines_from_run(out_dir)
         p2_by_depot[depot] = depot_lines
+        summarize_run(depot_lines, small_codes, elapsed)
         # z budgetu ubývají jen velká — malá se měří, ne maskují
-        used_large = {t: n for t, n in fb.count_by_type(depot_lines).items()
+        used_large = {t: n for t, n in fb.vehicles_used_by_type(depot_lines).items()
                       if t not in small_codes}
         budget.consume(used_large, context=f"P2 {depot}")
+        rest = {t: n for t, n in budget.remaining.items()
+                if t not in small_codes and n > 0}
+        print(f"  → zbývá velkých: {fmt_mix(rest)}")
 
     # ── Rozhodnutí ───────────────────────────────────────────────────────
     all_p2_lines = [l for lines in p2_by_depot.values() for l in lines]
@@ -289,6 +368,8 @@ def main_predict(args: argparse.Namespace) -> None:
     decision["_small_codes"] = small_codes
     print(format_report(date_str, stamp, depots, allocation, p2_by_depot,
                         decision, decision_path))
+    print(f"Celková doba: {(time.time() - t_start) / 60:.1f} min "
+          f"({2 * len(depots)} solver běhů)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -406,13 +487,24 @@ def main_real(args: argparse.Namespace) -> None:
     # `real MO` po depech mohl sníst kamion rezervovaný pro PR.
     day_depots = decision.get("depots") or depots
 
-    for depot in to_plan:
-        run_cmd([PY, "prepare_inputs_v6.py", depot], env, f"prepare {depot}")
+    t_start = time.time()
 
+    for i, depot in enumerate(to_plan, 1):
         protected = [d for d in day_depots
                      if d != depot and d not in state["planned"]]
         caps = fb.caps_for_depot(depot, protected, budget, reservations,
                                  small_codes, small_full=None)
+        avail_small = sum(n for t, n in caps.items() if t in small_codes)
+        large_caps = {t: n for t, n in caps.items()
+                      if t not in small_codes and n > 0}
+        step_header(f"[{i}/{len(to_plan)}] DEPO {depot} — {_flags_label(flags)}",
+                    f"k dispozici: malá {avail_small} ks, "
+                    f"velká {fmt_mix(large_caps)}"
+                    + (f" · chráněno pro {', '.join(protected)}"
+                       if protected else " · poslední depo, bere vše"))
+
+        run_cmd([PY, "prepare_inputs_v6.py", depot], env, f"prepare {depot}")
+
         fleet_file = fb.write_fleet_file(fleet_rows,
                                          state_dir / f"fleet_{depot}.csv",
                                          caps)
@@ -420,8 +512,11 @@ def main_real(args: argparse.Namespace) -> None:
         planned_ok = False
         while True:
             cmd = build_real_solver_cmd(depot, date_str, fleet_file, flags, args)
-            print(f"\n[{depot} | {_flags_label(flags)}] $ {' '.join(cmd[1:])}")
+            print(f"\n  solver ({_flags_label(flags)}):")
+            print(f"  $ {' '.join(cmd[1:])}")
+            t_solve = time.time()
             rc = subprocess.run(cmd, env=env).returncode
+            solve_min = (time.time() - t_solve) / 60
             if rc == 0:
                 planned_ok = True
                 break
@@ -456,14 +551,15 @@ def main_real(args: argparse.Namespace) -> None:
         state["remaining"] = budget.remaining
         state["planned"].append(depot)
         save_real_state(state_path, state)
-        double_cnt = sum(1 for l in lines if l.get("double_run"))
-        print(f"\n[{depot}] HOTOVO: {len(lines)} linek"
-              + (f" (z toho {double_cnt} dvojlinek)" if double_cnt else "")
-              + " | spotřeba: "
-              + ", ".join(f"{t}×{n}" for t, n in sorted(used.items()))
-              + " | zbytek malých: "
-              + str(sum(n for t, n in budget.remaining.items()
-                        if t in small_codes)))
+
+        summarize_run(lines, small_codes, solve_min * 60, prefix=f"\n  ✓ {depot}:")
+        rest_small = sum(n for t, n in budget.remaining.items()
+                         if t in small_codes)
+        rest_large = {t: n for t, n in budget.remaining.items()
+                      if t not in small_codes and n > 0}
+        print(f"  → zbývá pro další depa: malá {rest_small} ks, "
+              f"velká {fmt_mix(rest_large)}")
+        print(f"  → plán: {out_dir}")
 
         if not args.no_visualize:
             run_cmd([PY, "visualize_routes.py", out_dir.as_posix()]
@@ -473,9 +569,13 @@ def main_real(args: argparse.Namespace) -> None:
     print("\n" + "=" * 66)
     print(f"PLAN_DAY REAL — {date_str} DOKONČEN | level: {_flags_label(flags)}"
           + (" | BĚHEM DNE ESKALOVÁNO" if state.get("escalated") else ""))
-    print(f"Zbytek flotily: "
-          + ", ".join(f"{t}×{n}" for t, n in sorted(budget.remaining.items())
-                      if n > 0))
+    print(f"Naplánováno: {', '.join(state['planned'])}"
+          + (f"  |  zbývá: {', '.join(d for d in day_depots if d not in state['planned'])}"
+             if any(d not in state["planned"] for d in day_depots) else ""))
+    print("Zbytek flotily: "
+          + fmt_mix({t: n for t, n in budget.remaining.items() if n > 0},
+                    small_codes))
+    print(f"Celková doba: {(time.time() - t_start) / 60:.1f} min")
     print(f"Stav: {state_path}")
     print("=" * 66)
 
