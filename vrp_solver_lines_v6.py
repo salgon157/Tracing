@@ -159,9 +159,19 @@ CONFIG = {
     # Max délka jedné trasy
     "max_route_duration_h":          23.5,
 
-    # Nakládka ve skladu před výjezdem (minuty). Jen pro export do ESO
-    # (plán příjezd Depo = odjezd − nakládka) — do plánování tras se nepočítá.
+    # Nakládka ve skladu před výjezdem (minuty). Pro export do ESO
+    # (plán příjezd Depo = odjezd − nakládka) a pro dvojlinky (druhá jízda
+    # smí vyjet nejdřív návrat první + tahle nakládka).
     "depot_loading_min":             40,
+
+    # ── Dvojlinky (--double-runs, porušení L2) ────────────────────────────
+    # Druhá jízda malého auta v týž den. Platí se jako PLNÝ druhý výjezd
+    # (start_cost typu) — rozhodnutí uživatele, srpen 2026. Virtuální
+    # vozidla dostanou nejdřívější výjezd double_run_earliest; po solve se
+    # párují na fyzická auta (návrat + nakládka <= výjezd druhé jízdy),
+    # nespárovatelná dvojlinka = fatální chyba.
+    "double_run_earliest":           "10:00",
+    "double_runs_max":               10,
 
     # OSRM adresy per profil (driving = osobní/dodávka, driving-hgv = nákladní)
     # Pro driving-hgv spusť druhý OSRM kontejner na portu 5001 s truck profilem.
@@ -407,6 +417,138 @@ def load_vehicle_types_db(path: str | None = None, block_id: str = "") -> list:
     if not vehicles:
         raise ValueError(f"[CHYBA] {p} neobsahuje žádné dostupné typy vozidel.")
     return vehicles
+
+
+# ============================================================
+#  DVOJLINKY (--double-runs, porušení L2)
+#
+#  Auto smí naložit ve skladu 2× za den. Modeluje se virtuálními
+#  „druhá jízda" vozidly: kopie malého auta s plným druhým fixem
+#  (start_cost) a nejdřívějším výjezdem CONFIG double_run_earliest.
+#  OR-Tools neumí vazbu „vyjeď až po návratu prvního" mezi vozidly,
+#  proto se po solve páruje: druhá jízda dostane fyzické auto, které
+#  se vrátilo aspoň depot_loading_min před jejím výjezdem. Když
+#  párování neexistuje, běh SPADNE — žádné tiché překrytí směn.
+# ============================================================
+
+# Dvojlinku smí jet jen malé auto. Práh je nad 1350×1.03 (L1 násobič),
+# ale pod 2000 — funguje pro L0 i L1 bez znalosti syrové nosnosti.
+DOUBLE_RUN_SMALL_MAX_KG = 1400
+# Poznávací znamení virtuálního vozidla v id: TYPE_02_2R01. Segment bez
+# podtržítka, aby type_code šel dál číst přes rsplit("_", 1).
+DOUBLE_RUN_ID_TAG = "_2R"
+
+
+def is_double_run_vehicle(vehicle_id: str) -> bool:
+    return DOUBLE_RUN_ID_TAG in str(vehicle_id)
+
+
+def build_double_run_vehicles(vehicles_expanded: list) -> list:
+    """
+    Virtuální „druhá jízda" vozidla pro malé typy.
+
+    Nejvýš double_runs_max kusů celkem a nejvýš tolik per typ, kolik je
+    fyzických aut (jedno auto = max jedna dvojlinka). Fix je start_cost
+    + 1 Kč: solver tak vždy preferuje fyzické auto a virtuální sáhne
+    až když fyzická došla — druhá jízda bez první nemá smysl (a párování
+    by ji stejně zabilo).
+    """
+    limit = int(CONFIG.get("double_runs_max", 0))
+    earliest = time_to_minutes(CONFIG["double_run_earliest"])
+
+    by_type: dict[str, list[dict]] = {}
+    for v in vehicles_expanded:
+        if v["max_kg"] <= DOUBLE_RUN_SMALL_MAX_KG:
+            by_type.setdefault(v["type_code"], []).append(v)
+
+    virtuals = []
+    # největší typ první — deficit malých pokrývá především TYPE_02
+    for type_code, physicals in sorted(by_type.items(),
+                                       key=lambda kv: -len(kv[1])):
+        for i in range(min(len(physicals), limit - len(virtuals))):
+            template = physicals[0]
+            virtuals.append({
+                **template,
+                "id": f"{type_code}{DOUBLE_RUN_ID_TAG}{i + 1:02d}",
+                "start_cost": template["start_cost"] + 1,
+                "earliest_start_min": earliest,
+            })
+        if len(virtuals) >= limit:
+            break
+    return virtuals
+
+
+def _route_departure_min(route: dict) -> int:
+    return time_to_minutes(route["stops"][0]["arrival"])
+
+
+def _route_return_min(route: dict) -> int:
+    return time_to_minutes(route["stops"][-1]["arrival"])
+
+
+def pair_double_runs(routes: list) -> list:
+    """
+    Přiřadí druhé jízdy fyzickým autům, nebo spadne.
+
+    Pravidla: stejný typ auta, fyzické auto max jednu dvojlinku, návrat
+    prvního + depot_loading_min <= výjezd druhé jízdy. Druhé jízdy se
+    berou od nejdřívějšího výjezdu a dostávají fyzické auto s nejdřívějším
+    vyhovujícím návratem (nechává pozdější návraty pozdějším dvojlinkám).
+    Po spárování nese route fyzické vehicle_id + příznak double_run.
+    """
+    reload_min = int(CONFIG.get("depot_loading_min", 40))
+    virtual = [r for r in routes if is_double_run_vehicle(r["vehicle_id"])]
+    if not virtual:
+        return routes
+
+    physical_by_type: dict[str, list[dict]] = {}
+    for r in routes:
+        if not is_double_run_vehicle(r["vehicle_id"]):
+            physical_by_type.setdefault(r["type_code"], []).append(r)
+
+    paired_ids: set[str] = set()
+    failures = []
+    for v_route in sorted(virtual, key=_route_departure_min):
+        departure = _route_departure_min(v_route)
+        candidates = sorted(
+            (p for p in physical_by_type.get(v_route["type_code"], [])
+             if p["vehicle_id"] not in paired_ids
+             and _route_return_min(p) + reload_min <= departure),
+            key=_route_return_min,
+        )
+        if not candidates:
+            same_type = physical_by_type.get(v_route["type_code"], [])
+            failures.append(
+                f"  - {v_route['vehicle_id']} (typ {v_route['type_code']}, "
+                f"výjezd {departure // 60:02d}:{departure % 60:02d}): "
+                f"žádné fyzické auto s návratem do "
+                f"{(departure - reload_min) // 60:02d}:"
+                f"{(departure - reload_min) % 60:02d}\n"
+                f"    návraty téhož typu: "
+                + (", ".join(
+                    f"{p['vehicle_id']}"
+                    f"{' (obsazeno)' if p['vehicle_id'] in paired_ids else ''}"
+                    f" {_route_return_min(p) // 60:02d}:"
+                    f"{_route_return_min(p) % 60:02d}"
+                    for p in sorted(same_type, key=_route_return_min)) or "žádná"))
+            continue
+        host = candidates[0]
+        paired_ids.add(host["vehicle_id"])
+        v_route["vehicle_id"] = host["vehicle_id"]
+        v_route["driver"] = host.get("driver", "")
+        v_route["double_run"] = True
+
+    if failures:
+        raise SystemExit(
+            "\n" + "=" * 65 + "\n"
+            "[CHYBA] DVOJLINKY NEJDOU SPÁROVAT — plán se neukládá\n"
+            + "=" * 65 + "\n"
+            + "\n".join(failures) + "\n\n"
+            f"Druhá jízda potřebuje fyzické auto vrácené aspoň "
+            f"{reload_min} min před svým výjezdem (nakládka).\n"
+            "Zvaž pozdější CONFIG double_run_earliest, nebo je den pro "
+            "dvojlinky nevhodný (dlouhé první trasy).")
+    return routes
 
 
 def load_orders_day(path: str) -> list:
@@ -1051,6 +1193,9 @@ def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list
     capacities    = [int(v["max_kg"])      for v in vehicles_expanded]
     costs_per_km  = [v["cost_per_km"]      for v in vehicles_expanded]
     start_costs   = [int(v["start_cost"] * COST_SCALE) for v in vehicles_expanded]
+    # Dvojlinky: virtuální „druhá jízda" vozidla smí vyjet až od této minuty
+    earliest_start = [int(v.get("earliest_start_min") or 0)
+                      for v in vehicles_expanded]
     max_dur_min   = int(CONFIG["max_route_duration_h"] * 60)
 
     max_stops = int(CONFIG["max_stops_per_route"]) if CONFIG.get("max_stops_per_route") else None
@@ -1064,6 +1209,7 @@ def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list
         "capacities":          capacities,
         "costs_per_km":        costs_per_km,
         "start_costs":         start_costs,
+        "earliest_start":      earliest_start,
         "num_vehicles":        len(vehicles_expanded),
         "depot":               0,
         "max_dur_min":         max_dur_min,
@@ -1130,6 +1276,12 @@ def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
         idx = manager.NodeToIndex(node_idx)
         tw  = data["time_windows"][node_idx]
         time_dim.CumulVar(idx).SetRange(tw[0], tw[1])
+
+    # Dvojlinky: druhá jízda nesmí vyjet dřív než double_run_earliest
+    for v_idx in range(data["num_vehicles"]):
+        est = data.get("earliest_start", [0] * data["num_vehicles"])[v_idx]
+        if est:
+            time_dim.CumulVar(routing.Start(v_idx)).SetMin(est)
 
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy    = strategy
@@ -1936,6 +2088,8 @@ def _build_run_record(
             "budget_phase_C_pct":           CONFIG["budget_phase_C_pct"],
             "budget_phase_D_pct":           CONFIG["budget_phase_D_pct"],
             "budget_phase_E_pct":           CONFIG["budget_phase_E_pct"],
+            "vehicle_capacity_multiplier":  CONFIG.get("vehicle_capacity_multiplier", 1.0),
+            "double_runs":                  bool(CONFIG.get("_double_runs_enabled", False)),
         },
 
         "closures": [c["id"] for c in closures],
@@ -2138,6 +2292,7 @@ def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elaps
             "duration_h": r.get("duration_h", 0),
             "total_kg": r["total_kg"],
             "total_cost_kc": r["total_kc"],
+            "double_run": "2. jízda" if r.get("double_run") else "",
         })
         for i, s in enumerate(r["stops"]):
             stop_rows.append({
@@ -2364,6 +2519,14 @@ def parse_args():
                              "DEFAULT je hard-fail — kamiony by jinak jely po trasách "
                              "pro osobáky (mosty, úzké uličky).")
 
+    parser.add_argument("--double-runs", action="store_true",
+                        help="Povol DVOJLINKY (porušení L2): malé auto smí "
+                             "naložit ve skladu 2× za den. Druhá jízda platí "
+                             "plný druhý výjezd a smí vyjet od CONFIG "
+                             "double_run_earliest; po solve se páruje na "
+                             "fyzická auta (návrat + nakládka), jinak běh "
+                             "spadne. Zapíná plan_day podle decision.")
+
     # ── Plánovací buffery: override z CLI (default = hodnoty v CONFIG) ──
     parser.add_argument("--no-buffers", action="store_true",
                         help="TVRDÝ režim bez rezerv: nosnost 100 %% (ne 102 %%) a "
@@ -2571,6 +2734,15 @@ def main():
     # ne tichá ztráta celého clusteru o pár minut později.
     validate_orders_servable(orders)
 
+    # ── Dvojlinky (L2): virtuální „druhá jízda" vozidla ──────────────────
+    CONFIG["_double_runs_enabled"] = bool(args.double_runs)   # do run logu
+    if args.double_runs:
+        virtuals = build_double_run_vehicles(vehicles_expanded)
+        vehicles_expanded += virtuals
+        print(f"  [DVOJLINKY] Povoleno: +{len(virtuals)} virtuálních jízd "
+              f"(od {CONFIG['double_run_earliest']}, plný druhý fix, "
+              f"nakládka {CONFIG['depot_loading_min']} min)")
+
     # Auto-detekce výstupní složky z názvu orders souboru
     # Pattern: orders_{DEPOT}_{YYYY-MM-DD}.csv → data/results/{DEPOT}/{YYYY-MM-DD}/
     # delivery_date se z názvu bere VŽDY (i s explicitním --output-dir) — jinak
@@ -2711,6 +2883,11 @@ def main():
     print(f"\nCelková doba: {elapsed_min:.1f} min")
 
     print_results(all_routes, total_cost)
+
+    # Dvojlinky: přiřadit druhé jízdy fyzickým autům (nebo spadnout) —
+    # PŘED invariantem a uložením, ať výstupy nesou reálná vozidla.
+    if args.double_runs:
+        all_routes = pair_double_runs(all_routes)
 
     # Pojistka č. 4 (poslední závora): vstup == naplánováno, jinak se
     # neuloží NIC. Pojistka č. 3 je záchranný re-solve ve phase C.

@@ -212,8 +212,31 @@ v `results/{DEPO}/{DATUM}_{HHMM}_P1|_P2/`, generované flotily
 v `results/plan_day/{DATUM}_{HHMM}/`. Parametry (rezerva, práh 3 %,
 „neomezeno" = 8 ks/typ) jsou konstanty v `fleet_budget.py`.
 
-Dvojlinky (L2) a večerní `plan_day.py real` jsou další vlny — decision se
-už zapisuje, vykonavatel přibude.
+### Dvojlinky (`--double-runs`, porušení L2)
+
+Malé auto (nosnost ≤ 1350) smí naložit ve skladu **2× za den**. Zapíná se
+přepínačem solveru — v běžný den je vypnuto, večer ho zapne `plan_day`
+podle decision:
+
+```powershell
+python vrp_solver_lines_v6.py --orders-file ... --double-runs
+```
+
+- **cena**: druhá jízda platí **plný druhý výjezd** (`start_cost_kc` typu,
+  dnes 1000 Kč) + 1 Kč navíc — solver tak vždy preferuje fyzická auta
+  a dvojlinku použije, až když se vyplatí (např. místo poloprázdného
+  kamionu). Reálné km a časy platí normálně.
+- **čas**: druhá jízda smí vyjet od `CONFIG double_run_earliest` (10:00)
+  a po solve se **páruje na fyzické auto téhož typu**, které se vrátilo
+  aspoň `depot_loading_min` (40 min) před jejím výjezdem. Jedno auto
+  = max jedna dvojlinka. **Když párování nejde, běh spadne** s výpisem
+  návratů — žádné tiché překrytí směn.
+- **výstupy**: druhá jízda nese vehicle_id fyzického auta; v lines_summary
+  má sloupec `double_run` = „2. jízda". Max virtuálních jízd:
+  `CONFIG double_runs_max` (10).
+
+Zbývá večerní `plan_day.py real` (vlna 3) — decision se už zapisuje
+a solver už umí obě porušení (L1 přepínačem, L2 tímto).
 
 ---
 
