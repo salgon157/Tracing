@@ -239,7 +239,7 @@ class FleetBudget:
         return cls(remaining=json.loads(Path(path).read_text(encoding="utf-8")))
 
 
-def caps_for_depot(depot: str, depot_order: list[str],
+def caps_for_depot(depot: str, protected_depots: list[str],
                    budget: FleetBudget,
                    reservations: dict[str, dict[str, int]],
                    small_codes: set[str],
@@ -247,26 +247,25 @@ def caps_for_depot(depot: str, depot_order: list[str],
     """
     Kolik čeho smí depo na řadě použít.
 
-    Velká: fyzický zbytek − rezervace dep, která JEŠTĚ nebyla na řadě.
-    Vlastní rezervace je uvnitř zbytku (dřívější depa na ni nesměla sáhnout),
-    a jakmile tohle depo doplánuje, přestává existovat — nevyužité kusy
-    zůstanou ve zbytku pro další.
+    Velká: fyzický zbytek − rezervace CHRÁNĚNÝCH dep. Chráněné je každé
+    depo, které ten den JEŠTĚ neplánovalo (kdo je hotový, ví volající —
+    v P2 je to zbytek sekvence, v ostrém běhu depa mimo state.planned).
+    Díky tomu funguje i běh po jednotlivých depech mimo pořadí. Vlastní
+    rezervace depa je uvnitř zbytku a nikdy se mu neodečítá.
 
     Malá: v PREDIKCI (P2) dostanou plný sklad `small_full` — neomezená,
     deficit se MĚŘÍ, nemaskuje. V OSTRÉM běhu `small_full=None`: malá jedou
     stejným vzorcem jako velká (rezervace pro ně neexistují, takže cap =
     prostě fyzický zbytek) — ubývají doopravdy.
     """
-    idx = depot_order.index(depot)
-    future = depot_order[idx + 1:]
     caps: dict[str, int] = {}
     for type_code, remaining in budget.remaining.items():
         if small_full is not None and type_code in small_codes:
             caps[type_code] = small_full.get(type_code, remaining)
         else:
-            future_res = sum(reservations.get(f, {}).get(type_code, 0)
-                             for f in future)
-            caps[type_code] = max(0, remaining - future_res)
+            protected = sum(reservations.get(d, {}).get(type_code, 0)
+                            for d in protected_depots if d != depot)
+            caps[type_code] = max(0, remaining - protected)
     return caps
 
 

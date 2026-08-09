@@ -204,56 +204,75 @@ class TestFleetBudget:
 
 
 class TestCapsForDepot:
+    """caps_for_depot bere seznam CHRÁNĚNÝCH dep (ještě neplánovala) —
+    ne pořadí. Díky tomu funguje sekvence (P2) i běh po depech mimo pořadí."""
     SMALL = {"TYPE_01", "TYPE_02"}
     SMALL_FULL = {"TYPE_01": 3, "TYPE_02": 53}
 
-    def _caps(self, depot, budget, reservations):
-        return caps_for_depot(depot, DEPOT_ORDER, budget, reservations,
+    def _caps(self, depot, protected, budget, reservations):
+        return caps_for_depot(depot, protected, budget, reservations,
                               self.SMALL, self.SMALL_FULL)
 
-    def test_future_reservation_protected(self):
-        # 2 kusy TYPE_05: 1 rezervace PR -> CB smí sáhnout jen na 1
+    def test_protected_reservation_subtracted(self):
+        # 2 kusy TYPE_05: 1 rezervace PR (neplánovalo) -> CB smí jen na 1
         budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
-        caps = self._caps("CB", budget, {"PR": {"TYPE_05": 1}})
+        caps = self._caps("CB", ["MO", "HK", "PR"], budget,
+                          {"PR": {"TYPE_05": 1}})
         assert caps["TYPE_05"] == 1
 
     def test_own_reservation_available(self):
         budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
-        caps = self._caps("MO", budget, {"MO": {"TYPE_05": 1},
-                                         "PR": {"TYPE_05": 1}})
+        caps = self._caps("MO", ["HK", "PR"], budget,
+                          {"MO": {"TYPE_05": 1}, "PR": {"TYPE_05": 1}})
         assert caps["TYPE_05"] == 1     # svoje 1; PR kus chráněný
 
     def test_released_after_depot_planned(self):
-        # CB kus nevyužilo -> po jeho tahu (rezervace CB už se nepočítá)
-        # ho MO dostane přes volný pool
+        # CB už plánovalo (není v chráněných) a kus nevyužilo ->
+        # MO ho dostane přes volný pool
         budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
-        caps = self._caps("MO", budget, {"CB": {"TYPE_05": 1},
-                                         "PR": {"TYPE_05": 1}})
+        caps = self._caps("MO", ["HK", "PR"], budget,
+                          {"CB": {"TYPE_05": 1}, "PR": {"TYPE_05": 1}})
         assert caps["TYPE_05"] == 1     # CB nevyužitý kus + PR chráněný
 
     def test_last_depot_takes_everything(self):
         budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2, "TYPE_07": 1})
-        caps = self._caps("PR", budget, {"PR": {"TYPE_05": 1}})
+        caps = self._caps("PR", [], budget, {"PR": {"TYPE_05": 1}})
         assert caps["TYPE_05"] == 2 and caps["TYPE_07"] == 1
 
     def test_free_pool_usable_without_reservation(self):
         # HK si nic nepřálo, ale volný kus (nikým nerezervovaný) použít smí
         budget = FleetBudget({"TYPE_02": 53, "TYPE_07": 1})
-        caps = self._caps("HK", budget, {})
+        caps = self._caps("HK", ["PR"], budget, {})
         assert caps["TYPE_07"] == 1
+
+    def test_out_of_order_run_protects_unplanned(self):
+        # beh po depech mimo poradi: HK jede PRVNÍ (real HK) — rezervace
+        # CB, MO i PR (nikdo neplánoval) musí zůstat nedotčené
+        budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
+        caps = self._caps("HK", ["CB", "MO", "PR"], budget,
+                          {"MO": {"TYPE_05": 1}, "CB": {"TYPE_05": 1}})
+        assert caps["TYPE_05"] == 0
+
+    def test_depot_in_protected_list_ignores_own(self):
+        # kdyby volající omylem poslal i aktuální depo, vlastní rezervace
+        # se mu NESMÍ odečíst
+        budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
+        caps = self._caps("MO", ["MO", "PR"], budget,
+                          {"MO": {"TYPE_05": 1}, "PR": {"TYPE_05": 1}})
+        assert caps["TYPE_05"] == 1
 
     def test_small_always_full_in_prediction(self):
         # malá se z budgetu NEodečítají — P2 měří jejich skutečnou potřebu
         budget = FleetBudget({"TYPE_01": 3, "TYPE_02": 53, "TYPE_05": 2})
         budget.consume({"TYPE_05": 1})
-        caps = self._caps("PR", budget, {})
+        caps = self._caps("PR", [], budget, {})
         assert caps["TYPE_02"] == 53 and caps["TYPE_01"] == 3
         assert caps["TYPE_05"] == 1
 
     def test_consumed_by_earlier_depot_gone(self):
         budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
         budget.consume({"TYPE_05": 2}, context="CB")
-        caps = self._caps("MO", budget, {})
+        caps = self._caps("MO", [], budget, {})
         assert caps["TYPE_05"] == 0
 
 
@@ -355,13 +374,13 @@ class TestCapsRealMode:
         # ostrý běh: malá ubývají doopravdy (small_full=None)
         budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
         budget.consume({"TYPE_02": 15})
-        caps = caps_for_depot("MO", DEPOT_ORDER, budget, {},
+        caps = caps_for_depot("MO", ["HK", "PR"], budget, {},
                               self.SMALL, small_full=None)
         assert caps["TYPE_02"] == 38
 
     def test_large_reservations_still_protected_in_real(self):
         budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
-        caps = caps_for_depot("CB", DEPOT_ORDER, budget,
+        caps = caps_for_depot("CB", ["MO", "HK", "PR"], budget,
                               {"PR": {"TYPE_05": 1}},
                               self.SMALL, small_full=None)
         assert caps["TYPE_05"] == 1

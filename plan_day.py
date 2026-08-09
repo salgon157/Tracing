@@ -225,8 +225,9 @@ def main_predict(args: argparse.Namespace) -> None:
     # ── P2: sekvenčně s budgetem ─────────────────────────────────────────
     budget = fb.FleetBudget.from_fleet(fleet_rows)
     p2_by_depot: dict[str, list[dict]] = {}
-    for depot in depots:
-        caps = fb.caps_for_depot(depot, depots, budget,
+    for i, depot in enumerate(depots):
+        # chráněná = depa, která v sekvenci teprve přijdou
+        caps = fb.caps_for_depot(depot, depots[i + 1:], budget,
                                  allocation["reservations"],
                                  small_codes, small_full)
         p2_fleet = fb.write_fleet_file(fleet_rows,
@@ -400,10 +401,17 @@ def main_real(args: argparse.Namespace) -> None:
                       if n > 0))
     print("=" * 66)
 
+    # Rezervace chrání KAŽDÉ depo dne, které ještě neplánovalo — podle
+    # decision, ne podle toho, co je zrovna v příkazu. Jinak by běh
+    # `real MO` po depech mohl sníst kamion rezervovaný pro PR.
+    day_depots = decision.get("depots") or depots
+
     for depot in to_plan:
         run_cmd([PY, "prepare_inputs_v6.py", depot], env, f"prepare {depot}")
 
-        caps = fb.caps_for_depot(depot, depots, budget, reservations,
+        protected = [d for d in day_depots
+                     if d != depot and d not in state["planned"]]
+        caps = fb.caps_for_depot(depot, protected, budget, reservations,
                                  small_codes, small_full=None)
         fleet_file = fb.write_fleet_file(fleet_rows,
                                          state_dir / f"fleet_{depot}.csv",
