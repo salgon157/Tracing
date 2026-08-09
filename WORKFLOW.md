@@ -182,6 +182,39 @@ ta zůstane netknutá pro běžný běh.
 Roční exporty do `data/historie_objednavky/` dodáváš ručně; složka je
 v `.gitignore` (GDPR). Načtení obou souborů trvá ~17 s na depo.
 
+### Predikcí řízené plánování dne (`plan_day.py`) — příprava na server
+
+```powershell
+python plan_day.py predict               # celá predikční fáze (~8 solver běhů)
+python plan_day.py predict --budget 5    # budget na jeden běh (default 5 min)
+```
+
+Odpovídá na otázky „kam dát velká auta" a „jaká porušení večer povolit".
+Vše běží na **L0** (100 % nosnosti, okna −5/+25); solver se nemění — flotila
+se omezuje generovanými `vehicle_types` soubory:
+
+1. **P1** — každé depo zvlášť s NEOMEZENÝMI velkými auty → „přání"
+2. **Rezervace** — velké typy (nosnost > 1350 kg) podle přání; přetečené
+   typy ořezané žebříčkem podle naloženosti linek (kg); nerezervované
+   kusy = volný pool
+3. **P2** — depa sekvenčně **CB → MO → HK → PR** s budgetem: depo smí použít
+   vlastní rezervaci + zbytek po odečtení rezervací dep, která ještě nebyla
+   na řadě (nevyužité kusy tečou dál samy). Malá auta neomezená — jejich
+   deficit se MĚŘÍ, ne maskuje.
+4. **Rozhodnutí** — deficit malých proti `available − 1` (rezerva) se přes
+   X_NEED nejméně naložených linek přepočte na kg:
+   deficit 0 → **L0** · chybí ≤ 3 % denních kg → **L1+L2** (103 % + dvojlinky)
+   · víc → navíc **alert „potřeba L3"** (kamiony/rampa)
+
+Výstup: `data/prediction/results/decision_{DATUM}.json` (level, rezervace,
+čísla deficitu — večerní běh z něj bude číst), plné solver výstupy
+v `results/{DEPO}/{DATUM}_{HHMM}_P1|_P2/`, generované flotily
+v `results/plan_day/{DATUM}_{HHMM}/`. Parametry (rezerva, práh 3 %,
+„neomezeno" = 8 ks/typ) jsou konstanty v `fleet_budget.py`.
+
+Dvojlinky (L2) a večerní `plan_day.py real` jsou další vlny — decision se
+už zapisuje, vykonavatel přibude.
+
 ---
 
 ## 2. Routing instance (Docker) — current vs stable

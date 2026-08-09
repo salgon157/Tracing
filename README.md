@@ -68,6 +68,8 @@ proto se plánují odděleně.
 | **`visualize_routes.py`** | HTML mapa tras (Leaflet) z výsledkové složky. |
 | **`predict_day.py`** | Tenký wrapper: predikční běh nad `data/prediction/` (prepare+solve+mapy pro všechna depa). Odděleno od ostrého provozu. |
 | **`order_history.py`** | Šance závozu z historie objednávek (`data/historie_objednavky/*.xlsx`): stejný den v týdnu, roční okno, pauzy, svátky. Predikce podle ní losuje, které dopredikované objednávky do plánu půjdou. |
+| **`plan_day.py`** | Predikcí řízené plánování dne: P1 (přání dep s neomezenými velkými auty) → rezervace velkých → P2 (sekvenční generálka s budgetem) → rozhodnutí o porušeních pro večer (`decision_{DATUM}.json`). |
+| **`fleet_budget.py`** | Logika pod plan_day: malá/velká auta, rezervace žebříčkem kg, budget s ubíráním, caps (rezervace + volný pool), rozhodnutí o levelu (deficit → kg → L0/L1+L2/L3 alert). |
 | **`compare_prediction.py`** | Porovná predikci s realitou (Δ = predikce − realita), zapíše `comparison.jsonl`. Jediný vlastník porovnávacích vzorců. |
 | **`osm_routing.py`** | Definice routing instancí (`current` / `stable`) a jejich URL. Jediné místo, kde jsou porty. |
 | **`refresh_osm.py`** | **Týdenní** přestavba čerstvé mapy (stáhne OSM data, přestaví graf, restartuje kontejnery). Běhy ji nikdy nespouštějí samy. |
