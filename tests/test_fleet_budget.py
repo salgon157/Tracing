@@ -11,7 +11,6 @@ from fleet_budget import (
     DEPOT_ORDER,
     L3_THRESHOLD_PCT,
     SMALL_FLEET_RESERVE,
-    UNLIMITED_LARGE_COUNT,
     FleetBudget,
     allocate_reservations,
     available_by_type,
@@ -20,7 +19,6 @@ from fleet_budget import (
     decide_level,
     is_small,
     load_fleet_rows,
-    p1_overrides,
     parse_lines_summary,
     small_type_codes,
     solver_flags_for_level,
@@ -68,20 +66,14 @@ class TestFleetRows:
             "TYPE_01": 3, "TYPE_02": 53, "TYPE_03": 1,
             "TYPE_05": 2, "TYPE_07": 1}
 
-    def test_p1_overrides_only_large(self, tmp_path):
-        rows = load_fleet_rows(_fleet_file(tmp_path))
-        ov = p1_overrides(rows)
-        # malá se nepřepisují — plný sklad je pro jedno depo neomezený
-        assert "TYPE_01" not in ov and "TYPE_02" not in ov
-        assert ov == {"TYPE_03": UNLIMITED_LARGE_COUNT,
-                      "TYPE_05": UNLIMITED_LARGE_COUNT,
-                      "TYPE_07": UNLIMITED_LARGE_COUNT}
-
-    def test_p1_override_keeps_higher_available(self, tmp_path):
-        rows = load_fleet_rows(_fleet_file(tmp_path, rows=[
-            f"TYPE_06;Kamion;8000;35.0;1000;{UNLIMITED_LARGE_COUNT + 5};20;20;"
-            f"Velké auto;c;n;1.0;driving-hgv;20260805\n"]))
-        assert p1_overrides(rows)["TYPE_06"] == UNLIMITED_LARGE_COUNT + 5
+    def test_p1_runs_on_real_fleet_no_inflation(self):
+        # P1 jede přímo na ostrém vozovém parku — žádné nafukování počtů.
+        # Přetečení se pozná samo (jeden kamion, tři depa → tři přání);
+        # nafouknutí by dovolilo přát si auta, která neexistují, a rozešlo
+        # by prohledávaný prostor P1 proti P2.
+        import fleet_budget
+        assert not hasattr(fleet_budget, "p1_overrides")
+        assert not hasattr(fleet_budget, "UNLIMITED_LARGE_COUNT")
 
     def test_written_file_loads_in_solver(self, tmp_path):
         # vygenerovaný soubor musí projít ostrým loaderem solveru

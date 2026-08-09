@@ -7,10 +7,11 @@ fleet_budget.py — rozpočet flotily, rezervace velkých aut a rozhodnutí o po
   1. MALÁ vs. VELKÁ auta — malá = nosnost do SMALL_MAX_KG (TYPE_01, TYPE_02);
      malá se v predikci neomezují (jejich deficit je přesně to, co měříme),
      velká se rezervují a ubírají z budgetu.
-  2. REZERVACE — z P1 („přání" dep s neomezenými velkými) dostane každé depo
-     rezervaci pro všechny velké typy. U typů, kde součet přání přeteče sklad,
-     se přání ořeže žebříčkem podle naloženosti linek (kg). Nerezervované
-     kusy = volný pool.
+  2. REZERVACE — z P1 („přání" dep, kde každé plánuje SAMOSTATNĚ s celým
+     skladem) dostane každé depo rezervaci pro všechny velké typy. Přetečení
+     se pozná samo: když je jeden kamion a chtějí ho tři depa, vzniknou tři
+     přání na jeden kus. U přetečených typů se přání ořeže žebříčkem podle
+     naloženosti linek (kg). Nerezervované kusy = volný pool.
   3. CAPS — depo na řadě smí použít: vlastní rezervaci + volný zbytek po
      odečtení rezervací dep, která JEŠTĚ nebyla na řadě. Rezervace chrání
      jen budoucnost: jakmile depo doplánuje, jeho nevyužité kusy tečou
@@ -32,7 +33,6 @@ from pathlib import Path
 SMALL_MAX_KG          = 1350   # nosnost do tohoto limitu = "malé auto"
 SMALL_FLEET_RESERVE   = 1      # bezpečnostní rezerva malých aut
 L3_THRESHOLD_PCT      = 3.0    # nad tolik % denních kg nestačí L1+L2
-UNLIMITED_LARGE_COUNT = 8      # "neomezeno" pro P1 — víc žádné depo nechce
 
 # Pořadí uzávěrek — v tomhle pořadí se plánuje P2 i večerní ostrý běh
 DEPOT_ORDER = ["CB", "MO", "HK", "PR"]
@@ -98,16 +98,11 @@ def write_fleet_file(rows: list[dict], path: Path | str,
     return path
 
 
-def p1_overrides(rows: list[dict]) -> dict[str, int]:
-    """P1 = velká „neomezená": max(available, UNLIMITED_LARGE_COUNT).
-    Malá beze změny — plný sklad je pro jedno depo de facto neomezený."""
-    out = {}
-    for row in rows:
-        if not is_small(row):
-            code = row["type_code"].strip()
-            avail = int(float(row["available_count"] or 0))
-            out[code] = max(avail, UNLIMITED_LARGE_COUNT)
-    return out
+# Pozn.: P1 žádné override nepotřebuje — jede přímo na ostrém vozovém parku.
+# Každé depo plánuje samostatně s celým skladem, takže přetečení se projeví
+# samo (jeden kamion, tři depa → tři přání na jeden kus). Nafukovat počty by
+# jen dovolilo přát si auta, která neexistují, a rozešlo by to prohledávaný
+# prostor P1 proti P2 (= umělý rozdíl mezi fázemi).
 
 
 # ═════════════════════════════════════════════════════════════════════════════

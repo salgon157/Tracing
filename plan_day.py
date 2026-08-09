@@ -11,8 +11,9 @@ ruční prepare+solver) zůstává nedotčený.
 
 Co `predict` udělá (vše na L0 = 100 % nosnosti, okna −5/+25):
 
-  P1   každé depo zvlášť s NEOMEZENÝMI velkými auty
-       → „přání": kolik čeho by depo chtělo pro nejlevnější plán
+  P1   každé depo zvlášť s CELÝM skladem (žádné nafukování počtů)
+       → „přání": kolik čeho by depo chtělo pro nejlevnější plán;
+       přetečení se pozná samo (jeden kamion, tři depa → tři přání)
   REZERVACE  velké typy podle přání; přetečené typy ořezané žebříčkem
        podle naloženosti linek (kg); nerezervované kusy = volný pool
   P2   depa SEKVENČNĚ (CB→MO→HK→PR) s budgetem: velká podle rezervací
@@ -169,7 +170,7 @@ def format_report(date_str: str, stamp: str, depots: list[str],
              f"PLAN_DAY PREDICT — {date_str}  (session {stamp})",
              "=" * 66]
 
-    lines.append("\nP1 přání velkých aut (neomezená flotila):")
+    lines.append("\nP1 přání velkých aut (každé depo s celým skladem):")
     all_types = sorted({t for w in allocation["wishes"].values() for t in w})
     for depot in depots:
         wish = allocation["wishes"].get(depot, {})
@@ -255,13 +256,13 @@ def main_predict(args: argparse.Namespace) -> None:
                  "--data-root", PREDICTION_ROOT.as_posix(), "--prediction"],
                 env, f"prepare {depot}")
 
-    # ── P1: neomezená velká ──────────────────────────────────────────────
-    p1_overrides = fb.p1_overrides(fleet_rows)
-    p1_fleet = fb.write_fleet_file(fleet_rows, session / "fleet_P1.csv",
-                                   p1_overrides)
+    # ── P1: každé depo samostatně s CELÝM skladem ────────────────────────
+    # Žádné nafukování počtů: přetečení se pozná samo (jeden kamion,
+    # tři depa → tři přání), a P1 tak prohledává stejný prostor jako P2.
+    p1_fleet = Path(fleet_path)
     step_header(f"P1 — přání dep ({len(depots)} běhů)",
-                f"velká auta neomezená ({fb.UNLIMITED_LARGE_COUNT} ks/typ), "
-                f"malá plný sklad · L0 (100 %, okna −5/+25)")
+                "každé depo samostatně s CELÝM skladem "
+                "· L0 (100 %, okna −5/+25)")
     p1_by_depot: dict[str, list[dict]] = {}
     for i, depot in enumerate(depots, 1):
         print(f"\n  [{i}/{len(depots)}] P1 {depot}")
@@ -348,7 +349,6 @@ def main_predict(args: argparse.Namespace) -> None:
         "params": {
             "SMALL_FLEET_RESERVE": fb.SMALL_FLEET_RESERVE,
             "L3_THRESHOLD_PCT": fb.L3_THRESHOLD_PCT,
-            "UNLIMITED_LARGE_COUNT": fb.UNLIMITED_LARGE_COUNT,
             "SMALL_MAX_KG": fb.SMALL_MAX_KG,
             "budget_min": args.budget,
             "osm_source": args.osm_source,

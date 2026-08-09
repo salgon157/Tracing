@@ -193,7 +193,8 @@ Odpovídá na otázky „kam dát velká auta" a „jaká porušení večer povo
 Vše běží na **L0** (100 % nosnosti, okna −5/+25); solver se nemění — flotila
 se omezuje generovanými `vehicle_types` soubory:
 
-1. **P1** — každé depo zvlášť s NEOMEZENÝMI velkými auty → „přání"
+1. **P1** — každé depo zvlášť s **celým skladem** → „přání" (přetečení
+   se pozná samo: jeden kamion a tři zájemci = tři přání na jeden kus)
 2. **Rezervace** — velké typy (nosnost > 1350 kg) podle přání; přetečené
    typy ořezané žebříčkem podle naloženosti linek (kg); nerezervované
    kusy = volný pool
@@ -210,7 +211,7 @@ Výstup: `data/prediction/results/decision_{DATUM}.json` (level, rezervace,
 čísla deficitu — večerní běh z něj bude číst), plné solver výstupy
 v `results/{DEPO}/{DATUM}_{HHMM}_P1|_P2/`, generované flotily
 v `results/plan_day/{DATUM}_{HHMM}/`. Parametry (rezerva, práh 3 %,
-„neomezeno" = 8 ks/typ) jsou konstanty v `fleet_budget.py`.
+práh 3 %) jsou konstanty v `fleet_budget.py`.
 
 ### Dvojlinky (`--double-runs`, porušení L2)
 
