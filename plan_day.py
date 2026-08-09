@@ -52,10 +52,11 @@ PLAN_DAY_ROOT   = PREDICTION_ROOT / "results" / "plan_day"
 #  Pomocné
 # ─────────────────────────────────────────────────────────────────────────────
 
-def resolve_depots_and_date(requested: list[str]) -> tuple[list[str], str]:
+def resolve_depots_and_date(requested: list[str],
+                            root: Path = PREDICTION_ROOT) -> tuple[list[str], str]:
     """Depa v pořadí uzávěrek + JEDNO společné datum z aktivních riro souborů.
-    Různá data napříč depy = chyba (predikce dne musí být konzistentní)."""
-    present = requested or depots_with_input()
+    Různá data napříč depy = chyba (plánování dne musí být konzistentní)."""
+    present = requested or depots_with_input(root=root)
     depots = [d for d in fb.DEPOT_ORDER if d in present]
     skipped = sorted(set(present) - set(depots))
     if skipped:
@@ -63,18 +64,18 @@ def resolve_depots_and_date(requested: list[str]) -> tuple[list[str], str]:
                          f"Platná: {', '.join(fb.DEPOT_ORDER)}")
     if not depots:
         raise SystemExit(
-            "[CHYBA] Žádné depo nemá predikční soubor v "
-            f"{(PREDICTION_ROOT / 'input').as_posix()}/{{DEPO}}/aktivni/.")
+            "[CHYBA] Žádné depo nemá riro soubor v "
+            f"{(root / 'input').as_posix()}/{{DEPO}}/aktivni/.")
 
     dates = {}
     for depot in depots:
-        _, date_str = find_active_riro_file(depot, PREDICTION_ROOT / "input")
+        _, date_str = find_active_riro_file(depot, root / "input")
         dates[depot] = date_str
     if len(set(dates.values())) > 1:
         listing = ", ".join(f"{d}={v}" for d, v in dates.items())
         raise SystemExit(
             f"[CHYBA] Depa mají různá data závozu: {listing}\n"
-            "        Predikce dne potřebuje všechna depa na stejný den.")
+            "        Plánování dne potřebuje všechna depa na stejný den.")
     return depots, next(iter(dates.values()))
 
 
@@ -290,6 +291,186 @@ def main_predict(args: argparse.Namespace) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Fáze real — večerní ostrý běh podle decision
+# ─────────────────────────────────────────────────────────────────────────────
+
+REAL_ROOT = Path("data")
+
+
+def load_decision(date_str: str) -> dict:
+    path = PREDICTION_ROOT / "results" / f"decision_{date_str}.json"
+    if not path.exists():
+        raise SystemExit(
+            f"[CHYBA] Chybí {path} — ostrý běh se řídí predikcí.\n"
+            f"        Nejdřív spusť: python plan_day.py predict")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def real_state_dir(date_str: str, label: str = "") -> Path:
+    suffix = f"_{label}" if label else ""
+    return REAL_ROOT / "results" / "plan_day" / f"{date_str}{suffix}"
+
+
+def load_real_state(state_path: Path, fleet_rows: list[dict],
+                    decision: dict) -> dict:
+    """Stav večera: zbytek flotily + hotová depa + aktuální level.
+    Existuje-li (běh po částech — dřívější depa jsou definitivní),
+    pokračuje se z něj; jinak start z plné flotily a decision levelu."""
+    if state_path.exists():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        print(f"[STAV] Navazuji na {state_path} — hotová depa: "
+              f"{', '.join(state['planned']) or 'žádná'}")
+        return state
+    return {
+        "remaining": fb.available_by_type(fleet_rows),
+        "planned": [],
+        "flags": dict(decision["solver_flags"]),
+        "escalated": False,
+    }
+
+
+def save_real_state(state_path: Path, state: dict) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+
+
+def build_real_solver_cmd(depot: str, date_str: str, fleet_file: Path,
+                          flags: dict, args: argparse.Namespace) -> list[str]:
+    orders = REAL_ROOT / "prepared" / depot / f"orders_{depot}_{date_str}.csv"
+    cmd = [PY, "vrp_solver_lines_v6.py",
+           "--orders-file", orders.as_posix(),
+           "--budget-min", _fmt_num(args.budget),
+           "--vehicle-types-file", fleet_file.as_posix(),
+           "--capacity-multiplier", _fmt_num(flags["capacity_multiplier"])]
+    if flags.get("double_runs"):
+        cmd.append("--double-runs")
+    if args.label:
+        out = REAL_ROOT / "results" / depot / f"{date_str}_{args.label}"
+        cmd += ["--output-dir", out.as_posix()]
+    if args.run_log_path:
+        cmd += ["--run-log-path", args.run_log_path]
+    if args.osm_source:
+        cmd += ["--osm-source", args.osm_source]
+    if args.force_matrix:
+        cmd.append("--force-matrix")
+    return cmd
+
+
+def real_out_dir(depot: str, date_str: str, label: str) -> Path:
+    suffix = f"_{label}" if label else ""
+    return REAL_ROOT / "results" / depot / f"{date_str}{suffix}"
+
+
+def _flags_label(flags: dict) -> str:
+    return ("L1+L2 (103 % + dvojlinky)" if flags.get("double_runs")
+            else "L0 (100 %, bez porušení)")
+
+
+def main_real(args: argparse.Namespace) -> None:
+    depots, date_str = resolve_depots_and_date(
+        [d.upper() for d in args.depots], root=REAL_ROOT)
+    decision = load_decision(date_str)
+    if decision["date"] != date_str:
+        raise SystemExit(f"[CHYBA] decision je pro {decision['date']}, "
+                         f"aktivní data pro {date_str}.")
+    run_startup_tests_once(args.skip_tests)
+    env = {**os.environ, "SKIP_STARTUP_TESTS": "1"}
+
+    fleet_path = find_vehicle_types_file()
+    fleet_rows = fb.load_fleet_rows(fleet_path)
+    small_codes = fb.small_type_codes(fleet_rows)
+    reservations = decision.get("reservations", {})
+
+    state_dir = real_state_dir(date_str, args.label)
+    state_path = state_dir / "state.json"
+    state = load_real_state(state_path, fleet_rows, decision)
+    budget = fb.FleetBudget(remaining=dict(state["remaining"]))
+    flags = dict(state["flags"])
+    to_plan = [d for d in depots if d not in state["planned"]]
+
+    print("=" * 66)
+    print(f"PLAN_DAY REAL — {date_str} | depa: {', '.join(to_plan)} "
+          f"| level: {_flags_label(flags)}")
+    if decision.get("l3_needed"):
+        print("[!] PREDIKCE HLÁSÍ POTŘEBU L3 (kamiony/rampa) — zatím není "
+              "postavené, den může skončit alertem.")
+    print(f"Vozový park: {fleet_path} | zbytek: "
+          + ", ".join(f"{t}×{n}" for t, n in sorted(budget.remaining.items())
+                      if n > 0))
+    print("=" * 66)
+
+    for depot in to_plan:
+        run_cmd([PY, "prepare_inputs_v6.py", depot], env, f"prepare {depot}")
+
+        caps = fb.caps_for_depot(depot, depots, budget, reservations,
+                                 small_codes, small_full=None)
+        fleet_file = fb.write_fleet_file(fleet_rows,
+                                         state_dir / f"fleet_{depot}.csv",
+                                         caps)
+
+        planned_ok = False
+        while True:
+            cmd = build_real_solver_cmd(depot, date_str, fleet_file, flags, args)
+            print(f"\n[{depot} | {_flags_label(flags)}] $ {' '.join(cmd[1:])}")
+            rc = subprocess.run(cmd, env=env).returncode
+            if rc == 0:
+                planned_ok = True
+                break
+            harder = fb.escalate_flags(flags)
+            if harder is None:
+                break
+            print("\n" + "!" * 66)
+            print(f"[ESKALACE] {depot} nevyšlo na {_flags_label(flags)} — "
+                  f"zvyšuji na {_flags_label(harder)} (platí i pro další depa)")
+            print("!" * 66)
+            flags = harder
+            state["flags"] = flags
+            state["escalated"] = True
+            save_real_state(state_path, state)
+
+        if not planned_ok:
+            raise SystemExit(
+                "\n" + "=" * 66 + "\n"
+                f"[ALERT] Depo {depot} nejde naplánovat ani s "
+                f"{_flags_label(flags)}.\n"
+                f"Vyšší porušení (L3 — kamiony/rampa) zatím není postavené.\n"
+                f"Zbytek flotily: "
+                + ", ".join(f"{t}×{n}" for t, n in sorted(budget.remaining.items()))
+                + f"\nHotová depa ({', '.join(state['planned']) or 'žádná'}) "
+                  "jsou definitivní; tohle a další depa čekají na člověka.\n"
+                + "=" * 66)
+
+        out_dir = real_out_dir(depot, date_str, args.label)
+        lines = lines_from_run(out_dir)
+        used = fb.vehicles_used_by_type(lines)
+        budget.consume(used, context=f"real {depot}")
+        state["remaining"] = budget.remaining
+        state["planned"].append(depot)
+        save_real_state(state_path, state)
+        double_cnt = sum(1 for l in lines if l.get("double_run"))
+        print(f"\n[{depot}] HOTOVO: {len(lines)} linek"
+              + (f" (z toho {double_cnt} dvojlinek)" if double_cnt else "")
+              + " | spotřeba: "
+              + ", ".join(f"{t}×{n}" for t, n in sorted(used.items()))
+              + " | zbytek malých: "
+              + str(sum(n for t, n in budget.remaining.items()
+                        if t in small_codes)))
+
+        if not args.no_visualize:
+            run_cmd([PY, "visualize_routes.py", out_dir.as_posix()]
+                    + (["--osm-source", args.osm_source] if args.osm_source else []),
+                    env, f"mapa {depot}")
+
+    print("\n" + "=" * 66)
+    print(f"PLAN_DAY REAL — {date_str} DOKONČEN | level: {_flags_label(flags)}"
+          + (" | BĚHEM DNE ESKALOVÁNO" if state.get("escalated") else ""))
+    print(f"Zbytek flotily: "
+          + ", ".join(f"{t}×{n}" for t, n in sorted(budget.remaining.items())
+                      if n > 0))
+    print(f"Stav: {state_path}")
+    print("=" * 66)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -311,12 +492,38 @@ def main() -> None:
                          help="Předá se solveru")
     predict.add_argument("--skip-tests", action="store_true",
                          help="Přeskočit startup testy")
+
+    real = sub.add_parser(
+        "real", help="Večerní ostrý běh: sekvence dep podle decision, "
+                     "flotila ubývá, eskalace při selhání")
+    real.add_argument("depots", nargs="*",
+                      help="Depa (CB MO HK PR). Bez zadání: všechna s ostrým "
+                           "vstupem. Jede se v pořadí uzávěrek; už hotová "
+                           "depa (stav) se přeskakují.")
+    real.add_argument("--budget", type=float, default=30.0,
+                      help="Solver budget na depo v minutách (default 30 "
+                           "— ostrý provoz)")
+    real.add_argument("--osm-source", choices=["current", "stable"],
+                      default="current", help="Routing instance")
+    real.add_argument("--force-matrix", action="store_true",
+                      help="Předá se solveru")
+    real.add_argument("--no-visualize", action="store_true",
+                      help="Nevytvářet mapy")
+    real.add_argument("--skip-tests", action="store_true",
+                      help="Přeskočit startup testy")
+    real.add_argument("--label", default="",
+                      help="Přípona výstupů a stavu — testovací běh vedle "
+                           "ostrého (results/{D}/{DATE}_{label})")
+    real.add_argument("--run-log-path", default="",
+                      help="Vlastní run log (testy); default = ostrý log")
     args = parser.parse_args()
 
     if not Path("vrp_solver_lines_v6.py").exists():
         sys.exit("[CHYBA] Spusť z kořene repa.")
     if args.phase == "predict":
         main_predict(args)
+    elif args.phase == "real":
+        main_real(args)
 
 
 if __name__ == "__main__":

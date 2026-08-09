@@ -82,3 +82,72 @@ class TestResolveDepotsAndDate:
     def test_unknown_depot_fatal(self):
         with pytest.raises(SystemExit, match="Neznámá depa"):
             resolve_depots_and_date(["XX"])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Vlna 3: real fáze (čisté funkce)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestRealHelpers:
+    def _args(self, **kw):
+        import argparse
+        base = dict(budget=30.0, label="", run_log_path="",
+                    osm_source="current", force_matrix=False)
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def test_l0_cmd_no_double_runs(self):
+        cmd = plan_day.build_real_solver_cmd(
+            "CB", "2026-08-05", Path("s/fleet_CB.csv"),
+            {"capacity_multiplier": 1.0, "double_runs": False}, self._args())
+        assert cmd[cmd.index("--capacity-multiplier") + 1] == "1"
+        assert "--double-runs" not in cmd
+        assert "--output-dir" not in cmd          # default = auto-detekce
+
+    def test_l1_l2_cmd(self):
+        cmd = plan_day.build_real_solver_cmd(
+            "CB", "2026-08-05", Path("s/fleet_CB.csv"),
+            {"capacity_multiplier": 1.03, "double_runs": True}, self._args())
+        assert cmd[cmd.index("--capacity-multiplier") + 1] == "1.03"
+        assert "--double-runs" in cmd
+
+    def test_label_redirects_outputs(self):
+        args = self._args(label="test", run_log_path="x/log.jsonl")
+        cmd = plan_day.build_real_solver_cmd(
+            "MO", "2026-08-05", Path("f.csv"),
+            {"capacity_multiplier": 1.0, "double_runs": False}, args)
+        assert cmd[cmd.index("--output-dir") + 1] == \
+            "data/results/MO/2026-08-05_test"
+        assert cmd[cmd.index("--run-log-path") + 1] == "x/log.jsonl"
+
+    def test_orders_from_real_prepared(self):
+        cmd = plan_day.build_real_solver_cmd(
+            "PR", "2026-08-05", Path("f.csv"),
+            {"capacity_multiplier": 1.0, "double_runs": False}, self._args())
+        assert cmd[cmd.index("--orders-file") + 1] == \
+            "data/prepared/PR/orders_PR_2026-08-05.csv"
+
+    def test_state_roundtrip(self, tmp_path):
+        state = {"remaining": {"TYPE_02": 40}, "planned": ["CB"],
+                 "flags": {"capacity_multiplier": 1.0, "double_runs": False},
+                 "escalated": False}
+        p = tmp_path / "state.json"
+        plan_day.save_real_state(p, state)
+        loaded = plan_day.load_real_state(p, fleet_rows=[], decision={})
+        assert loaded == state
+
+    def test_fresh_state_from_decision(self, tmp_path):
+        import fleet_budget as fb
+        rows = [{"type_code": "TYPE_02", "max_kg": "1350",
+                 "available_count": "53"}]
+        decision = {"solver_flags": {"capacity_multiplier": 1.03,
+                                     "double_runs": True}}
+        state = plan_day.load_real_state(tmp_path / "neni.json", rows, decision)
+        assert state["remaining"] == {"TYPE_02": 53}
+        assert state["planned"] == []
+        assert state["flags"]["double_runs"] is True
+
+    def test_missing_decision_fatal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(plan_day, "PREDICTION_ROOT", tmp_path)
+        with pytest.raises(SystemExit, match="plan_day.py predict"):
+            plan_day.load_decision("2026-08-05")

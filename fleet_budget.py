@@ -127,16 +127,32 @@ def parse_lines_summary(path: Path | str) -> list[dict]:
             if not vehicle_id:
                 continue
             lines.append({
-                "zone":      str(row.get("zone", "")).strip(),
-                "line_id":   str(row.get("line_id", "")).strip(),
-                "type_code": vehicle_id.rsplit("_", 1)[0],
-                "total_kg":  float(row.get("total_kg", 0) or 0),
+                "zone":       str(row.get("zone", "")).strip(),
+                "line_id":    str(row.get("line_id", "")).strip(),
+                "vehicle_id": vehicle_id,
+                "type_code":  vehicle_id.rsplit("_", 1)[0],
+                "total_kg":   float(row.get("total_kg", 0) or 0),
+                "double_run": bool(str(row.get("double_run", "")).strip()),
             })
     return lines
 
 
 def count_by_type(lines: list[dict]) -> dict[str, int]:
     return dict(Counter(l["type_code"] for l in lines))
+
+
+def vehicles_used_by_type(lines: list[dict]) -> dict[str, int]:
+    """
+    Spotřeba FYZICKÝCH vozidel per typ = počet unikátních vehicle_id.
+
+    Dvojlinka jede pod vehicle_id fyzického auta, takže dvě linky téhož
+    auta = jedno spotřebované vozidlo. Počítání po linkách (count_by_type)
+    by při dvojlinkách auto odečetlo dvakrát.
+    """
+    ids_by_type: dict[str, set] = {}
+    for line in lines:
+        ids_by_type.setdefault(line["type_code"], set()).add(line["vehicle_id"])
+    return {t: len(ids) for t, ids in ids_by_type.items()}
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -227,7 +243,7 @@ def caps_for_depot(depot: str, depot_order: list[str],
                    budget: FleetBudget,
                    reservations: dict[str, dict[str, int]],
                    small_codes: set[str],
-                   small_full: dict[str, int]) -> dict[str, int]:
+                   small_full: dict[str, int] | None) -> dict[str, int]:
     """
     Kolik čeho smí depo na řadě použít.
 
@@ -236,13 +252,16 @@ def caps_for_depot(depot: str, depot_order: list[str],
     a jakmile tohle depo doplánuje, přestává existovat — nevyužité kusy
     zůstanou ve zbytku pro další.
 
-    Malá: v predikci vždy plný sklad (neomezená — deficit se MĚŘÍ, nemaskuje).
+    Malá: v PREDIKCI (P2) dostanou plný sklad `small_full` — neomezená,
+    deficit se MĚŘÍ, nemaskuje. V OSTRÉM běhu `small_full=None`: malá jedou
+    stejným vzorcem jako velká (rezervace pro ně neexistují, takže cap =
+    prostě fyzický zbytek) — ubývají doopravdy.
     """
     idx = depot_order.index(depot)
     future = depot_order[idx + 1:]
     caps: dict[str, int] = {}
     for type_code, remaining in budget.remaining.items():
-        if type_code in small_codes:
+        if small_full is not None and type_code in small_codes:
             caps[type_code] = small_full.get(type_code, remaining)
         else:
             future_res = sum(reservations.get(f, {}).get(type_code, 0)
@@ -311,3 +330,15 @@ def solver_flags_for_level(decision: dict) -> dict:
     if decision["level"] == 0:
         return {"capacity_multiplier": 1.0, "double_runs": False}
     return {"capacity_multiplier": 1.03, "double_runs": True}
+
+
+def escalate_flags(flags: dict) -> dict | None:
+    """
+    Další stupeň porušení, když depo na aktuálním nevyšlo.
+
+    L0 → L1+L2 (103 % + dvojlinky). Z L1+L2 už není kam — L3 (kamiony/rampa)
+    zatím není postavené → None = alert, člověk rozhodne.
+    """
+    if not flags.get("double_runs"):
+        return {"capacity_multiplier": 1.03, "double_runs": True}
+    return None

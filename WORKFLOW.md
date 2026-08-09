@@ -235,8 +235,31 @@ python vrp_solver_lines_v6.py --orders-file ... --double-runs
   má sloupec `double_run` = „2. jízda". Max virtuálních jízd:
   `CONFIG double_runs_max` (10).
 
-Zbývá večerní `plan_day.py real` (vlna 3) — decision se už zapisuje
-a solver už umí obě porušení (L1 přepínačem, L2 tímto).
+### Večerní ostrý běh (`plan_day.py real`)
+
+```powershell
+python plan_day.py real                  # všechna depa podle uzávěrek
+python plan_day.py real PR               # jen jedno depo (po částech)
+```
+
+Sekvence dep **CB → MO → HK → PR** nad ostrými daty, řízená decision:
+
+- **vyžaduje `decision_{DATUM}.json`** ze stejného dne (`plan_day predict`)
+- flotila = **živý budget**: po každém depu se odečtou spotřebovaná auta
+  (počítáno per fyzické vozidlo — dvojlinka auto nepočítá dvakrát);
+  velké typy navíc chrání rezervace dep, která ještě nebyla na řadě
+- solver jede s flagy z decision (L0, nebo L1+L2 = 103 % + `--double-runs`)
+- **eskalace**: když depo nevyjde na denním levelu, zvedne se na L1+L2
+  (platí od tohoto depa dál); když nevyjde ani tak → **ALERT a konec**
+  (L3 není postavené, člověk rozhodne) — hotová depa jsou definitivní
+- **stav** (`data/results/plan_day/{DATUM}/state.json`): zbytek flotily,
+  hotová depa, aktuální level — druhé spuštění naváže a hotová depa
+  přeskočí; běh po částech (každé depo po své uzávěrce) je tedy přirozený
+- výstupy do standardních složek `data/results/{DEPO}/{DATUM}/` (ESO
+  export, mapy, run log) — `--label` přesměruje pro testovací běhy
+
+**Default solveru je od vlny 3 L0** (100 % nosnosti; okna −5/+25 zůstávají).
+„Přesně jako dřív" = `--capacity-multiplier 1.03`.
 
 ---
 
@@ -299,7 +322,7 @@ Solver **nemění data**, jen si při plánování nechává rezervu:
 
 | buffer | default | co dělá |
 |---|---|---|
-| `vehicle_capacity_multiplier` | **1.03** = 103 % | plánuje na vyšší nosnost, než je papírová (slack při balení, vzdušné mezery) |
+| `vehicle_capacity_multiplier` | **1.0** = 100 % (L0) | default od vlny 3; porušení L1 = `--capacity-multiplier 1.03` (řídí `plan_day` podle decision) |
 | `tw_expand_before_min` | **5 min** | řidič smí přijet 5 min před otevřením okna |
 | `tw_expand_after_min` | **25 min** | řidič smí přijet 25 min po zavření okna |
 

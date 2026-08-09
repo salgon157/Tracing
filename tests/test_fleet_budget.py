@@ -322,3 +322,60 @@ class TestDecideLevel:
             {"capacity_multiplier": 1.0, "double_runs": False}
         assert solver_flags_for_level({"level": 1}) == \
             {"capacity_multiplier": 1.03, "double_runs": True}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Vlna 3: spotřeba fyzických vozidel + ostrý režim caps + eskalace
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestVehiclesUsedByType:
+    def test_distinct_vehicles_not_lines(self):
+        from fleet_budget import vehicles_used_by_type
+        # dvojlinka jede pod vehicle_id fyzického auta -> auto se počítá JEDNOU
+        lines = [
+            {"type_code": "TYPE_02", "vehicle_id": "TYPE_02_01"},
+            {"type_code": "TYPE_02", "vehicle_id": "TYPE_02_01"},   # 2. jízda
+            {"type_code": "TYPE_02", "vehicle_id": "TYPE_02_02"},
+            {"type_code": "TYPE_05", "vehicle_id": "TYPE_05_01"},
+        ]
+        assert vehicles_used_by_type(lines) == {"TYPE_02": 2, "TYPE_05": 1}
+
+    def test_line_count_would_overcount(self):
+        from fleet_budget import count_by_type, vehicles_used_by_type
+        lines = [{"type_code": "TYPE_02", "vehicle_id": "TYPE_02_01"},
+                 {"type_code": "TYPE_02", "vehicle_id": "TYPE_02_01"}]
+        assert count_by_type(lines)["TYPE_02"] == 2          # po linkách
+        assert vehicles_used_by_type(lines)["TYPE_02"] == 1  # po autech
+
+
+class TestCapsRealMode:
+    SMALL = {"TYPE_01", "TYPE_02"}
+
+    def test_small_none_means_real_consumption(self):
+        # ostrý běh: malá ubývají doopravdy (small_full=None)
+        budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
+        budget.consume({"TYPE_02": 15})
+        caps = caps_for_depot("MO", DEPOT_ORDER, budget, {},
+                              self.SMALL, small_full=None)
+        assert caps["TYPE_02"] == 38
+
+    def test_large_reservations_still_protected_in_real(self):
+        budget = FleetBudget({"TYPE_02": 53, "TYPE_05": 2})
+        caps = caps_for_depot("CB", DEPOT_ORDER, budget,
+                              {"PR": {"TYPE_05": 1}},
+                              self.SMALL, small_full=None)
+        assert caps["TYPE_05"] == 1
+        assert caps["TYPE_02"] == 53      # malá rezervace nemají — plný zbytek
+
+
+class TestEscalateFlags:
+    def test_l0_escalates_to_l1_l2(self):
+        from fleet_budget import escalate_flags
+        assert escalate_flags({"capacity_multiplier": 1.0,
+                               "double_runs": False}) == \
+            {"capacity_multiplier": 1.03, "double_runs": True}
+
+    def test_l1_l2_has_nowhere_to_go(self):
+        from fleet_budget import escalate_flags
+        assert escalate_flags({"capacity_multiplier": 1.03,
+                               "double_runs": True}) is None
