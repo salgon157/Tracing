@@ -199,6 +199,15 @@ CONFIG = {
     "budget_phase_D_pct":            0.00,   # cross-cluster LNS (deaktivováno — viz benchmark)
     "budget_phase_E_pct":            0.60,   # finální intenzifikace
 
+    # Kolik nejlepších seedů z fáze C dotáhnout ve fázi E. 1 = jen vítěz
+    # (dosavadní chování). "auto" = kolik se vejde do JEDNÉ vlny workerů
+    # (workers // clusters, max počet seedů) — wall clock se neprodlouží,
+    # na slabém stroji samo spadne na 1. Pozadí: seedy fáze C jsou od sebe
+    # jen ~1,5–3 % a o vítězi rozhoduje šum časového limitu (viz 10.8.2026:
+    # HK/PR +4,5 tis. Kč čistě z prohry správného seedu o ~1 %). Dotažení
+    # více finalistů ve fázi E tu loterii ruší za cenu ladem ležících jader.
+    "seed_finalists":                1,
+
     # ── Clustering ─────────────────────────────────────────────
     # 2 clustery — winner z benchmarku (Phase 2, cross-validation na Apr 16+17).
     # Méně, větších clusterů dává solveru širší geografický výhled na cross-cluster
@@ -1472,8 +1481,85 @@ def _unsolvable_cluster_report(seed_name: str, cluster_idx: int,
     return "\n".join(msg)
 
 
+def resolve_seed_finalists(value, n_workers: int, n_clusters: int,
+                           n_seeds: int = 3) -> int:
+    """
+    Kolik nejlepších seedů z fáze C dotáhnout ve fázi E.
+
+    "auto" = tolik, kolik jich fáze E zvládne v JEDNÉ vlně workerů
+    (workers // clusters) — wall clock se neprodlouží a slabý stroj
+    samo spadne na 1 = dosavadní chování. Explicitní číslo se respektuje
+    vždy; když se nevejde do jedné vlny, fáze E rozdělí čas na úlohu
+    (phase_e_time_per_task) a wall clock drží taky.
+    """
+    if value == "auto":
+        per_wave = n_workers // max(n_clusters, 1)
+        return max(1, min(n_seeds, per_wave))
+    n = int(value)
+    if n < 1:
+        raise ValueError(f"[CHYBA] seed_finalists musí být >= 1, je {value!r}.")
+    return min(n, n_seeds)
+
+
+def rank_seeds(results_by_seed: dict, expected_clusters: dict,
+               penalty_kc: float) -> list[dict]:
+    """
+    Seřadí seedy fáze C podle penalizované ceny (nevyřešený cluster =
+    +penalty_kc). Vrací [{seed, raw, penalized, solved, expected, complete}],
+    nejlepší první. Seed bez jediného vyřešeného clusteru vypadne. Remíza
+    se řeší jménem seedu — deterministicky.
+    """
+    ranked = []
+    for seed_name, cluster_results in results_by_seed.items():
+        expected  = expected_clusters[seed_name]
+        solved    = sum(1 for r in cluster_results.values() if r.get("routes"))
+        if solved == 0:
+            continue
+        raw_total = sum(r.get("cost", 0) for r in cluster_results.values())
+        unsolved  = expected - solved
+        ranked.append({
+            "seed":      seed_name,
+            "raw":       raw_total,
+            "penalized": raw_total + unsolved * penalty_kc,
+            "solved":    solved,
+            "expected":  expected,
+            "complete":  unsolved == 0,
+        })
+    ranked.sort(key=lambda r: (r["penalized"], r["seed"]))
+    return ranked
+
+
+def _state_from_cluster_results(orders, scd: dict, cluster_res: dict,
+                                seed_penalty: float) -> SolutionState:
+    """Sestaví SolutionState jednoho seedu z výsledků jeho clusterů."""
+    c_indices = scd["cluster_indices"]
+    cluster_labels_arr  = [0] * len(orders)
+    cluster_routes_list = []
+    cluster_costs       = []
+    for c_idx, c_ix in enumerate(c_indices):
+        for order_idx in c_ix:
+            cluster_labels_arr[order_idx] = c_idx
+        res = cluster_res.get(c_idx, {})
+        cluster_routes_list.append(res.get("routes", []))
+        cluster_costs.append(
+            res.get("cost", seed_penalty if not res.get("routes") else 0.0)
+        )
+    return SolutionState(
+        orders=orders,
+        cluster_labels=cluster_labels_arr,
+        clusters=scd["clusters"],
+        cluster_indices=c_indices,
+        vehicle_assignments=scd["vehicle_assignments"],
+        cluster_routes_list=cluster_routes_list,
+        cluster_costs=cluster_costs,
+    )
+
+
 def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_id,
-                       n_clusters, time_budget_sec, n_workers) -> SolutionState:
+                       n_clusters, time_budget_sec, n_workers,
+                       n_finalists: int = 1) -> list[tuple[str, SolutionState]]:
+    """Vrací finalisty pro fázi E: [(seed_name, state)], vítěz první.
+    S n_finalists=1 přesně dosavadní chování (jen vítěz + rescue)."""
     seed = CONFIG["random_seed"]
     seeds_labels = {
         "kmeans":      partition_kmeans(orders, n_clusters, seed),
@@ -1523,32 +1609,26 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
                 print(f"  [!] Chyba seed={args['seed_name']} "
                       f"cluster={args['cluster_idx']}: {e}")
 
-    best_seed_name     = None
-    best_penalized     = float("inf")
-    seed_penalty       = CONFIG["seed_unsolved_cluster_penalty_kc"]
+    seed_penalty      = CONFIG["seed_unsolved_cluster_penalty_kc"]
+    expected_clusters = {sn: len(seed_cluster_data[sn]["clusters"])
+                         for sn in seeds_labels}
 
     for seed_name, cluster_results in results_by_seed.items():
-        expected  = len(seed_cluster_data[seed_name]["clusters"])
+        expected  = expected_clusters[seed_name]
         solved    = sum(1 for r in cluster_results.values() if r.get("routes"))
-        unsolved  = expected - solved
         raw_total = sum(r.get("cost", 0) for r in cluster_results.values())
-        penalized = raw_total + unsolved * seed_penalty
-
+        penalized = raw_total + (expected - solved) * seed_penalty
         print(f"  Seed '{seed_name}': {raw_total:,.0f} Kč raw | "
               f"{penalized:,.0f} Kč pen. | {solved}/{expected} clusterů")
 
-        if solved == 0:
-            continue
-        if penalized < best_penalized:
-            best_penalized = penalized
-            best_seed_name = seed_name
-
-    if best_seed_name is None:
+    ranked = rank_seeds(results_by_seed, expected_clusters, seed_penalty)
+    if not ranked:
         raise RuntimeError("Žádný seed nenašel řešení. Zkontroluj TW nebo kapacity.")
 
-    print(f"\n  ✓ Nejlepší seed: '{best_seed_name}' (pen. {best_penalized:,.0f} Kč)")
+    best_seed_name = ranked[0]["seed"]
+    print(f"\n  ✓ Nejlepší seed: '{best_seed_name}' "
+          f"(pen. {ranked[0]['penalized']:,.0f} Kč)")
 
-    labels        = seeds_labels[best_seed_name]
     scd           = seed_cluster_data[best_seed_name]
     clusters      = scd["clusters"]
     c_indices     = scd["cluster_indices"]
@@ -1587,28 +1667,27 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
             cluster_res[ci] = {"seed_name": best_seed_name, "cluster_idx": ci,
                                "routes": routes_r, "cost": cost_r}
 
-    cluster_labels_arr  = [0] * len(orders)
-    cluster_routes_list = []
-    cluster_costs       = []
+    finalists = [(best_seed_name,
+                  _state_from_cluster_results(orders, scd, cluster_res,
+                                              seed_penalty))]
 
-    for c_idx, c_ix in enumerate(c_indices):
-        for order_idx in c_ix:
-            cluster_labels_arr[order_idx] = c_idx
-        res = cluster_res.get(c_idx, {})
-        cluster_routes_list.append(res.get("routes", []))
-        cluster_costs.append(
-            res.get("cost", seed_penalty if not res.get("routes") else 0.0)
-        )
-
-    return SolutionState(
-        orders=orders,
-        cluster_labels=cluster_labels_arr,
-        clusters=clusters,
-        cluster_indices=c_indices,
-        vehicle_assignments=vehicle_asgn,
-        cluster_routes_list=cluster_routes_list,
-        cluster_costs=cluster_costs,
-    )
+    # Další finalisté (2..N): jen KOMPLETNÍ seedy — záchranný re-solve
+    # náleží pouze vítězi (pojistka se nemění), děravý ne-vítěz do fáze E
+    # nesmí, jinak by mohl vyhrát plán bez části objednávek.
+    for entry in ranked[1:]:
+        if len(finalists) >= n_finalists:
+            break
+        if not entry["complete"]:
+            print(f"  [finalisté] Seed '{entry['seed']}' přeskočen — "
+                  f"{entry['expected'] - entry['solved']} nevyřešených clusterů.")
+            continue
+        finalists.append((entry["seed"], _state_from_cluster_results(
+            orders, seed_cluster_data[entry["seed"]],
+            results_by_seed[entry["seed"]], seed_penalty)))
+    if n_finalists > 1:
+        print("  Finalisté pro fázi E: "
+              + ", ".join(f"'{n}'" for n, _ in finalists))
+    return finalists
 
 
 # ============================================================
@@ -1890,33 +1969,67 @@ def phase_d_lns(state, distances_km, vehicle_time_by_id, time_budget_sec, n_work
 #  PHASE E — Finální intenzifikace
 # ============================================================
 
-def phase_e_intensify(state, distances_km, vehicle_time_by_id, time_budget_sec, n_workers):
-    n_clusters = len(state.clusters)
-    if n_clusters == 0:
-        return state
+def phase_e_time_per_task(time_budget_sec: float, n_tasks: int,
+                          n_workers: int) -> int:
+    """Čas na jednu solve úlohu fáze E: budget dělený počtem VLN
+    (úlohy / workery, zaokrouhleno nahoru). Víc úloh než workerů →
+    kratší čas na úlohu, wall clock fáze zůstává ~budget."""
+    waves = math.ceil(max(n_tasks, 1) / max(n_workers, 1))
+    return max(15, int(time_budget_sec / waves))
 
-    time_per_cluster = max(15, int(time_budget_sec / math.ceil(n_clusters / n_workers)))
-    print(f"  {n_clusters} clusterů × {time_per_cluster} sec, {n_workers} workerů")
+
+def phase_e_intensify(finalists, distances_km, vehicle_time_by_id,
+                      time_budget_sec, n_workers):
+    """
+    Finální intenzifikace. `finalists` = [(seed_name, SolutionState)] z fáze C,
+    vítěz první. Každý finalista se dotáhne per-cluster re-solvem a vrátí se
+    NEJLEVNĚJŠÍ výsledný stav — prohraný seed fáze C tak dostane šanci
+    otočit těsný souboj (rozestupy seedů ~1,5–3 % jsou menší než šum GLS).
+    S jedním finalistou přesně dosavadní chování.
+    """
+    if isinstance(finalists, SolutionState):      # zpětná kompatibilita
+        finalists = [("best", finalists)]
+    n_fin = len(finalists)
+
+    # Úlohy = neprázdné clustery všech finalistů
+    task_specs = []
+    for f_idx, (_, st) in enumerate(finalists):
+        for c_idx, (c_orders, c_indices, c_vehicles) in enumerate(
+                zip(st.clusters, st.cluster_indices, st.vehicle_assignments)):
+            if not c_orders:
+                continue
+            task_specs.append((f_idx, c_idx, c_orders, c_indices, c_vehicles))
+    if not task_specs:
+        return finalists[0][1]
+
+    time_per_task = phase_e_time_per_task(time_budget_sec, len(task_specs),
+                                          n_workers)
+    if n_fin == 1:
+        print(f"  {len(task_specs)} clusterů × {time_per_task} sec, "
+              f"{n_workers} workerů")
+    else:
+        waves = math.ceil(len(task_specs) / max(n_workers, 1))
+        print(f"  {n_fin} finalisté ({', '.join(n for n, _ in finalists)}) → "
+              f"{len(task_specs)} úloh × {time_per_task} sec, "
+              f"{n_workers} workerů"
+              + (f", {waves} vlny" if waves > 1 else ""))
 
     worker_args = []
-    for c_idx, (c_orders, c_indices, c_vehicles) in enumerate(
-            zip(state.clusters, state.cluster_indices, state.vehicle_assignments)):
-        if not c_orders:
-            continue
+    for f_idx, c_idx, c_orders, c_indices, c_vehicles in task_specs:
         cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
         sub_dist, sub_times = extract_submatrix(distances_km, cluster_v_times, c_indices)
         worker_args.append({
-            "seed_name":       "intensify",
+            "seed_name":       f"F{f_idx}",     # finalista se veze v seed_name
             "cluster_idx":     c_idx,
             "cluster_orders":  c_orders,
             "cluster_vehicles":c_vehicles,
             "sub_dist":        sub_dist.tolist(),
             "sub_times":       [st.tolist() for st in sub_times],
-            "time_limit_sec":  time_per_cluster,
+            "time_limit_sec":  time_per_task,
         })
 
-    new_routes = list(state.cluster_routes)
-    new_costs  = list(state.cluster_costs)
+    new_routes = [list(st.cluster_routes) for _, st in finalists]
+    new_costs  = [list(st.cluster_costs)  for _, st in finalists]
 
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         futures = {executor.submit(_worker_solve_cluster, args): args["cluster_idx"]
@@ -1924,26 +2037,43 @@ def phase_e_intensify(state, distances_km, vehicle_time_by_id, time_budget_sec, 
         for future in as_completed(futures):
             try:
                 res   = future.result()
+                f_idx = int(res["seed_name"][1:])
                 c_idx = res["cluster_idx"]
-                old   = new_costs[c_idx]
+                tag   = f"[{finalists[f_idx][0]}] " if n_fin > 1 else ""
+                old   = new_costs[f_idx][c_idx]
                 if res["routes"] and res["cost"] < old:
-                    new_routes[c_idx] = res["routes"]
-                    new_costs[c_idx]  = res["cost"]
-                    print(f"  [E] Cluster {c_idx+1:02d}: "
+                    new_routes[f_idx][c_idx] = res["routes"]
+                    new_costs[f_idx][c_idx]  = res["cost"]
+                    print(f"  [E] {tag}Cluster {c_idx+1:02d}: "
                           f"−{old - res['cost']:,.0f} Kč → {res['cost']:,.0f} Kč")
                 else:
-                    print(f"  [E] Cluster {c_idx+1:02d}: žádné zlepšení")
+                    print(f"  [E] {tag}Cluster {c_idx+1:02d}: žádné zlepšení")
             except Exception as e:
                 print(f"  [E] Chyba: {e}")
 
+    totals = [sum(costs) for costs in new_costs]
+    best_f = min(range(n_fin), key=lambda i: (totals[i], i))
+
+    CONFIG["_finalists_summary"] = [
+        {"seed": name, "cost_after_c": round(sum(st.cluster_costs), 1),
+         "cost_after_e": round(totals[i], 1), "winner": i == best_f}
+        for i, (name, st) in enumerate(finalists)]
+    if n_fin > 1:
+        print("\n  Výsledky finalistů (po C → po E):")
+        for i, (name, st) in enumerate(finalists):
+            mark = "  ← vítěz" if i == best_f else ""
+            print(f"    {name:<12} {sum(st.cluster_costs):>12,.0f} → "
+                  f"{totals[i]:>12,.0f} Kč{mark}")
+
+    _, st = finalists[best_f]
     return SolutionState(
-        orders=state.orders,
-        cluster_labels=state.cluster_labels,
-        clusters=state.clusters,
-        cluster_indices=state.cluster_indices,
-        vehicle_assignments=state.vehicle_assignments,
-        cluster_routes_list=new_routes,
-        cluster_costs=new_costs,
+        orders=st.orders,
+        cluster_labels=st.cluster_labels,
+        clusters=st.clusters,
+        cluster_indices=st.cluster_indices,
+        vehicle_assignments=st.vehicle_assignments,
+        cluster_routes_list=new_routes[best_f],
+        cluster_costs=new_costs[best_f],
     )
 
 
@@ -2062,7 +2192,7 @@ def _build_run_record(
         t = r["vehicle_type"]
         type_counter[t] = type_counter.get(t, 0) + 1
 
-    return {
+    record = {
         "run_id":         datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "solver_version": SOLVER_VERSION,
         "git_commit":     _git_commit(),
@@ -2091,6 +2221,7 @@ def _build_run_record(
             "budget_phase_E_pct":           CONFIG["budget_phase_E_pct"],
             "vehicle_capacity_multiplier":  CONFIG.get("vehicle_capacity_multiplier", 1.0),
             "double_runs":                  bool(CONFIG.get("_double_runs_enabled", False)),
+            "seed_finalists":               CONFIG.get("_seed_finalists_resolved", 1),
         },
 
         "closures": [c["id"] for c in closures],
@@ -2107,6 +2238,12 @@ def _build_run_record(
             "output_dir":       str(output_dir),
         },
     }
+    # Souboj finalistů fáze E — jen když se opravdu konal (>1), ať se
+    # z run logu dá vyčíst, jak často prohraný seed fáze C otočil.
+    fin_summary = CONFIG.get("_finalists_summary")
+    if fin_summary and len(fin_summary) > 1:
+        record["results"]["finalists"] = fin_summary
+    return record
 
 
 def _load_previous_run(zone: str, delivery_date: str,
@@ -2406,6 +2543,8 @@ def print_run_settings(args, orders, vehicles_expanded, block_id, zone_label, n_
     print(f"budget_phase_C_pct:          {CONFIG['budget_phase_C_pct']}")
     print(f"budget_phase_D_pct:          {CONFIG['budget_phase_D_pct']}")
     print(f"budget_phase_E_pct:          {CONFIG['budget_phase_E_pct']}")
+    print(f"seed_finalists:              {CONFIG.get('seed_finalists', 1)} "
+          f"(resolved: {CONFIG.get('_seed_finalists_resolved', '?')})")
 
     print(f"num_clusters_raw:            {CONFIG['num_clusters']}")
     print(f"parallel_workers_raw:        {CONFIG['parallel_workers']}")
@@ -2527,6 +2666,15 @@ def parse_args():
                              "double_run_earliest; po solve se páruje na "
                              "fyzická auta (návrat + nakládka), jinak běh "
                              "spadne. Zapíná plan_day podle decision.")
+
+    parser.add_argument("--seed-finalists", default=None,
+                        choices=["auto", "1", "2", "3"],
+                        help="Kolik nejlepších seedů fáze C dotáhnout ve fázi E "
+                             "(default z CONFIG: 1 = jen vítěz, dosavadní "
+                             "chování). 'auto' = kolik se vejde do jedné vlny "
+                             "workerů — na slabém stroji samo spadne na 1. "
+                             "Víc finalistů = stejný wall clock, víc jader, "
+                             "menší loterie při těsném souboji seedů.")
 
     # ── Plánovací buffery: override z CLI (default = hodnoty v CONFIG) ──
     parser.add_argument("--no-buffers", action="store_true",
@@ -2680,6 +2828,13 @@ def main():
         print(f"[BUDGET] Override: {args.budget_min:g} min "
               f"({CONFIG['total_time_budget_sec']} s)")
 
+    # ── --seed-finalists: kolik seedů fáze C dotáhnout ve fázi E ──────────
+    if args.seed_finalists is not None:
+        CONFIG["seed_finalists"] = (args.seed_finalists
+                                    if args.seed_finalists == "auto"
+                                    else int(args.seed_finalists))
+        print(f"[FINALISTÉ] Override: --seed-finalists {args.seed_finalists}")
+
     # ── --allow-profile-fallback: vypnout hard-fail při výpadku HGV routingu ─
     if args.allow_profile_fallback:
         global ALLOW_PROFILE_FALLBACK
@@ -2766,6 +2921,12 @@ def main():
     n_workers   = (max(1, multiprocessing.cpu_count() - 1)
                    if cfg_workers == "auto" else int(cfg_workers))
 
+    # Kolik finalistů fáze C dotáhne fáze E (auto se řeší až tady,
+    # protože potřebuje znát workery a clustery TOHOTO stroje)
+    n_finalists = resolve_seed_finalists(CONFIG.get("seed_finalists", 1),
+                                         n_workers, n_clusters)
+    CONFIG["_seed_finalists_resolved"] = n_finalists
+
     total_kg = sum(o["weight_kg"] for o in orders)
     print(f"  Objednávky:  {len(orders):,}  ({total_kg:,.0f} kg celkem)")
     print(f"  Vozidla:     {len(vehicles_expanded)} dostupných")
@@ -2780,6 +2941,9 @@ def main():
     print(f"  Zóna/block:  {zone_label}")
     print(f"  Clustery:    {n_clusters}")
     print(f"  CPU workerů: {n_workers}")
+    if n_finalists > 1:
+        print(f"  Finalisté E: {n_finalists} nejlepších seedů fáze C "
+              f"(seed_finalists={CONFIG['seed_finalists']})")
 
     print_run_settings(
         args=args,
@@ -2855,26 +3019,31 @@ def main():
     print("\n" + "─" * 65)
     print("[B+C] Seed partice + paralelní solve")
     print("─" * 65)
-    state = phase_c_best_seed(
+    finalists = phase_c_best_seed(
         orders, vehicles_expanded, distances_km, vehicle_time_by_id,
-        n_clusters, int(budget_C), n_workers
+        n_clusters, int(budget_C), n_workers, n_finalists=n_finalists
     )
+    state = finalists[0][1]
     print(f"Phase C: {time.time() - t_after_osrm:.0f} sec | {state.total_cost:,.0f} Kč")
 
     # ── Phase D: LNS ─────────────────────────────────────────
+    # (budget 0 = vypnutá; kdyby se zapnula, jede jen na vítězi fáze C)
     print("\n" + "─" * 65)
     print("[D] Cross-cluster LNS")
     print("─" * 65)
     t_d   = time.time()
     state = phase_d_lns(state, distances_km, vehicle_time_by_id, budget_D, n_workers)
+    finalists[0] = (finalists[0][0], state)
     print(f"Phase D: {time.time() - t_d:.0f} sec | {state.total_cost:,.0f} Kč")
 
     # ── Phase E: Intenzifikace ────────────────────────────────
     print("\n" + "─" * 65)
-    print("[E] Finální intenzifikace")
+    print("[E] Finální intenzifikace"
+          + (f" — {len(finalists)} finalisté" if len(finalists) > 1 else ""))
     print("─" * 65)
     t_e   = time.time()
-    state = phase_e_intensify(state, distances_km, vehicle_time_by_id, budget_E, n_workers)
+    state = phase_e_intensify(finalists, distances_km, vehicle_time_by_id,
+                              budget_E, n_workers)
     print(f"Phase E: {time.time() - t_e:.0f} sec | {state.total_cost:,.0f} Kč")
 
     # ── Výstup ────────────────────────────────────────────────
