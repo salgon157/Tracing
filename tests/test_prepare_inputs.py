@@ -1,10 +1,13 @@
 """
 test_prepare_inputs.py — unit testy pro prepare_inputs_v6.py
 
-Finální RiRo formát z ESO9 (od 17.7.2026): GPS ve sloupcích R/S (idx 17/18),
-payload "KG:x#SEC:y" v AA (idx 26). Locations už se nepoužívají.
-Testované funkce jsou pure (bez sítě, bez disku kromě tmp_path).
+RiRo formát z ESO9 od 13.8.2026: 19 sloupců — GPS v K/L (idx 10/11),
+payload "KG:x#SEC:y" v Q (idx 16), rampa 0/1 v S (idx 18). Starší
+30/31/32sloupcové varianty se odmítají. Testované funkce jsou pure
+(bez sítě, bez disku kromě tmp_path).
 """
+import csv
+
 import pytest
 
 from prepare_inputs_v6 import (
@@ -17,6 +20,7 @@ from prepare_inputs_v6 import (
     format_dropped_report,
     parse_gps,
     parse_payload,
+    save_orders,
     seconds_to_hhmm,
     transform,
 )
@@ -120,18 +124,19 @@ class TestCheckRowFormat:
     def test_final_format_passes(self):
         check_row_format(_raw_cols(), 1)   # nesmí vyhodit
 
-    def test_transitional_32_cols_rejected(self):
-        with pytest.raises(ValueError, match="přechodný formát"):
-            check_row_format(_raw_cols(n=32), 5)
+    @pytest.mark.parametrize("n_cols", [30, 31, 32])
+    def test_old_formats_rejected_with_guidance(self, n_cols):
+        # všechny varianty do 12.8.2026 (30/31/32 sloupců) = starý formát
+        with pytest.raises(ValueError, match="starý formát"):
+            check_row_format(_raw_cols(n=n_cols), 5)
+
+    def test_old_format_error_names_new_layout(self):
+        with pytest.raises(ValueError, match=f"{EXPECTED_COLS}sloupcový"):
+            check_row_format(_raw_cols(n=31), 5)
 
     def test_wrong_column_count_rejected(self):
-        with pytest.raises(ValueError, match="nemá 31 sloupců"):
+        with pytest.raises(ValueError, match=f"nemá {EXPECTED_COLS} sloupců"):
             check_row_format(_raw_cols(n=25), 5)
-
-    def test_previous_30col_format_rejected(self):
-        # formát ze 17.–23.7.2026: má SEC i GPS, ale chybí sloupec AE
-        with pytest.raises(ValueError, match="17"):
-            check_row_format(_raw_cols(n=30), 5)
 
     def test_error_mentions_line_number(self):
         with pytest.raises(ValueError, match="Řádek 42"):
@@ -191,24 +196,31 @@ class TestParseGps:
 
 def _make_raw_row(loc_code="loc1", from_sec="28800", to_sec="43200",
                   payload="KG:300#SEC:600", order_no="ORD001",
-                  customer="Firma s.r.o.", note="", code_a="",
+                  customer="Firma s.r.o.", note="",
                   lon="15.586947", lat="49.395796", city="Jihlava", line=1,
-                  delivery_date="20260728", prev_kg="-1000"):
+                  delivery_date="20260728", prev_kg="-1000", ramp="0",
+                  street="Hlavní 1", zip_code="58601", country="CZ",
+                  eso_col7="40484", eso_col13="17632867"):
     return {
         "_line": line,
         "delivery_date": delivery_date,
         "prev_kg": prev_kg,
         "location_code": loc_code,
         "customer_name": customer,
+        "street": street,
+        "zip": zip_code,
         "city": city,
+        "country": country,
+        "eso_col7": eso_col7,
         "tw1_from_sec": from_sec,
         "tw1_to_sec": to_sec,
         "lon": lon,
         "lat": lat,
         "order_number": order_no,
+        "eso_col13": eso_col13,
         "note": note,
         "payload_raw": payload,
-        "code_a": code_a,
+        "ramp": ramp,
     }
 
 
@@ -228,13 +240,43 @@ class TestTransform:
         assert orders[0]["service_sec"] == 261
         assert orders[0]["weight_kg"] == pytest.approx(51.475)
 
-    def test_city_from_column_g(self):
+    def test_city_from_column_f(self):
         orders, _ = transform([_make_raw_row(city="Kájov")], "CB")
         assert orders[0]["city"] == "Kájov"
 
     def test_block_id_set_to_depot(self):
         orders, _ = transform([_make_raw_row()], "HK")
         assert orders[0]["block_id"] == "HK"
+
+    def test_passthrough_columns_for_external_app(self):
+        # adresa/PSČ/země/ID jdou do prepared beze změny — plánovač je nečte,
+        # ale aplikace nad prepared soubory ano
+        orders, _ = transform([_make_raw_row(street="Táborská 111",
+                                             zip_code="67401", country="CZ",
+                                             eso_col7="123", eso_col13="456")], "CB")
+        o = orders[0]
+        assert o["street"] == "Táborská 111"
+        assert o["zip"] == "67401"
+        assert o["country"] == "CZ"
+        assert o["eso_col7"] == "123"
+        assert o["eso_col13"] == "456"
+
+    def test_ramp_flag_one_and_zero(self):
+        orders, _ = transform([_make_raw_row(ramp="1", order_no="R1"),
+                               _make_raw_row(ramp="0", order_no="R0", line=2)], "CB")
+        assert [o["ramp"] for o in orders] == [1, 0]
+
+    @pytest.mark.parametrize("bad", ["", "2", "X", "ano"])
+    def test_invalid_ramp_dropped(self, bad):
+        orders, dropped = transform([_make_raw_row(ramp=bad)], "CB")
+        assert orders == []
+        assert dropped[0]["reason"] == "vadný příznak rampy"
+
+    def test_dead_columns_gone_from_orders(self):
+        # code_a a riro_vehicle_type_code novým formátem zanikly
+        orders, _ = transform([_make_raw_row()], "CB")
+        assert "code_a" not in orders[0]
+        assert "riro_vehicle_type_code" not in orders[0]
 
     def test_bad_gps_dropped_with_reason(self):
         orders, dropped = transform([_make_raw_row(lon="-1000", lat="-1000")], "CB")
@@ -327,6 +369,42 @@ class TestBuildPrepareStats:
         s = build_prepare_stats("CB", "2026-07-17", "x.csv", raw_rows=10,
                                 orders_count=9, dropped=self._dropped("vadná GPS"))
         assert "excluded_total" in s
+
+    def test_ramp_counters(self):
+        s = build_prepare_stats(
+            "CB", "2026-08-13", "riro-20260813-CB.csv",
+            raw_rows=101, orders_count=99, ramp_orders=41,
+            dropped=self._dropped("vadný příznak rampy", 2))
+        assert s["ramp_orders"] == 41
+        assert s["excluded_invalid_ramp_rows"] == 2
+        assert s["excluded_total"] == 2
+
+
+class TestSaveOrdersHeader:
+    """Kontrakt hlavičky prepared CSV — čte ji solver i aplikace uživatele.
+    Prvních 13 sloupců drží pořadí starého formátu, nové jsou na konci."""
+
+    EXPECTED_HEADER = [
+        "order_number", "location_code", "customer_name", "block_id",
+        "time_from", "time_to", "payload_raw", "weight_kg",
+        "lat", "lon", "city", "note", "service_sec",
+        "street", "zip", "country", "eso_col7", "eso_col13", "ramp",
+    ]
+
+    def test_header_exact(self, tmp_path):
+        orders, dropped = transform([_make_raw_row()], "CB")
+        assert dropped == []
+        out = tmp_path / "orders_CB_2026-08-13.csv"
+        save_orders(orders, out)
+        with open(out, encoding="utf-8") as f:
+            header = next(csv.reader(f))
+        assert header == self.EXPECTED_HEADER
+
+    def test_solver_required_columns_present(self):
+        # povinná pole load_orders_day (vrp_solver_lines_v6) musí být v hlavičce
+        required = {"order_number", "location_code", "time_from", "time_to",
+                    "weight_kg", "lat", "lon", "service_sec"}
+        assert required <= set(self.EXPECTED_HEADER)
 
 
 class TestFormatDroppedReport:

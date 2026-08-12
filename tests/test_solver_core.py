@@ -628,3 +628,32 @@ class TestUnreachableThresholds:
         # takže ho solver nepoužije ani při vysokém prahu.
         from vrp_solver_lines_v6 import UNREACHABLE_TIME_MIN, CONFIG
         assert UNREACHABLE_TIME_MIN > CONFIG["max_route_duration_h"] * 60
+
+
+class TestLoadOrdersDayRamp:
+    """Rampa (0/1) z prepared CSV — pasivní pole, jen se veze do výstupů.
+    Musí být VOLITELNÁ: starší prepared soubory (do 12.8.2026) sloupec nemají."""
+
+    HEADER = ("order_number,location_code,customer_name,block_id,time_from,"
+              "time_to,payload_raw,weight_kg,lat,lon,city,note,service_sec")
+    ROW = ("O1,loc1,Firma,CB,08:00,12:00,KG:100#SEC:300,100.0,"
+           "49.4,15.6,Jihlava,,300")
+
+    def _load(self, tmp_path, header, row):
+        from vrp_solver_lines_v6 import load_orders_day
+        p = tmp_path / "orders_CB_2026-08-13.csv"
+        p.write_text(header + "\n" + row + "\n", encoding="utf-8")
+        return load_orders_day(str(p))
+
+    def test_ramp_one(self, tmp_path):
+        orders = self._load(tmp_path, self.HEADER + ",ramp", self.ROW + ",1")
+        assert orders[0]["ramp"] == 1
+
+    def test_ramp_zero(self, tmp_path):
+        orders = self._load(tmp_path, self.HEADER + ",ramp", self.ROW + ",0")
+        assert orders[0]["ramp"] == 0
+
+    def test_missing_ramp_column_defaults_to_zero(self, tmp_path):
+        # zpětná kompatibilita se starými prepared soubory
+        orders = self._load(tmp_path, self.HEADER, self.ROW)
+        assert orders[0]["ramp"] == 0

@@ -44,7 +44,7 @@ def _row(line=1, payload="KG:300#SEC:600", order_no="ORD001",
         "order_number": order_no,
         "note": "",
         "payload_raw": payload,
-        "code_a": "",
+        "ramp": "0",
     }
 
 

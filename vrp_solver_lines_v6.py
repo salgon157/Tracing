@@ -621,6 +621,10 @@ def load_orders_day(path: str) -> list:
                 "city":          row.get("city", "").strip(),
                 "note":          row.get("note", "").strip(),
                 "service_sec":   service_sec,
+                # Rampa (0/1) — jen se veze do výstupů, optimalizaci neřídí
+                # (L3 čeká na definici). Volitelné: starší prepared soubory
+                # sloupec nemají → 0.
+                "ramp":          1 if row.get("ramp", "").strip() == "1" else 0,
 
                 # Aliasy pro kompatibilitu s algoritmem (neměň)
                 "id":            row["order_number"].strip(),
@@ -1363,6 +1367,7 @@ def _extract_routes(manager, routing, solution, time_dim,
                     "window":           f"{o['time_from']}–{o['time_to']}",
                     "city":             o.get("city", ""),
                     "note":             o.get("note", ""),
+                    "ramp":             o.get("ramp", 0),
                     "leg_km":           leg_km,
                     "service_min":      svc,
                     "departure":        dep_str,
@@ -2132,6 +2137,7 @@ def save_excel(routes, total_cost_kc, filepath="lines_plan.xlsx"):
                 "Kg":            s["kg"],
                 "Window":      s.get("window", "—"),
                 "Note":        s.get("note", ""),
+                "Rampa":       s.get("ramp", 0),
             })
         rows.append({
             "Line":        f"LINE_{line_no:02d}",
@@ -2450,6 +2456,7 @@ def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elaps
                 "kg": s["kg"],
                 "window": s.get("window", ""),
                 "note": s.get("note", ""),
+                "ramp": s.get("ramp", 0),
                 "lat": s.get("lat", ""),
                 "lon": s.get("lon", ""),
             })

@@ -64,7 +64,7 @@ proto se plánují odděleně.
 | skript | co dělá |
 |---|---|
 | **`vrp_solver_lines_v6.py`** | Jádro. VRP solver (OR-Tools), matice přes OSRM/ORS, cenový model, výstupy + run log. Ostatní ho importují. |
-| **`prepare_inputs_v6.py`** | RiRo → solver-ready CSV. Validace GPS, oken, payloadu; bilance vyřazených do `prepare_stats_*.json`. |
+| **`prepare_inputs_v6.py`** | RiRo (19 sloupců od 13. 8. 2026) → solver-ready CSV. Validace GPS, oken, payloadu i příznaku rampy; adresa/PSČ/země/ID jako průchozí sloupce; bilance vyřazených do `prepare_stats_*.json`. |
 | **`visualize_routes.py`** | HTML mapa tras (Leaflet) z výsledkové složky. |
 | **`predict_day.py`** | Tenký wrapper: predikční běh nad `data/prediction/` (prepare+solve+mapy pro všechna depa). Odděleno od ostrého provozu. |
 | **`order_history.py`** | Šance závozu z historie objednávek (`data/historie_objednavky/*.xlsx`): stejný den v týdnu, roční okno, pauzy, svátky. Predikce podle ní losuje, které dopredikované objednávky do plánu půjdou. |
@@ -154,6 +154,6 @@ Repo je **Private**.
 python -m pytest tests webui/tests -q --ignore tests/test_ors_hgv_integration.py
 ```
 
-Aktuálně **553 testů**. `prepare_inputs` i solver pouští unit testy automaticky
+Aktuálně **579 testů**. `prepare_inputs` i solver pouští unit testy automaticky
 před během (přeskočení: `SKIP_STARTUP_TESTS=1`). Integrační routing testy
 (`test_ors_hgv_integration.py`) potřebují běžící OSRM/ORS.

@@ -15,9 +15,14 @@ Výstupy:
   {data-root}/prepared/{DEPOT}/orders_{DEPOT}_{YYYY-MM-DD}.csv
   {data-root}/prepared/{DEPOT}/prepare_stats_{DEPOT}_{YYYY-MM-DD}.json
 
-RiRo z ESO9 je jediný zdroj pravdy — nese GPS (sloupce R/S), předpočítaný čas
-zastávky (SEC v payloadu), datum rozvozu (Y) i kg z minulého závozu (AE).
-Statická data locations_*.csv už NEJSOU potřeba.
+RiRo z ESO9 je jediný zdroj pravdy — nese GPS (sloupce K/L), předpočítaný čas
+zastávky (SEC v payloadu, Q), datum rozvozu (O), kg z minulého závozu (R)
+a příznak rampy (S). Statická data locations_*.csv už NEJSOU potřeba.
+
+Formát od 13. 8. 2026: 19 sloupců (dřívější 30/31/32sloupcové varianty se
+odmítají s jasnou chybou). Adresa, PSČ, země a dvě interní ID z ESO jdou do
+prepared jako průchozí sloupce — plánovač je nepotřebuje, ale aplikace nad
+prepared soubory ano.
 
 Predikční režim (--prediction): objednávky s DŘÍVĚJŠÍM datem rozvozu jsou
 dopredikované a projdou losem podle šance, že adresa v daný den v týdnu
@@ -39,27 +44,30 @@ import sys
 import argparse
 from pathlib import Path
 
-# RiRo CSV columns (0-indexed, semicolon-delimited, no header)
-COL_RECORD_TYPE    = 0
-COL_LOCATION_CODE  = 1
-COL_CUSTOMER_NAME  = 2
-COL_CITY           = 6
-COL_TW1_FROM_SEC   = 11
-COL_TW1_TO_SEC     = 12
-COL_LON            = 17    # R — dřív rezerva s -1000, od 17.7.2026 nese lon
-COL_LAT            = 18    # S — dřív rezerva s -1000, od 17.7.2026 nese lat
-COL_ORDER_NUMBER   = 23
-COL_DELIVERY_DATE  = 24    # Y — datum ROZVOZU (YYYYMMDD), ne datum zadání
-COL_NOTE           = 25
-COL_PAYLOAD_RAW    = 26    # "KG:51.475#SEC:261"
-COL_CODE_A         = 27
-COL_BLOCK_ID       = 28
-COL_PREV_KG        = 30    # AE — kg z minulého závozu; -1000 = minule nebyl
-# Kontrola struktury: kolik polí musí řádek mít. Formáty se překrývají
-# v počtu sloupců, proto se rozlišují i podle OBSAHU (#SEC v payloadu).
-EXPECTED_COLS      = 31    # od 28.7.2026: přibyl sloupec AE (kg z minula)
-PREVIOUS_COLS      = 30    # 17.–23.7.2026: stejné, ale bez AE
-TRANSITIONAL_COLS  = 32    # slepá ulička z 16.7.2026 (GPS nalepené na konec)
+# RiRo CSV columns — formát od 13. 8. 2026 (0-indexed, středníky, bez hlavičky)
+COL_RECORD_TYPE    = 0     # A — verze formátu (string se nezměnil ani při novém layoutu)
+COL_LOCATION_CODE  = 1     # B — kód lokace (klíč pro los z historie)
+COL_CUSTOMER_NAME  = 2     # C
+COL_STREET         = 3     # D — ulice a č.p. (průchozí do prepared)
+COL_ZIP            = 4     # E — PSČ (průchozí; stánky ho mívají prázdné)
+COL_CITY           = 5     # F
+COL_COUNTRY        = 6     # G — "CZ" (průchozí)
+COL_ESO_COL7       = 7     # H — interní ID z ESO, stálé per lokace (význam nepotvrzen)
+COL_TW1_FROM_SEC   = 8     # I — začátek okna (s od půlnoci)
+COL_TW1_TO_SEC     = 9     # J — konec okna
+COL_LON            = 10    # K
+COL_LAT            = 11    # L
+COL_ORDER_NUMBER   = 12    # M — "O126…"
+COL_ESO_COL13      = 13    # N — interní ID z ESO, unikátní per řádek (význam nepotvrzen)
+COL_DELIVERY_DATE  = 14    # O — datum ROZVOZU (YYYYMMDD), ne datum zadání
+COL_NOTE           = 15    # P
+COL_PAYLOAD_RAW    = 16    # Q — "KG:51.475#SEC:261"
+COL_PREV_KG        = 17    # R — kg z minulého závozu; -1000 = minule nebyl
+COL_RAMP           = 18    # S — rampa: "1" má, "0" nemá (příprava na L3)
+# Kontrola struktury: řádek musí mít přesně tolik polí. Starší formáty
+# (30/31/32 sloupců, do 12. 8. 2026) se odmítají s jasnou chybou.
+EXPECTED_COLS      = 19    # od 13.8.2026: zhuštěný layout + rampa
+OLD_FORMAT_COLS    = {30, 31, 32}   # všechny varianty do 12.8.2026
 EXPECTED_RECORD    = "RIRO_INPUT_LOCATIONSANDORDERS_V3.00"
 
 # Sanity rozsah ČR — chytí prohozené lat/lon i nesmyslné souřadnice
@@ -151,17 +159,13 @@ def parse_date_from_filename(name: str) -> str:
 
 def check_row_format(row: list, line_no: int) -> None:
     """Struktura JEDNOHO řádku — počet sloupců."""
-    if len(row) == TRANSITIONAL_COLS:
+    if len(row) in OLD_FORMAT_COLS:
         raise ValueError(
-            f"[CHYBA] Řádek {line_no} má {TRANSITIONAL_COLS} sloupců — to je "
-            f"přechodný formát z 16.7.2026 (GPS nalepené na konci).\n"
-            f"        Ten už není podporovaný. Exportuj finální formát z ESO9."
-        )
-    if len(row) == PREVIOUS_COLS:
-        raise ValueError(
-            f"[CHYBA] Řádek {line_no} má {PREVIOUS_COLS} sloupců — to je formát "
-            f"ze 17.–23.7.2026, kterému chybí sloupec AE (kg z minulého závozu).\n"
-            f"        Exportuj aktuální formát z ESO9 ({EXPECTED_COLS} sloupců)."
+            f"[CHYBA] Řádek {line_no} má {len(row)} sloupců — to je starý formát "
+            f"(do 12.8.2026).\n"
+            f"        Od 13.8.2026 platí {EXPECTED_COLS}sloupcový layout "
+            f"(adresa, PSČ, země, ID a rampa; bez telefonů a e-mailů).\n"
+            f"        Exportuj aktuální formát z ESO9."
         )
     if len(row) != EXPECTED_COLS:
         raise ValueError(
@@ -173,16 +177,17 @@ def check_row_format(row: list, line_no: int) -> None:
 def check_file_format(first_row: list) -> None:
     """Formát CELÉHO souboru — pozná se podle prvního datového řádku.
 
-    Starý i finální formát mají shodně 30 sloupců, takže je rozliší jen obsah:
-    finální nese SEC v payloadu. Kontrola je záměrně jen na prvním řádku —
-    chybějící SEC na dalších řádcích je vada DAT (řeší přísný režim v transform),
+    record_type (sloupec A) se při změnách layoutu nemění, takže verzi
+    formátu rozlišuje počet sloupců (check_row_format) a OBSAH: payload
+    musí nést SEC. Kontrola je záměrně jen na prvním řádku — chybějící SEC
+    na dalších řádcích je vada DAT (řeší přísný režim v transform),
     ne špatný formát souboru.
     """
     if "#SEC:" not in str(first_row[COL_PAYLOAD_RAW]):
         raise ValueError(
             f"[CHYBA] Soubor je ve starém formátu — první řádek nemá SEC v payloadu "
-            f"(sloupec AA = {str(first_row[COL_PAYLOAD_RAW])!r}), takže nenese ani "
-            f"předpočítaný čas zastávky, ani GPS.\n"
+            f"(sloupec Q = {str(first_row[COL_PAYLOAD_RAW])!r}), takže nenese "
+            f"předpočítaný čas zastávky.\n"
             f"        Ten už není podporovaný. Exportuj finální formát z ESO9."
         )
 
@@ -211,17 +216,22 @@ def load_riro_csv(path: Path) -> list[dict]:
                 "record_type": record_type,
                 "location_code": str(row[COL_LOCATION_CODE]).strip().lower(),
                 "customer_name": str(row[COL_CUSTOMER_NAME]).strip(),
+                "street": str(row[COL_STREET]).strip(),
+                "zip": str(row[COL_ZIP]).strip(),
                 "city": str(row[COL_CITY]).strip(),
+                "country": str(row[COL_COUNTRY]).strip(),
+                "eso_col7": str(row[COL_ESO_COL7]).strip(),
                 "tw1_from_sec": str(row[COL_TW1_FROM_SEC]).strip(),
                 "tw1_to_sec": str(row[COL_TW1_TO_SEC]).strip(),
                 "lon": str(row[COL_LON]).strip(),
                 "lat": str(row[COL_LAT]).strip(),
                 "order_number": str(row[COL_ORDER_NUMBER]).strip(),
+                "eso_col13": str(row[COL_ESO_COL13]).strip(),
                 "delivery_date": str(row[COL_DELIVERY_DATE]).strip(),
                 "note": str(row[COL_NOTE]).strip(),
                 "payload_raw": str(row[COL_PAYLOAD_RAW]).strip(),
-                "code_a": str(row[COL_CODE_A]).strip(),
                 "prev_kg": str(row[COL_PREV_KG]).strip(),
+                "ramp": str(row[COL_RAMP]).strip(),
             })
     return rows
 
@@ -239,7 +249,7 @@ def parse_prev_kg(raw: str) -> float | None:
 
 def find_suspect_prev_kg(raw_rows: list[dict]) -> list[dict]:
     """
-    Řádky, kde sloupec AE není ani kg, ani smluvená značka `-1000`.
+    Řádky, kde sloupec R (kg z minula) není ani kg, ani značka `-1000`.
 
     Legitimní hodnoty jsou: kladné číslo (kg z minulého závozu), `-1000`
     (minule bez závozu) a prázdno (údaj nedodán). Cokoli jiného je vada —
@@ -272,9 +282,9 @@ def find_suspect_prev_kg(raw_rows: list[dict]) -> list[dict]:
 
 
 def format_prev_kg_warning(suspect: list[dict], raw_rows: int) -> str:
-    """Varování (ne chyba) — vadné AE plán nezastaví, jen zmenší vzorek."""
+    """Varování (ne chyba) — vadný prev_kg plán nezastaví, jen zmenší vzorek."""
     lines = [f"\n{'─' * 64}",
-             f"[!] VAROVÁNÍ: {len(suspect)} z {raw_rows} řádků má vadný sloupec AE",
+             f"[!] VAROVÁNÍ: {len(suspect)} z {raw_rows} řádků má vadný sloupec R",
              "    (kg z minulého závozu — nezapočítá se do koeficientu)"]
     for s in suspect[:10]:
         lines.append(f"      řádek {s['line']:>4} | obj {s['order_number']} "
@@ -288,7 +298,7 @@ def format_prev_kg_warning(suspect: list[dict], raw_rows: int) -> str:
 
 def check_delivery_dates(raw_rows: list[dict], date_str: str,
                          prediction: bool) -> list[dict]:
-    """Ověří sloupec Y (datum ROZVOZU) proti datu z názvu souboru.
+    """Ověří sloupec O (datum ROZVOZU) proti datu z názvu souboru.
 
     Ostrý běh: jakékoli jiné datum je vada exportu → fatální chyba.
     Predikce:  dřívější datum = dopredikovaná objednávka (vrátí se jejich seznam),
@@ -311,9 +321,9 @@ def check_delivery_dates(raw_rows: list[dict], date_str: str,
             for r in rows[:5])
         raise ValueError(
             f"[CHYBA] Soubor obsahuje {len(rows)} objednávek {popis} "
-            f"(očekáváno {expected}, sloupec Y):\n{ukazky}"
+            f"(očekáváno {expected}, sloupec O):\n{ukazky}"
             + (f"\n          ... a dalších {len(rows) - 5}" if len(rows) > 5 else "")
-            + "\n        Sloupec Y je datum ROZVOZU a musí odpovídat datu závozu."
+            + "\n        Sloupec O je datum ROZVOZU a musí odpovídat datu závozu."
               "\n        Oprav export z ESO9."
         )
 
@@ -331,9 +341,9 @@ def compute_kg_coefficient(raw_rows: list[dict]) -> dict:
     prošly, mají váhu z minulého týdne a koeficient ji převede na dnešek.
     (Los podle šance z historie řeší order_history.py.)
 
-    Počítá se ze SPÁROVANÝCH objednávek — těch, které mají ve sloupci AE
+    Počítá se ze SPÁROVANÝCH objednávek — těch, které mají ve sloupci R
     kg z minulého závozu (tj. jely i minule). V praxi jsou to reálné
-    objednávky na dnešek; dopredikované řádky v AE nic nemají. Ořezaný
+    objednávky na dnešek; dopredikované řádky tam mají -1000. Ořezaný
     a s minimem párů, aby pár výjimek nerozhodilo celý den.
     """
     kg_now = kg_prev = 0.0
@@ -363,7 +373,7 @@ def compute_kg_coefficient(raw_rows: list[dict]) -> dict:
     }
 
 def parse_gps(raw: dict) -> tuple[float, float] | None:
-    """(lat, lon) ze sloupců R/S, nebo None když chybí/jsou mimo ČR.
+    """(lat, lon) ze sloupců K/L, nebo None když chybí/jsou mimo ČR.
     Rozsahová kontrola chytí i prohozené pořadí lat↔lon."""
     try:
         lon = float(raw["lon"])
@@ -407,7 +417,7 @@ def transform(raw_rows: list[dict], depot_code: str, *,
         gps = parse_gps(raw)
         if gps is None:
             drop(raw, "vadná GPS",
-                 f"sloupec R (lon)={raw.get('lon')!r}, S (lat)={raw.get('lat')!r}")
+                 f"sloupec K (lon)={raw.get('lon')!r}, L (lat)={raw.get('lat')!r}")
             continue
         lat, lon = gps
 
@@ -415,7 +425,7 @@ def transform(raw_rows: list[dict], depot_code: str, *,
         time_to   = seconds_to_hhmm(raw["tw1_to_sec"])
         if time_from is None or time_to is None:
             drop(raw, "vadné časové okno",
-                 f"sloupce L/M: from={raw['tw1_from_sec']!r}, to={raw['tw1_to_sec']!r}")
+                 f"sloupce I/J: from={raw['tw1_from_sec']!r}, to={raw['tw1_to_sec']!r}")
             continue
         if time_from >= time_to:
             drop(raw, "vadné časové okno",
@@ -426,7 +436,7 @@ def transform(raw_rows: list[dict], depot_code: str, *,
         service_sec = parsed_payload.get("SEC")
         if service_sec is None or service_sec <= 0:
             drop(raw, "vadný payload",
-                 f"chybí/nevalidní SEC: sloupec AA={raw['payload_raw']!r}")
+                 f"chybí/nevalidní SEC: sloupec Q={raw['payload_raw']!r}")
             continue
         if service_sec > SERVICE_SEC_MAX:
             drop(raw, "vadný payload",
@@ -436,7 +446,16 @@ def transform(raw_rows: list[dict], depot_code: str, *,
         weight_kg = parsed_payload.get("KG")
         if weight_kg is None or weight_kg < 0:
             drop(raw, "vadný payload",
-                 f"chybí/nevalidní KG: sloupec AA={raw['payload_raw']!r}")
+                 f"chybí/nevalidní KG: sloupec Q={raw['payload_raw']!r}")
+            continue
+
+        # Rampa: přísně "0"/"1" — cokoli jiného je vada exportu. Plánování
+        # ji zatím neřídí (L3 čeká na definici), ale vadný příznak dnes =
+        # tichý špatný plán v den, kdy se L3 zapne.
+        ramp_raw = raw.get("ramp", "").strip()
+        if ramp_raw not in ("0", "1"):
+            drop(raw, "vadný příznak rampy",
+                 f"sloupec S={ramp_raw!r} — čekám '0' nebo '1'")
             continue
 
         # Dopredikovaná objednávka: přenásob váhu koeficientem (SEC beze změny).
@@ -458,20 +477,28 @@ def transform(raw_rows: list[dict], depot_code: str, *,
             "city": raw.get("city", ""),
             "note": raw.get("note", ""),
             "service_sec": int(service_sec),
-            "code_a": raw.get("code_a", ""),
-            "riro_vehicle_type_code": "",
+            # Průchozí sloupce pro aplikaci nad prepared (plánovač je nečte)
+            "street": raw.get("street", ""),
+            "zip": raw.get("zip", ""),
+            "country": raw.get("country", ""),
+            "eso_col7": raw.get("eso_col7", ""),
+            "eso_col13": raw.get("eso_col13", ""),
+            "ramp": int(ramp_raw),
         })
 
     return orders, dropped
 
 def save_orders(orders: list[dict], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Prvních 13 sloupců drží pořadí starého formátu (bezpečné i pro
+    # pozičně čtoucí aplikace); nové průchozí sloupce jsou na konci.
     fieldnames = [
         "order_number", "location_code", "customer_name", "block_id",
         "time_from", "time_to",
         "payload_raw", "weight_kg",
         "lat", "lon", "city", "note",
-        "service_sec", "code_a", "riro_vehicle_type_code",
+        "service_sec",
+        "street", "zip", "country", "eso_col7", "eso_col13", "ramp",
     ]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -482,6 +509,7 @@ def save_orders(orders: list[dict], output_path: Path) -> None:
 def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
                         raw_rows: int, orders_count: int,
                         dropped: list[dict],
+                        ramp_orders: int = 0,
                         prediction: bool = False,
                         prediction_block: dict | None = None) -> dict:
     """
@@ -500,10 +528,12 @@ def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
         "riro_file": riro_name,
         "raw_rows": raw_rows,
         "orders_count": orders_count,
+        "ramp_orders": ramp_orders,
         "excluded_total": len(dropped),
         "excluded_invalid_gps_rows": _count("vadná GPS"),
         "excluded_invalid_payload_rows": _count("vadný payload"),
         "excluded_invalid_time_window_rows": _count("vadné časové okno"),
+        "excluded_invalid_ramp_rows": _count("vadný příznak rampy"),
         "excluded_rows": dropped,
     }
     if prediction:
@@ -654,7 +684,7 @@ def main():
     print(f"Vstup:      {riro_path}")
     print(f"Raw rows:   {len(raw_rows)}")
 
-    # Sloupec Y = datum ROZVOZU. V ostrém běhu musí sedět na datum závozu,
+    # Sloupec O = datum ROZVOZU. V ostrém běhu musí sedět na datum závozu,
     # v predikci označuje dřívější datum dopredikované objednávky.
     predicted_rows = check_delivery_dates(raw_rows, date_str, args.prediction)
 
@@ -663,7 +693,7 @@ def main():
     #      adresa v daný den v týdnu opravdu objedná (z historie závozů).
     #      Objednávka jde do plánu CELÁ, nebo vůbec.
     #   2) KOEFICIENT kg — vahám těch, které prošly, se přenásobí poměrem
-    #      suma(dnes)/suma(minule) ze spárovaných objednávek (sloupec AE).
+    #      suma(dnes)/suma(minule) ze spárovaných objednávek (sloupec R).
     #      Váha dopredikované je z minulého týdne, koeficient ji převede na
     #      dnešek. Čas zastávky (SEC) se nemění — neznáme vzorec ESO9.
     # Los je první schválně: vyloučené řádky do transform vůbec nevstoupí.
@@ -688,8 +718,9 @@ def main():
         rows_for_transform = [r for r in raw_rows if r["_line"] not in skipped_lines]
         predicted_lines = {r["line"] for r in records if r["selected"]}
 
-        # Koeficient se počítá ze VŠECH řádků (páruje jen ty s hodnotou v AE,
-        # což jsou v praxi reálné objednávky na dnešek — dopredikované mají -1000).
+        # Koeficient se počítá ze VŠECH řádků (páruje jen ty s hodnotou
+        # ve sloupci R — v praxi reálné objednávky na dnešek; dopredikované
+        # mají -1000).
         suspect_prev_kg = find_suspect_prev_kg(raw_rows)
         if suspect_prev_kg:
             print(format_prev_kg_warning(suspect_prev_kg, len(raw_rows)))
@@ -722,10 +753,13 @@ def main():
     output_file = output_dir / f"orders_{depot_code}_{date_str}.csv"
     save_orders(orders, output_file)
 
+    ramp_orders = sum(1 for o in orders if o.get("ramp"))
+
     # Bilance zpracování — strojově čitelná (čte ji compare_prediction.py a UI)
     stats = build_prepare_stats(
         depot_code, date_str, riro_path.name,
         raw_rows=len(raw_rows), orders_count=len(orders), dropped=dropped,
+        ramp_orders=ramp_orders,
         prediction=args.prediction,
         prediction_block=prediction_block,
     )
@@ -738,6 +772,8 @@ def main():
     print(f"Objednávky: {len(orders)}")
     print(f"Celkem kg:  {total_kg:,.1f}")
     print(f"Servis:     {total_service_h:,.1f} h celkem (předpočítáno v ESO9)")
+    print(f"S rampou:   {ramp_orders} z {len(orders)} objednávek (sloupec S; "
+          f"zatím jen informativně — L3 čeká na definici)")
     print(f"Výstup:     {output_file}")
 
 if __name__ == "__main__":

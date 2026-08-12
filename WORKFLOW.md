@@ -51,24 +51,41 @@ if ($?) {
 - Výstupní složka se **auto-detekuje** z názvu orders souboru
   (`orders_CB_2026-04-29.csv` → `data/results/CB/2026-04-29/`).
 
-### Formát RiRo (od 28. 7. 2026)
+### Formát RiRo (od 13. 8. 2026)
 
-RiRo z ESO9 je **jediný zdroj pravdy** — 31 sloupců, středníkem, bez hlavičky:
+RiRo z ESO9 je **jediný zdroj pravdy** — **19 sloupců**, středníkem, bez hlavičky
+(`record_type` string se při změně layoutu nezměnil, formát se pozná podle
+počtu sloupců):
 
 | sloupec | obsah |
 |---|---|
-| **L / M** (11/12) | závozové okno od–do (sekundy od půlnoci) |
-| **R / S** (17/18) | **lon / lat** — GPS (dřív rezerva s `-1000`) |
-| **Y** (24) | **datum ROZVOZU** (YYYYMMDD) — musí sedět na datum závozu |
-| **AA** (26) | `KG:51.475#SEC:261` — váha + **kompletní čas zastávky v sekundách** |
-| **AE** (30) | kg z minulého závozu; `-1000` = minule bez závozu |
+| **A** (0) | record_type `RIRO_INPUT_LOCATIONSANDORDERS_V3.00` |
+| **B** (1) | kód lokace (klíč pro los z historie) |
+| **C** (2) | název zákazníka |
+| **D / E / F / G** (3–6) | ulice, PSČ, město, země — **průchozí do prepared** (plánovač je nečte) |
+| **H** (7) | interní ID z ESO, stálé per lokace (`eso_col7`; význam nepotvrzen) |
+| **I / J** (8/9) | závozové okno od–do (sekundy od půlnoci) |
+| **K / L** (10/11) | **lon / lat** — GPS |
+| **M** (12) | číslo objednávky `O126…` |
+| **N** (13) | interní ID z ESO, unikátní per řádek (`eso_col13`; význam nepotvrzen) |
+| **O** (14) | **datum ROZVOZU** (YYYYMMDD) — musí sedět na datum závozu |
+| **P** (15) | poznámka |
+| **Q** (16) | `KG:51.475#SEC:261` — váha + **kompletní čas zastávky v sekundách** |
+| **R** (17) | kg z minulého závozu; `-1000` = minule bez závozu |
+| **S** (18) | **rampa**: `1` má, `0` nemá — přísně validováno, zatím jen informativně (příprava na L3) |
 
 - **`SEC` je celý čas zastávky** — solver ho použije tak, jak je (`ceil` na minuty).
   Žádný vzorec za váhu se nepřipočítává.
+- **Prepared CSV** nese navíc průchozí sloupce `street, zip, country, eso_col7,
+  eso_col13, ramp` (na konci hlavičky; prvních 13 sloupců drží staré pořadí).
+  Mrtvé sloupce `code_a` a `riro_vehicle_type_code` zanikly. `ramp` teče
+  i do výstupů solveru (`lines_stops.csv`, sloupec `Rampa` v XLSX);
+  `prepare_stats` hlásí `ramp_orders`.
+- Proti starému formátu **zanikly**: telefon, e-mail a textová poznámka o rampě.
 - `data/static/locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
   (`build_static_data.py` a `convert_to_riro.py` jsou legacy, jen se nemažou.)
-- **Starší formáty** jsou odmítnuty jasnou chybou: 30 sloupců bez SEC (do 16. 7.),
-  32 sloupců s GPS na konci (16. 7.), 30 sloupců bez AE (17.–23. 7.). Archiv: `data/input/{DEPOT}/archiv_stary_format/`.
+- **Starší formáty** (30/31/32 sloupců, do 12. 8. 2026) jsou odmítnuty jasnou
+  chybou. Archiv: `data/input/{DEPOT}/archiv_stary_format/`.
 - Historické `orders_*.csv` z dubna/července **nejde spustit** — nemají `service_sec`.
   Výsledky benchmarků z nich už máme; nová data jedou jen na předpočítaném čase.
 
@@ -82,7 +99,7 @@ Správně je jen když projdou všechny řádky z ESO9.
 python prepare_inputs_v6.py CB --allow-drops   # vědomě pokračovat i s vadnými řádky
 ```
 
-Navíc: **objednávka s jiným datem rozvozu (sloupec Y) než datum závozu je vada
+Navíc: **objednávka s jiným datem rozvozu (sloupec O) než datum závozu je vada
 exportu** → fatální chyba, nejde obejít `--allow-drops` (ten by objednávku
 zahodil a ona by se nerozvezla). Správná reakce je opravit export z ESO9.
 
@@ -422,7 +439,7 @@ Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 | `cost_per_km` | sazba za km |
 | `start_cost_kc` | **fixní náklad za výjezd** (Kč; mzda řidiče / amortizace). Per-type, dražší řidiče kamionů lze nastavit zvlášť. `0` = žádný |
 | `available_count` | počet aut daného typu (celofiremní sdílený pool) |
-| `valid_for_date` | datum platnosti (`YYYYMMDD`, jako sloupec Y v riro) — **zatím se nepoužívá**, jen se veze |
+| `valid_for_date` | datum platnosti (`YYYYMMDD`, jako datum rozvozu v riro) — **zatím se nepoužívá**, jen se veze |
 
 - **Starý čárkový formát se odmítá** jasnou chybou. Tichý fallback by znamenal
   plánování s prázdnou flotilou nebo na neaktuálních počtech aut.
