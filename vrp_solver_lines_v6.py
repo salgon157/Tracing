@@ -2630,26 +2630,40 @@ def apply_buffer_overrides(args, config: dict | None = None) -> list[str]:
 
 
 def parse_args():
+    # Defaulty do nápovědy se čtou z CONFIG, ne přepisují ručně — jinak
+    # nápověda tvrdí něco jiného, než co běh doopravdy udělá.
+    # Pozor: literál procenta musí být '%%' (argparse text prohání % formátem).
+    _cap  = CONFIG.get("vehicle_capacity_multiplier", 1.0)
+    _budg = CONFIG["total_time_budget_sec"]
+    _fin  = CONFIG.get("seed_finalists", 1)
+    _tw_b = CONFIG.get("tw_expand_before_min", 0)
+    _tw_a = CONFIG.get("tw_expand_after_min", 0)
+    # desetinná čárka — zbytek textů v souboru ji používá taky
+    _unr_drv = f"{UNREACHABLE_MATRIX_FAIL_PCT * 100:g}".replace(".", ",")
+    _unr_hgv = f"{UNREACHABLE_MATRIX_FAIL_PCT_BY_PROFILE.get('driving-hgv', UNREACHABLE_MATRIX_FAIL_PCT) * 100:g}".replace(".", ",")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--orders-file", default=CONFIG["orders_file"],
                         help="Solver-ready orders CSV pro jeden block")
     parser.add_argument("--vehicle-types-file", default=CONFIG["vehicle_types_file"],
                         help="CSV s vozovým parkem (středníky). Bez zadání se "
-                             "vezme nejnovější data/static/vehicle_types-YYYYMMDD.csv")
+                             "vezme JEDINÝ soubor v data/static/ — víc souborů "
+                             "je chyba, program mezi nimi nevybírá.")
     parser.add_argument("--output-dir", default="output",
                         help="Složka pro výstupy")
     parser.add_argument("--zone-label", default="",
                         help="Popisek zóny/bloku do výstupů; když chybí, bere se ze souboru")
     parser.add_argument("--force-matrix", action="store_true",
                         help="NOUZOVÝ přepínač: vypne limit nedosažitelných párů pro VŠECHNY "
-                             "profily. Běžně NENÍ potřeba — limity jsou per profil "
-                             "(driving 1,5 %%, driving-hgv 5 %%) a pokrývají i Prahu. "
+                             f"profily. Běžně NENÍ potřeba — limity jsou per profil "
+                             f"(driving {_unr_drv} %%, driving-hgv {_unr_hgv} %%) "
+                             "a pokrývají i Prahu. "
                              "Použij jen když víš, že data jsou v pořádku a limit "
                              "přesto brání běhu. Nedosažitelné páry dostanou sentinel "
                              "a solver je nepřiřadí tak jako tak.")
     parser.add_argument("--budget-min", type=float, default=None,
                         help="Override celkového časového budgetu solveru (v minutách). "
-                             "Default je v CONFIG['total_time_budget_sec'] (30 min). "
+                             f"Default z CONFIG: {_budg / 60:g} min. "
                              "Užitečné pro rychlé porovnávací běhy: --budget-min 5")
     parser.add_argument("--run-log-path", default=str(RUN_LOG_PATH),
                         help="Cesta k run_log.jsonl (default: data/results/run_log.jsonl). "
@@ -2672,27 +2686,31 @@ def parse_args():
     parser.add_argument("--seed-finalists", default=None,
                         choices=["auto", "1", "2", "3"],
                         help="Kolik nejlepších seedů fáze C dotáhnout ve fázi E "
-                             "(default z CONFIG: 1 = jen vítěz, dosavadní "
-                             "chování). 'auto' = kolik se vejde do jedné vlny "
-                             "workerů — na slabém stroji samo spadne na 1. "
+                             f"(default z CONFIG: {_fin}). 'auto' = kolik se "
+                             "vejde do jedné vlny workerů (workery // clustery, "
+                             "max 3) — na slabém stroji samo spadne na 1. "
+                             "'1' = jen vítěz fáze C, chování před 11.8.2026. "
                              "Víc finalistů = stejný wall clock, víc jader, "
                              "menší loterie při těsném souboji seedů.")
 
     # ── Plánovací buffery: override z CLI (default = hodnoty v CONFIG) ──
     parser.add_argument("--no-buffers", action="store_true",
-                        help="TVRDÝ režim bez rezerv: nosnost 100 %% (ne 102 %%) a "
-                             "závozová okna přesně jak je poslalo ESO9 (bez posunu "
-                             "-5/+25 min). Zkratka za --capacity-multiplier 1.0 "
-                             "--tw-expand-before 0 --tw-expand-after 0.")
+                        help="TVRDÝ režim bez rezerv: nosnost 100 %% a závozová "
+                             "okna přesně jak je poslalo ESO9 (bez posunu). "
+                             "Zkratka za --capacity-multiplier 1.0 "
+                             "--tw-expand-before 0 --tw-expand-after 0. "
+                             f"Aktuální defaulty: nosnost {_cap * 100:g} %%, "
+                             f"okna -{_tw_b}/+{_tw_a} min.")
     parser.add_argument("--capacity-multiplier", type=float, default=None,
-                        help="Násobič nosnosti vozidel (default z CONFIG: 1.02 = "
-                             "102 %%). 1.0 = plánuj přesně na papírovou nosnost.")
+                        help="Násobič nosnosti vozidel (default z CONFIG: "
+                             f"{_cap:.2f} = {_cap * 100:g} %%). 1.0 = plánuj "
+                             "přesně na papírovou nosnost, 1.03 = porušení L1.")
     parser.add_argument("--tw-expand-before", type=int, default=None,
                         help="O kolik minut smí řidič přijet PŘED začátek okna "
-                             "(default z CONFIG: 5). 0 = žádný posun.")
+                             f"(default z CONFIG: {_tw_b}). 0 = žádný posun.")
     parser.add_argument("--tw-expand-after", type=int, default=None,
                         help="O kolik minut smí řidič přijet PO konci okna "
-                             "(default z CONFIG: 25). 0 = žádný posun.")
+                             f"(default z CONFIG: {_tw_a}). 0 = žádný posun.")
     add_osm_args(parser)
     return parser.parse_args()
 

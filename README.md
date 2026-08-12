@@ -154,6 +154,6 @@ Repo je **Private**.
 python -m pytest tests webui/tests -q --ignore tests/test_ors_hgv_integration.py
 ```
 
-Aktuálně **314 testů**. `prepare_inputs` i solver pouští unit testy automaticky
+Aktuálně **553 testů**. `prepare_inputs` i solver pouští unit testy automaticky
 před během (přeskočení: `SKIP_STARTUP_TESTS=1`). Integrační routing testy
 (`test_ors_hgv_integration.py`) potřebují běžící OSRM/ORS.
