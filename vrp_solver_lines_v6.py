@@ -200,13 +200,15 @@ CONFIG = {
     "budget_phase_E_pct":            0.60,   # finální intenzifikace
 
     # Kolik nejlepších seedů z fáze C dotáhnout ve fázi E. 1 = jen vítěz
-    # (dosavadní chování). "auto" = kolik se vejde do JEDNÉ vlny workerů
+    # (chování do 11.8.2026). "auto" = kolik se vejde do JEDNÉ vlny workerů
     # (workers // clusters, max počet seedů) — wall clock se neprodlouží,
-    # na slabém stroji samo spadne na 1. Pozadí: seedy fáze C jsou od sebe
-    # jen ~1,5–3 % a o vítězi rozhoduje šum časového limitu (viz 10.8.2026:
-    # HK/PR +4,5 tis. Kč čistě z prohry správného seedu o ~1 %). Dotažení
-    # více finalistů ve fázi E tu loterii ruší za cenu ladem ležících jader.
-    "seed_finalists":                1,
+    # na slabém stroji samo spadne na 1.
+    # Pozadí: pořadí seedů po fázi C je špatný odhad kvality po fázi E.
+    # A/B na 8 depo-dnech (5 min budget): v 7 z 24 běhů (29 %) vyhrál po E
+    # jiný seed, než vybrala fáze C — na PR 7.8. dokonce ten, co v C prohrál
+    # o 3 050 Kč. Přínos je v chvostu (10.8. PR: −4 572 Kč, 7.8. CB: o auto
+    # míň), medián je zhruba nula. Zaplaceno jádry, která jinak leží ladem.
+    "seed_finalists":                "auto",
 
     # ── Clustering ─────────────────────────────────────────────
     # 2 clustery — winner z benchmarku (Phase 2, cross-validation na Apr 16+17).
@@ -2941,9 +2943,12 @@ def main():
     print(f"  Zóna/block:  {zone_label}")
     print(f"  Clustery:    {n_clusters}")
     print(f"  CPU workerů: {n_workers}")
-    if n_finalists > 1:
-        print(f"  Finalisté E: {n_finalists} nejlepších seedů fáze C "
-              f"(seed_finalists={CONFIG['seed_finalists']})")
+    # Vypisuje se VŽDY — na slabším stroji "auto" tiše spadne na 1 a bez
+    # téhle řádky by nikdo nepoznal, že fáze E jede jen na vítězi.
+    print(f"  Finalisté E: {n_finalists} "
+          + ("nejlepších seedů fáze C" if n_finalists > 1
+             else "(jen vítěz fáze C)")
+          + f"  [seed_finalists={CONFIG.get('seed_finalists', 1)}]")
 
     print_run_settings(
         args=args,

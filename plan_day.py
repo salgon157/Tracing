@@ -134,7 +134,8 @@ def summarize_run(lines: list[dict], small_codes: set[str],
 
 def build_solver_cmd(depot: str, date_str: str, out_dir: Path,
                      fleet_file: Path, budget_min: float,
-                     osm_source: str, force_matrix: bool) -> list[str]:
+                     osm_source: str, force_matrix: bool,
+                     seed_finalists: str = "") -> list[str]:
     orders = PREDICTION_ROOT / "prepared" / depot / f"orders_{depot}_{date_str}.csv"
     cmd = [PY, "vrp_solver_lines_v6.py",
            "--orders-file", orders.as_posix(),
@@ -148,6 +149,9 @@ def build_solver_cmd(depot: str, date_str: str, out_dir: Path,
         cmd += ["--osm-source", osm_source]
     if force_matrix:
         cmd.append("--force-matrix")
+    # Bez zadání se nepředává nic → solver jede na CONFIG (dnes "auto")
+    if seed_finalists:
+        cmd += ["--seed-finalists", seed_finalists]
     return cmd
 
 
@@ -269,7 +273,8 @@ def main_predict(args: argparse.Namespace) -> None:
         out_dir = PREDICTION_ROOT / "results" / depot / f"{date_str}_{stamp}_P1"
         elapsed = run_cmd(build_solver_cmd(depot, date_str, out_dir, p1_fleet,
                                            args.budget, args.osm_source,
-                                           args.force_matrix),
+                                           args.force_matrix,
+                                           args.seed_finalists),
                           env, f"P1 {depot}")
         p1_by_depot[depot] = lines_from_run(out_dir)
         summarize_run(p1_by_depot[depot], small_codes, elapsed)
@@ -311,7 +316,8 @@ def main_predict(args: argparse.Namespace) -> None:
         out_dir = PREDICTION_ROOT / "results" / depot / f"{date_str}_{stamp}_P2"
         elapsed = run_cmd(build_solver_cmd(depot, date_str, out_dir, p2_fleet,
                                            args.budget, args.osm_source,
-                                           args.force_matrix),
+                                           args.force_matrix,
+                                           args.seed_finalists),
                           env, f"P2 {depot}")
         depot_lines = lines_from_run(out_dir)
         p2_by_depot[depot] = depot_lines
@@ -436,6 +442,9 @@ def build_real_solver_cmd(depot: str, date_str: str, fleet_file: Path,
         cmd += ["--osm-source", args.osm_source]
     if args.force_matrix:
         cmd.append("--force-matrix")
+    # Bez zadání se nepředává nic → solver jede na CONFIG (dnes "auto")
+    if getattr(args, "seed_finalists", ""):
+        cmd += ["--seed-finalists", args.seed_finalists]
     return cmd
 
 
@@ -600,6 +609,12 @@ def main() -> None:
                          help="Předá se solveru")
     predict.add_argument("--skip-tests", action="store_true",
                          help="Přeskočit startup testy")
+    predict.add_argument("--seed-finalists", default="",
+                         choices=["", "auto", "1", "2", "3"],
+                         help="Vynutit počet finalistů fáze E. Bez zadání "
+                              "jede solver na svém defaultu (CONFIG: auto). "
+                              "'1' = chování před 11.8.2026 — na srovnávací "
+                              "běhy.")
 
     real = sub.add_parser(
         "real", help="Večerní ostrý běh: sekvence dep podle decision, "
@@ -624,6 +639,11 @@ def main() -> None:
                            "ostrého (results/{D}/{DATE}_{label})")
     real.add_argument("--run-log-path", default="",
                       help="Vlastní run log (testy); default = ostrý log")
+    real.add_argument("--seed-finalists", default="",
+                      choices=["", "auto", "1", "2", "3"],
+                      help="Vynutit počet finalistů fáze E. Bez zadání jede "
+                           "solver na svém defaultu (CONFIG: auto). "
+                           "'1' = chování před 11.8.2026 — na srovnávací běhy.")
     args = parser.parse_args()
 
     if not Path("vrp_solver_lines_v6.py").exists():

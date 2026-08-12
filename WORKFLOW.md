@@ -316,6 +316,37 @@ díky které jsou benchmarky porovnatelné napříč časem.
 | `--no-buffers` | **Tvrdý režim bez rezerv**: nosnost 100 % a závozová okna přesně jak je poslalo ESO9 (bez posunu −5/+25 min). |
 | `--capacity-multiplier 1.0` | Jen nosnost (default viz CONFIG). |
 | `--tw-expand-before 0` / `--tw-expand-after 0` | Jen okna (default 5 / 25 min). |
+| `--seed-finalists 1` | Vynutí jen vítěze fáze C ve fázi E = **chování před 11. 8. 2026**. Na srovnávací běhy. Default je `auto` (viz níže). |
+
+### Finalisté fáze E (`seed_finalists`, default `auto` od 11. 8. 2026)
+
+Fáze C zkusí tři rozdělení do clusterů (`kmeans`, `sweep`, `tw_midpoint`) a
+dřív poslala do fáze E jen to nejlevnější. Jenže **pořadí po fázi C je
+špatný odhad kvality po fázi E**: v A/B na 8 depo-dnech vyhrál v 7 z 24 běhů
+(29 %) jiný seed, než vybrala fáze C — na PR 7. 8. dokonce ten, který v C
+prohrál o 3 050 Kč.
+
+Fáze E proto dotahuje **víc finalistů naráz** a bere nejlevnější výsledek.
+Fáze E dosud používala 2 jádra z 20; teď 6, wall clock stejný.
+
+| hodnota | co udělá |
+|---|---|
+| `auto` (**default**) | Kolik se vejde do jedné vlny workerů: `workery // clustery`, max 3. Na 20 jádrech → 3, na 4 jádrech → **1** (= staré chování). Wall clock se nikdy neprodlouží. |
+| `1` | Jen vítěz fáze C — chování před 11. 8. 2026. |
+| `2` / `3` | Vynucený počet. Když se nevejde do jedné vlny, čas na úlohu se rozdělí (wall clock drží, ale každý solve má míň času). |
+
+Naměřeno (5min budget, 3 opakování na variantu): medián prakticky nula,
+ale **nejhorší běh −5 420 Kč** za dva dny dohromady a na CB 7. 8. o **auto
+míň**. Přínos je v chvostu, ne v průměru.
+
+`plan_day predict` i `real` mají `--seed-finalists` jako **passthrough** —
+bez zadání se solveru nepředává nic a jede na CONFIG. Solver na začátku
+vždy vypíše `Finalisté E: N …`, takže je na slabším stroji vidět, když
+`auto` spadlo na 1.
+
+Run log nese `config.seed_finalists` (rozřešené číslo) a u běhů s víc
+finalisty i `results.finalists` — cena každého seedu po C a po E. Z toho se
+dá zpětně vyčíst, jak často nepostupující seed otočil výsledek.
 
 ### Plánovací buffery — co znamenají
 
