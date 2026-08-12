@@ -12,6 +12,7 @@ from compare_prediction import (
     group_by_zone_date,
     load_run_log,
     rec_date,
+    rec_label,
     rec_stamp,
     select_run,
     upsert_comparisons,
@@ -72,6 +73,63 @@ class TestSelection:
 
     def test_unknown_stamp_none(self):
         assert select_run(self._runs(), stamp="0900") is None
+
+
+class TestPhaseSelection:
+    """plan_day predict píše P1 i P2 pod stejné razítko — rozliší je label."""
+
+    def _runs(self):
+        return [
+            _rec("2026-08-12T13:38:00", "CB", "2026-08-10",
+                 "2026-08-10_1332_P1", lines=17, cost=59_427.0),
+            _rec("2026-08-12T13:56:00", "CB", "2026-08-10",
+                 "2026-08-10_1332_P2", lines=17, cost=58_834.0),
+        ]
+
+    def test_label_parsed(self):
+        assert rec_label(self._runs()[0]) == "P1"
+        assert rec_label(self._runs()[1]) == "P2"
+
+    def test_label_none_when_absent(self):
+        assert rec_label(_rec("t", "CB", "2026-07-15", "2026-07-15_1811")) is None
+        assert rec_label(_rec("t", "CB", "2026-07-15", "2026-07-15")) is None
+
+    def test_stamp_stays_same_for_both_phases(self):
+        # proto samotný --pred-stamp fáze nerozliší
+        assert {rec_stamp(r) for r in self._runs()} == {"1332"}
+
+    def test_select_p1(self):
+        assert select_run(self._runs(), label="P1")["results"]["total_cost_kc"] == 59_427.0
+
+    def test_select_p2(self):
+        assert select_run(self._runs(), label="P2")["results"]["total_cost_kc"] == 58_834.0
+
+    def test_default_picks_last_in_time(self):
+        # bez labelu vyhrává čas → u plan_day vždycky P2
+        assert rec_label(select_run(self._runs())) == "P2"
+
+    def test_label_case_insensitive(self):
+        assert select_run(self._runs(), label="p2")["results"]["total_cost_kc"] == 58_834.0
+
+    def test_unknown_label_none(self):
+        assert select_run(self._runs(), label="P9") is None
+
+    def test_stamp_and_label_combine(self):
+        runs = self._runs() + [
+            _rec("2026-08-10T20:20:00", "CB", "2026-08-10",
+                 "2026-08-10_1959_P2", lines=17, cost=58_868.0)]
+        assert select_run(runs, stamp="1959", label="P2")["results"]["total_cost_kc"] \
+            == 58_868.0
+
+    def test_label_ignores_runs_without_label(self):
+        runs = self._runs() + [
+            _rec("2026-08-12T15:00:00", "CB", "2026-08-10", "2026-08-10", lines=16)]
+        assert rec_label(select_run(runs, label="P2")) == "P2"
+
+    def test_side_carries_label(self):
+        c = build_comparison(self._runs()[0], self._runs()[1], PROFILES)
+        assert c["prediction"]["label"] == "P1"
+        assert c["real"]["label"] == "P2"
 
 
 class TestAggregateAndDelta:

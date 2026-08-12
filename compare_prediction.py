@@ -89,6 +89,17 @@ def rec_stamp(rec: dict) -> str | None:
     return m.group(2) if m and m.group(2) else None
 
 
+def rec_label(rec: dict) -> str | None:
+    """
+    Label z output_dir: u plan_day predict 'P1'/'P2', u ručních
+    porovnávacích běhů co si kdo zadal (`b5`, `s-koeficientem`).
+    Starší predikce (před plan_day) ho nemají → None.
+    """
+    m = _DIR_DATE_RE.search(_dir_leaf(rec))
+    label = m.group("label") if m else None
+    return label or None
+
+
 def group_by_zone_date(records: list[dict]) -> dict[tuple[str, str], list[dict]]:
     """Seskupí per (zone, date), uvnitř seřazené podle run_id (= času běhu)."""
     groups: dict[tuple[str, str], list[dict]] = {}
@@ -102,10 +113,20 @@ def group_by_zone_date(records: list[dict]) -> dict[tuple[str, str], list[dict]]
     return groups
 
 
-def select_run(runs: list[dict], stamp: str | None = None) -> dict | None:
-    """Poslední běh; se stamp jen běhy dané session (poslední z nich)."""
+def select_run(runs: list[dict], stamp: str | None = None,
+               label: str | None = None) -> dict | None:
+    """
+    Poslední běh; filtry zužují výběr, ne pořadí.
+
+    `stamp` = HHMM session, `label` = fáze / popisek z názvu složky
+    ('P1', 'P2'). Bez labelu vyhrává poslední běh v čase, což je u
+    plan_day vždycky P2 — ale jen náhodou (P2 běží po P1). Kdo chce
+    jistotu, ať `label` zadá.
+    """
     if stamp is not None:
         runs = [r for r in runs if rec_stamp(r) == stamp]
+    if label is not None:
+        runs = [r for r in runs if (rec_label(r) or "").upper() == label.upper()]
     return runs[-1] if runs else None
 
 
@@ -184,6 +205,7 @@ def _side(rec: dict, profiles: dict[str, str]) -> dict:
         "excluded":         excluded_for(rec),
         "run_id":           rec.get("run_id"),
         "stamp":            rec_stamp(rec),
+        "label":            rec_label(rec),
         "orders_count":     inp.get("orders_count", 0),
         "orders_total_kg":  inp.get("orders_total_kg", 0),
         "lines_count":      res.get("lines_count", 0),
@@ -253,7 +275,7 @@ def format_report(comparisons: list[dict]) -> str:
     for date in sorted(by_date):
         day = sorted(by_date[date], key=lambda c: c["zone"])
         lines.append(f"\nDatum doručení: {date}")
-        lines.append(f"{'depo':<6}{'predikce':<10}{'trasy P/R':<14}{'mala P/R':<14}"
+        lines.append(f"{'depo':<6}{'predikce':<16}{'trasy P/R':<14}{'mala P/R':<14}"
                      f"{'velka P/R':<13}{'obj P/R':<12}{'vyraz P/R':<11}"
                      f"{'cena P/R [Kc]':<22}")
         lines.append("-" * 89)
@@ -263,9 +285,11 @@ def format_report(comparisons: list[dict]) -> str:
             p, r, d = c["prediction"], c["real"], c["delta"]
             def _x(v):
                 return "?" if v is None else str(v)
+            # razítko + fáze (P1/P2), ať není potřeba hádat, co se porovnává
+            _src = (p["stamp"] or "-") + (f" {p['label']}" if p.get("label") else "")
             lines.append(
                 f"{c['zone']:<6}"
-                f"{(p['stamp'] or '-'):<10}"
+                f"{_src:<16}"
                 f"{_pr(p['lines_count'], r['lines_count'], d['lines'], 14)}"
                 f"{_pr(p['mala'], r['mala'], d['mala'], 14)}"
                 f"{_pr(p['velka'], r['velka'], d['velka'], 13)}"
@@ -281,7 +305,7 @@ def format_report(comparisons: list[dict]) -> str:
             tot["pc"] += p["total_cost_kc"]; tot["rc"] += r["total_cost_kc"]
         lines.append("-" * 89)
         lines.append(
-            f"{'CELKEM':<16}"
+            f"{'CELKEM':<22}"
             f"{_pr(tot['pl'], tot['rl'], tot['pl'] - tot['rl'], 14)}"
             f"{_pr(tot['pm'], tot['rm'], tot['pm'] - tot['rm'], 14)}"
             f"{_pr(tot['pv'], tot['rv'], tot['pv'] - tot['rv'], 13)}"
@@ -310,8 +334,10 @@ def format_available(pred_groups: dict, real_groups: dict) -> str:
         preds = pred_groups.get((zone, date), [])
         reals = real_groups.get((zone, date), [])
         pdesc = ", ".join(
-            f"stamp {rec_stamp(r) or '-'} ({r.get('run_id', '?')}, "
-            f"{r.get('results', {}).get('lines_count', '?')} tras)"
+            f"stamp {rec_stamp(r) or '-'}"
+            + (f"/{rec_label(r)}" if rec_label(r) else "")
+            + f" ({r.get('run_id', '?')}, "
+              f"{r.get('results', {}).get('lines_count', '?')} tras)"
             for r in preds) or "žádná"
         lines.append(f"{date} {zone}:")
         lines.append(f"    P: {pdesc}")
@@ -333,6 +359,13 @@ def main() -> None:
     parser.add_argument("--pred-stamp", default=None,
                         help="Vybrat konkrétní predikční session podle HHMM razítka "
                              "(z názvu složky, např. 1811). Default: poslední predikce.")
+    parser.add_argument("--pred-phase", default=None,
+                        help="Kterou fázi predikce porovnat: P2 (generálka se "
+                             "sekvenčním ubíráním flotily — to, co se má srovnávat "
+                             "s realitou) nebo P1 (přání dep s celým skladem). "
+                             "Bez zadání se bere poslední běh v čase, což u "
+                             "plan_day vychází na P2 — ale jen shodou okolností. "
+                             "Starší predikce (před plan_day) fázi nemají.")
     parser.add_argument("--list", action="store_true", dest="list_only",
                         help="Jen vypsat dostupné běhy, neporovnávat")
     parser.add_argument("--no-write", action="store_true",
@@ -360,10 +393,13 @@ def main() -> None:
     profiles = load_type_profiles()
     comparisons, missing = [], []
     for key, preds in sorted(pred_groups.items(), key=lambda kv: (kv[0][1], kv[0][0])):
-        pred = select_run(preds, stamp=args.pred_stamp)
+        pred = select_run(preds, stamp=args.pred_stamp, label=args.pred_phase)
         real = select_run(real_groups.get(key, []))
         if pred is None:
-            missing.append(f"{key[1]} {key[0]}: predikce se stamp {args.pred_stamp} neexistuje")
+            _filt = ", ".join(filter(None, [
+                f"stamp {args.pred_stamp}" if args.pred_stamp else "",
+                f"fáze {args.pred_phase}" if args.pred_phase else ""])) or "žádný filtr"
+            missing.append(f"{key[1]} {key[0]}: predikce ({_filt}) neexistuje")
             continue
         if real is None:
             missing.append(f"{key[1]} {key[0]}: chybí ostrý běh (predikce čeká na realitu)")

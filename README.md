@@ -70,7 +70,7 @@ proto se plánují odděleně.
 | **`order_history.py`** | Šance závozu z historie objednávek (`data/historie_objednavky/*.xlsx`): stejný den v týdnu, roční okno, pauzy, svátky. Predikce podle ní losuje, které dopredikované objednávky do plánu půjdou. |
 | **`plan_day.py`** | Predikcí řízené plánování dne. `predict`: P1 (přání dep, každé s celým skladem) → rezervace → P2 (sekvenční generálka) → `decision_{DATUM}.json`. `real`: večerní sekvence dep s živým budgetem, eskalací L0→L1+L2 a stavem pro běh po částech. |
 | **`fleet_budget.py`** | Logika pod plan_day: malá/velká auta, rezervace žebříčkem kg, budget s ubíráním, caps (rezervace + volný pool), rozhodnutí o levelu (deficit → kg → L0/L1+L2/L3 alert). |
-| **`compare_prediction.py`** | Porovná predikci s realitou (Δ = predikce − realita), zapíše `comparison.jsonl`. Jediný vlastník porovnávacích vzorců. |
+| **`compare_prediction.py`** | Porovná predikci s realitou (Δ = predikce − realita), zapíše `comparison.jsonl`. Jediný vlastník porovnávacích vzorců. `--pred-phase P1\|P2` vybere fázi `plan_day predict`. |
 | **`osm_routing.py`** | Definice routing instancí (`current` / `stable`) a jejich URL. Jediné místo, kde jsou porty. |
 | **`refresh_osm.py`** | **Týdenní** přestavba čerstvé mapy (stáhne OSM data, přestaví graf, restartuje kontejnery). Běhy ji nikdy nespouštějí samy. |
 | **`osrm_orchestrator.py`, `update_osrm.py`** | Vnitřek té přestavby (Docker, Geofabrik download, osrm-extract/partition/customize). |
