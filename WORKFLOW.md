@@ -456,6 +456,41 @@ Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 - Ruční volba jiného souboru: `--vehicle-types-file CESTA`.
 - Starý `count_block_{DEPOT}` byl fikce a je odstraněn.
 
+### Přiřazení řidičů (`driver_assignment.py`) — od 13. 8. 2026
+
+Samostatný krok **po naplánování VŠECH dep dne** (do `plan_day` se
+nezapojuje — spouštění řeší vrstva nad námi):
+
+```powershell
+python driver_assignment.py 2026-08-13              # celý den
+python driver_assignment.py 2026-08-13 --label b5   # testovací běhy
+```
+
+Vstup: registr aut+řidičů z ESO — **právě jeden** `.xlsx`
+v `data/ridici/aktivni/` (PII → složka je gitignored). Bere se jen
+`Použít vozidlo=Ano`; typ auta se mapuje přes (Typ, Nosnost) na TYPE kód.
+
+Jedna **celodenní** přiřazovací úloha (maďarský algoritmus): všechny
+linky všech dep × řidiči — globální optimum, žádná sekvence po depech.
+Řidič jede max jednu linku denně (i když má víc aut); dvojlinka = jedna
+jednotka (obě jízdy týž řidič).
+
+**HARD**: den v týdnu (`Dny použitelnosti`, lomítko dělí týden/víkend),
+`Dostupnost=Ano`, `Aktivní=Ano`, správný typ auta.
+**SOFT** (váhy v CONFIG na začátku skriptu):
+
+| kritérium | váha | logika |
+|---|---|---|
+| plnění plánu km | 3.0 | kdo zaostává za poměrnou částí ročního plánu — **BEZ DAT, dokud ESO neplní `Aktual. km`** (do té doby neutrální + warning) |
+| dojezd | 1.0 | dlouhé linky vzdáleným řidičům (pořadové párování, žádné konstanty) |
+| kvalita × tightness | 1.0 | Rychlý na linky s napjatými okny; tight zastávka = rezerva do konce okna ≤ 15 min, konec linky váží 1,3× víc než začátek |
+| familiarity | 1.0 | podíl zastávek, které řidič zná — **BEZ DAT, dokud historie závozů nenese řidiče** |
+
+Výstupy: `data/results/driver_assignment/{DATUM}/driver_plan_{DATUM}.csv`
+(+ `driver_plan_{DEPO}_{DATUM}.csv` vedle plánu každého depa +
+`summary.json` s váhami a warningy). Málo řidičů po hard filtrech →
+ALERT s výpisem nepokrytých linek a exit ≠ 0.
+
 ---
 
 ## 7. Git a osobní údaje (GDPR) — DŮLEŽITÉ
@@ -465,6 +500,7 @@ Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 - `data/static/locations_*.csv` (adresy zákazníků — pipeline je už nepoužívá, ale
   soubory na disku zůstávají a do gitu nesmí)
 - `data/static/vehicle_registry.csv` (jména řidičů, SPZ)
+- `data/ridici/` (registr aut+řidičů z ESO — jména, telefony, SPZ)
 
 Verzuje se pouze **kód + config bez PII** (`vehicle_types.csv`, `closures.json`).
 Data existují jen lokálně na disku. Repo je **Private**.
