@@ -477,7 +477,8 @@ ne po každé drobnosti.
 ## 8. Testy
 
 Solver i `prepare_inputs` spouští **startup unit testy** automaticky před během
-(180 testů). Přeskočit: `SKIP_STARTUP_TESTS=1`. Ručně:
+(celá `tests/` mimo integrační; aktuální počet viz README). Přeskočit:
+`SKIP_STARTUP_TESTS=1`. Ručně:
 ```powershell
 python -m pytest tests/ -q
 ```
