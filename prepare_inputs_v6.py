@@ -296,6 +296,22 @@ def format_prev_kg_warning(suspect: list[dict], raw_rows: int) -> str:
     return "\n".join(lines)
 
 
+def split_excluded_orders(raw_rows: list[dict],
+                          numbers: set[str]) -> tuple[list, list, set]:
+    """
+    Rozdělí riro řádky na (zbylé, vyřazené pro L3, nenalezená čísla).
+
+    Vyřazuje se podle čísel objednávek z decision (L3 kamion je veze
+    místo depa). Nenalezené číslo = objednávka mezi predikcí a večerem
+    zmizela (storno) — varování, ne chyba.
+    """
+    kept, excluded = [], []
+    for raw in raw_rows:
+        (excluded if raw.get("order_number") in numbers else kept).append(raw)
+    missing = numbers - {r["order_number"] for r in excluded}
+    return kept, excluded, missing
+
+
 def check_delivery_dates(raw_rows: list[dict], date_str: str,
                          prediction: bool) -> list[dict]:
     """Ověří sloupec O (datum ROZVOZU) proti datu z názvu souboru.
@@ -484,6 +500,9 @@ def transform(raw_rows: list[dict], depot_code: str, *,
             "eso_col7": raw.get("eso_col7", ""),
             "eso_col13": raw.get("eso_col13", ""),
             "ramp": int(ramp_raw),
+            # 1 = dopredikovaná objednávka (prošla losem), 0 = skutečná.
+            # L3 výběr bere jen skutečné; hodí se i aplikaci nad prepared.
+            "predicted": 1 if is_predicted else 0,
         })
 
     return orders, dropped
@@ -499,6 +518,7 @@ def save_orders(orders: list[dict], output_path: Path) -> None:
         "lat", "lon", "city", "note",
         "service_sec",
         "street", "zip", "country", "eso_col7", "eso_col13", "ramp",
+        "predicted",
     ]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -510,6 +530,7 @@ def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
                         raw_rows: int, orders_count: int,
                         dropped: list[dict],
                         ramp_orders: int = 0,
+                        l3_excluded_orders: int = 0,
                         prediction: bool = False,
                         prediction_block: dict | None = None) -> dict:
     """
@@ -529,6 +550,7 @@ def build_prepare_stats(depot: str, date_str: str, riro_name: str, *,
         "raw_rows": raw_rows,
         "orders_count": orders_count,
         "ramp_orders": ramp_orders,
+        "l3_excluded_orders": l3_excluded_orders,
         "excluded_total": len(dropped),
         "excluded_invalid_gps_rows": _count("vadná GPS"),
         "excluded_invalid_payload_rows": _count("vadný payload"),
@@ -660,6 +682,11 @@ def main():
                         help="Konkrétní RiRo soubor místo jediného z aktivni/. "
                              "Pro přepočet staršího dne, aniž bys přehazoval "
                              "soubory ve složkách. Datum se bere z názvu.")
+    parser.add_argument("--exclude-orders-file", default="",
+                        help="JSON seznam čísel objednávek, které veze L3 "
+                             "kamion (z decision). Vyřadí se z orders a zapíšou "
+                             "do l3_orders_{DEPO}_{DATUM}.csv (solver-ready). "
+                             "Předává plan_day real, ručně netřeba.")
     args = parser.parse_args()
 
     depot_code = args.depot_code.upper()
@@ -687,6 +714,22 @@ def main():
     # Sloupec O = datum ROZVOZU. V ostrém běhu musí sedět na datum závozu,
     # v predikci označuje dřívější datum dopredikované objednávky.
     predicted_rows = check_delivery_dates(raw_rows, date_str, args.prediction)
+
+    # ── L3: objednávky, které veze kamion, do plánu depa nepatří ─────────
+    l3_excluded_raw: list[dict] = []
+    if args.exclude_orders_file:
+        numbers = set(json.loads(
+            Path(args.exclude_orders_file).read_text(encoding="utf-8")))
+        raw_rows, l3_excluded_raw, l3_missing = \
+            split_excluded_orders(raw_rows, numbers)
+        kept_lines = {r["_line"] for r in raw_rows}
+        predicted_rows = [r for r in predicted_rows if r["_line"] in kept_lines]
+        print(f"\n[L3] Vyřazeno pro kamion: {len(l3_excluded_raw)} objednávek "
+              f"(z decision {len(numbers)})")
+        if l3_missing:
+            print(f"[L3] [!] {len(l3_missing)} čísel z decision v riro není "
+                  f"(storno mezi predikcí a večerem): "
+                  + ", ".join(sorted(l3_missing)))
 
     # Predikce běží ve dvou krocích:
     #   1) LOS — každá dopredikovaná objednávka projde losem podle šance, že
@@ -734,6 +777,13 @@ def main():
                                 predicted_lines=predicted_lines,
                                 kg_coefficient=kg_coef["coefficient"])
 
+    # L3 objednávky projdou STEJNOU validací — kamion nemůže vézt vadná
+    # data o nic líp než dodávka; vadný řádek = vada exportu (přísný režim).
+    l3_orders: list[dict] = []
+    if l3_excluded_raw:
+        l3_orders, l3_dropped = transform(l3_excluded_raw, depot_code)
+        dropped += l3_dropped
+
     # Přísný režim: ESO9 garantuje kompletní data, takže jakýkoliv vyřazený
     # řádek = problém ve zdroji, který má někdo opravit — ne tiše přejít.
     if dropped:
@@ -753,13 +803,21 @@ def main():
     output_file = output_dir / f"orders_{depot_code}_{date_str}.csv"
     save_orders(orders, output_file)
 
+    if l3_excluded_raw:
+        l3_file = output_dir / f"l3_orders_{depot_code}_{date_str}.csv"
+        save_orders(l3_orders, l3_file)
+        print(f"[L3] Kamionové objednávky depa: {len(l3_orders)} "
+              f"({sum(o['weight_kg'] for o in l3_orders):,.1f} kg) → {l3_file}")
+
     ramp_orders = sum(1 for o in orders if o.get("ramp"))
 
     # Bilance zpracování — strojově čitelná (čte ji compare_prediction.py a UI)
     stats = build_prepare_stats(
         depot_code, date_str, riro_path.name,
-        raw_rows=len(raw_rows), orders_count=len(orders), dropped=dropped,
+        raw_rows=len(raw_rows) + len(l3_excluded_raw),
+        orders_count=len(orders), dropped=dropped,
         ramp_orders=ramp_orders,
+        l3_excluded_orders=len(l3_orders),
         prediction=args.prediction,
         prediction_block=prediction_block,
     )

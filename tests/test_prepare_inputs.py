@@ -389,6 +389,7 @@ class TestSaveOrdersHeader:
         "time_from", "time_to", "payload_raw", "weight_kg",
         "lat", "lon", "city", "note", "service_sec",
         "street", "zip", "country", "eso_col7", "eso_col13", "ramp",
+        "predicted",
     ]
 
     def test_header_exact(self, tmp_path):
@@ -451,3 +452,70 @@ class TestFindActiveRiroFileInputDir:
         (aktivni / "riro-20260718-CB.csv").write_text("", encoding="utf-8")
         with pytest.raises(ValueError):
             find_active_riro_file("CB", tmp_path / "input")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  L3: sloupec predicted + vyřazení objednávek pro kamion
+# ═════════════════════════════════════════════════════════════════════════════
+
+from prepare_inputs_v6 import split_excluded_orders   # noqa: E402
+
+
+class TestPredictedColumn:
+    def test_real_order_zero(self):
+        orders, _ = transform([_make_raw_row()], "CB")
+        assert orders[0]["predicted"] == 0
+
+    def test_lottery_selected_order_one(self):
+        orders, _ = transform([_make_raw_row(line=7)], "CB",
+                              predicted_lines={7})
+        assert orders[0]["predicted"] == 1
+
+    def test_mixed(self):
+        rows = [_make_raw_row(order_no="REAL", line=1),
+                _make_raw_row(order_no="PRED", line=2)]
+        orders, _ = transform(rows, "CB", predicted_lines={2})
+        assert {o["order_number"]: o["predicted"] for o in orders} == \
+            {"REAL": 0, "PRED": 1}
+
+
+class TestSplitExcludedOrders:
+    def _rows(self):
+        return [_make_raw_row(order_no=f"O{i}", line=i) for i in range(1, 5)]
+
+    def test_split_and_keep_order(self):
+        kept, excluded, missing = split_excluded_orders(
+            self._rows(), {"O2", "O4"})
+        assert [r["order_number"] for r in kept] == ["O1", "O3"]
+        assert [r["order_number"] for r in excluded] == ["O2", "O4"]
+        assert missing == set()
+
+    def test_cancelled_order_reported_not_fatal(self):
+        kept, excluded, missing = split_excluded_orders(
+            self._rows(), {"O2", "O_STORNO"})
+        assert missing == {"O_STORNO"}
+        assert [r["order_number"] for r in excluded] == ["O2"]
+        assert len(kept) == 3
+
+    def test_empty_numbers_noop(self):
+        kept, excluded, missing = split_excluded_orders(self._rows(), set())
+        assert len(kept) == 4 and excluded == [] and missing == set()
+
+    def test_excluded_rows_validate_like_normal(self):
+        # vadná L3 objednávka musí projít stejnou přísností jako běžná
+        bad = _make_raw_row(order_no="O_BAD", lon="-1000", lat="-1000")
+        orders, dropped = transform([bad], "CB")
+        assert orders == [] and dropped[0]["reason"] == "vadná GPS"
+
+
+class TestBuildPrepareStatsL3:
+    def test_l3_counter_present(self):
+        s = build_prepare_stats("CB", "2026-08-14", "riro.csv",
+                                raw_rows=100, orders_count=95, dropped=[],
+                                l3_excluded_orders=5)
+        assert s["l3_excluded_orders"] == 5
+
+    def test_default_zero(self):
+        s = build_prepare_stats("CB", "2026-08-14", "riro.csv",
+                                raw_rows=10, orders_count=10, dropped=[])
+        assert s["l3_excluded_orders"] == 0
