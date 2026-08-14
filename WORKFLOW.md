@@ -222,13 +222,23 @@ se omezuje generovanými `vehicle_types` soubory:
 4. **Rozhodnutí** — deficit malých proti `available − 1` (rezerva) se přes
    X_NEED nejméně naložených linek přepočte na kg:
    deficit 0 → **L0** · chybí ≤ 3 % denních kg → **L1+L2** (103 % + dvojlinky)
-   · víc → navíc **alert „potřeba L3"** (kamiony/rampa)
+   · víc → navíc **L3: kamion předem** (viz níže; bez zbylého kamionu
+   jen alert)
+
+Mezi P1 a P2 navíc **zdražení výjezdu (#2)**: když z P1 chybí VÍC než 3
+malá auta A střední (nosnost 1351–3999) jedou pod 50 % dostupných,
+zdraží se výjezd VŠEM typům — chybí 4 → +200 Kč, každé další +100,
+strop +500 (`fleet_budget.start_cost_escalation`). Solver pak
+konsoliduje do větších aut místo porušování. Delta platí pro P2 i
+večerní real (nese ji decision); pod každým během se vypisuje
+**nenavýšená cena** (`cena − delta × počet linek`) — ceny v souborech
+jsou navýšené, skutečné jsou v tomhle výpisu.
 
 Výstup: `data/prediction/results/decision_{DATUM}.json` (level, rezervace,
-čísla deficitu — večerní běh z něj bude číst), plné solver výstupy
-v `results/{DEPO}/{DATUM}_{HHMM}_P1|_P2/`, generované flotily
-v `results/plan_day/{DATUM}_{HHMM}/`. Parametry (rezerva, práh 3 %,
-práh 3 %) jsou konstanty v `fleet_budget.py`.
+start_cost blok, l3 blok, čísla deficitu — večerní běh z něj čte), plné
+solver výstupy v `results/{DEPO}/{DATUM}_{HHMM}_P1|_P2/`, generované
+flotily v `results/plan_day/{DATUM}_{HHMM}/`. Parametry (rezerva, práh
+3 %, trigger zdražení) jsou konstanty v `fleet_budget.py`.
 
 ### Dvojlinky (`--double-runs`, porušení L2)
 
@@ -266,10 +276,11 @@ Sekvence dep **CB → MO → HK → PR** nad ostrými daty, řízená decision:
 - flotila = **živý budget**: po každém depu se odečtou spotřebovaná auta
   (počítáno per fyzické vozidlo — dvojlinka auto nepočítá dvakrát);
   velké typy navíc chrání rezervace dep, která ještě nebyla na řadě
-- solver jede s flagy z decision (L0, nebo L1+L2 = 103 % + `--double-runs`)
+- solver jede s flagy z decision (L0, nebo L1+L2 = 103 % + `--double-runs`);
+  případné zdražení výjezdu (#2) a vyřazení L3 objednávek se aplikují samy
 - **eskalace**: když depo nevyjde na denním levelu, zvedne se na L1+L2
-  (platí od tohoto depa dál); když nevyjde ani tak → **ALERT a konec**
-  (L3 není postavené, člověk rozhodne) — hotová depa jsou definitivní
+  (platí od tohoto depa dál); když nevyjde ani tak → **ALERT a konec**,
+  člověk rozhodne — hotová depa jsou definitivní
 - **stav** (`data/results/plan_day/{DATUM}/state.json`): zbytek flotily,
   hotová depa, aktuální level — druhé spuštění naváže a hotová depa
   přeskočí; běh po částech (každé depo po své uzávěrce) je tedy přirozený
@@ -278,6 +289,39 @@ Sekvence dep **CB → MO → HK → PR** nad ostrými daty, řízená decision:
 
 **Default solveru je od vlny 3 L0** (100 % nosnosti; okna −5/+25 zůstávají).
 „Přesně jako dřív" = `--capacity-multiplier 1.03`.
+
+### L3 — kamion předem (`plan_day.py l3`, od 14. 8. 2026)
+
+Když deficit malých přeteče 3 % denních kg, jede ráno **kamion 18t**
+a sebere velké **rampové** objednávky napříč depy, aby se zbytek dne
+vešel do malých aut:
+
+1. **Výběr v predikci** (`l3_planner.py`, automaticky v `predict`):
+   kandidáti = rampové **skutečné** objednávky (sloupec `predicted == 0`
+   — dopredikované z losu NIKDY, jejich čísla večer neexistují);
+   cíl kg = `missing_kg + max(10 %, 500 kg)`; greedy podle
+   `kg / (1 + vzdálenost × koef)` (těžké a blízké lokace); binování
+   do kamionů zbylých po P2 (nedělí se lokace mezi auta). Bez zbylého
+   kamionu se L3 nekoná (jen alert). Výběr jde do `decision.l3`.
+2. **Večer** (`real`): objednávky z `decision.l3` se při prepare vyřadí
+   (`--exclude-orders-file` — podle ČÍSEL, storno = warning) a zapíšou
+   solver-ready do `prepared/{DEPO}/l3_orders_*.csv`; kamiony L3 jsou
+   odečtené z budgetu hned na startu (depa s nimi nepočítají).
+3. **Po posledním depu**:
+   ```powershell
+   python plan_day.py l3
+   ```
+   sloučí l3_orders všech dep (block `L3`, okna lokací neplatí — pevně
+   **04:00–20:00**), vygeneruje flotilu jen s L3 kamiony a pustí solver
+   s **`--driver-breaks`** (EU zjednodušeně: žádných 4,5 h jízdy bez
+   45 min pauzy — pauzy řeší OR-Tools, routing kudy-smí-kamion řeší
+   ORS `driving-hgv` jako dosud). Výstupy standardně do
+   `data/results/L3/{DATUM}/` vč. **ESO exportu**; když trasa nevyjde,
+   hlasitý ALERT (vyřazené objednávky nejsou v žádném plánu!).
+4. **Řidiči**: `driver_assignment.py` zónu L3 přibere automaticky,
+   když `data/results/L3/{DATUM}/` existuje.
+
+Parametry (okno, cíl, koef blízkosti, budget) v `l3_planner.L3_CONFIG`.
 
 ---
 

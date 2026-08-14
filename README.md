@@ -68,7 +68,8 @@ proto se plánují odděleně.
 | **`visualize_routes.py`** | HTML mapa tras (Leaflet) z výsledkové složky. |
 | **`predict_day.py`** | Tenký wrapper: predikční běh nad `data/prediction/` (prepare+solve+mapy pro všechna depa). Odděleno od ostrého provozu. |
 | **`order_history.py`** | Šance závozu z historie objednávek (`data/historie_objednavky/*.xlsx`): stejný den v týdnu, roční okno, pauzy, svátky. Predikce podle ní losuje, které dopredikované objednávky do plánu půjdou. |
-| **`plan_day.py`** | Predikcí řízené plánování dne. `predict`: P1 (přání dep, každé s celým skladem) → rezervace → P2 (sekvenční generálka) → `decision_{DATUM}.json`. `real`: večerní sekvence dep s živým budgetem, eskalací L0→L1+L2 a stavem pro běh po částech. |
+| **`plan_day.py`** | Predikcí řízené plánování dne. `predict`: P1 (přání dep) → rezervace + zdražení výjezdu (#2) → P2 (sekvenční generálka) → rozhodnutí vč. výběru L3 → `decision_{DATUM}.json`. `real`: večerní sekvence dep s živým budgetem, eskalací a vyřazením L3 objednávek. `l3`: trasa kamionu po posledním depu (okna 04–20, pauzy řidiče). |
+| **`l3_planner.py`** | Logika L3 pod plan_day: výběr rampových skutečných objednávek (cíl kg z deficitu, greedy kg×blízkost, binování do kamionů), sloučení l3_orders pro solver. |
 | **`fleet_budget.py`** | Logika pod plan_day: malá/velká auta, rezervace žebříčkem kg, budget s ubíráním, caps (rezervace + volný pool), rozhodnutí o levelu (deficit → kg → L0/L1+L2/L3 alert). |
 | **`driver_assignment.py`** | Přiřazení konkrétních řidičů k naplánovaným linkám — celodenní optimum (maďarský alg.) nad registrem z ESO (`data/ridici/aktivni/`). Hard: dny, dostupnost, typ auta; soft s váhami: plnění plánu km, dojezd, kvalita×tightness, familiarity. Samostatný krok po naplánování všech dep. |
 | **`compare_prediction.py`** | Porovná predikci s realitou (Δ = predikce − realita), zapíše `comparison.jsonl`. Jediný vlastník porovnávacích vzorců. `--pred-phase P1\|P2` vybere fázi `plan_day predict`. |
@@ -156,6 +157,6 @@ Repo je **Private**.
 python -m pytest tests webui/tests -q --ignore tests/test_ors_hgv_integration.py
 ```
 
-Aktuálně **621 testů**. `prepare_inputs` i solver pouští unit testy automaticky
+Aktuálně **663 testů**. `prepare_inputs` i solver pouští unit testy automaticky
 před během (přeskočení: `SKIP_STARTUP_TESTS=1`). Integrační routing testy
 (`test_ors_hgv_integration.py`) potřebují běžící OSRM/ORS.

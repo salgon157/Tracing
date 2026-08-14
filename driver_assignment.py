@@ -568,6 +568,14 @@ def main() -> None:
     units = []
     for depot in depots:
         units.extend(load_depot_lines(root / depot / f"{args.date}{suffix}", depot))
+
+    # L3 kamionová trasa (plan_day l3) — když existuje, řidiče dostane taky
+    l3_dir = root / "L3" / f"{args.date}{suffix}"
+    if (l3_dir / "lines_summary.csv").exists():
+        units.extend(load_depot_lines(l3_dir, "L3"))
+        depots = depots + ["L3"]
+        print("[L3] Kamionové linky přibrány (zóna L3)")
+
     print(f"Linek: {sum(len(u['line_ids']) for u in units)} "
           f"({len(units)} jednotek po sloučení dvojlinek) "
           f"za depa {', '.join(depots)}")

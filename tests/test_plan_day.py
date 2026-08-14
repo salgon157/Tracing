@@ -151,3 +151,35 @@ class TestRealHelpers:
         monkeypatch.setattr(plan_day, "PREDICTION_ROOT", tmp_path)
         with pytest.raises(SystemExit, match="plan_day.py predict"):
             plan_day.load_decision("2026-08-05")
+
+
+class TestL3StateAndExcludes:
+    """L3: kamiony vyhrazené kamionové trase nesmí večer dostat depa."""
+
+    def test_fresh_state_subtracts_l3_trucks(self, tmp_path):
+        rows = [{"type_code": "TYPE_02", "max_kg": "1350",
+                 "available_count": "53"},
+                {"type_code": "TYPE_06", "max_kg": "8700",
+                 "available_count": "1"}]
+        decision = {"solver_flags": {"capacity_multiplier": 1.03,
+                                     "double_runs": True},
+                    "l3": {"trucks": {"TYPE_06": 1}}}
+        state = plan_day.load_real_state(tmp_path / "neni.json", rows, decision)
+        assert state["remaining"]["TYPE_06"] == 0
+        assert state["remaining"]["TYPE_02"] == 53
+
+    def test_fresh_state_without_l3_untouched(self, tmp_path):
+        rows = [{"type_code": "TYPE_06", "max_kg": "8700",
+                 "available_count": "1"}]
+        decision = {"solver_flags": {"capacity_multiplier": 1.0,
+                                     "double_runs": False}, "l3": None}
+        state = plan_day.load_real_state(tmp_path / "neni.json", rows, decision)
+        assert state["remaining"]["TYPE_06"] == 1
+
+    def test_orders_by_depot_split(self):
+        import l3_planner as l3
+        block = {"orders": [
+            {"order_number": "O1", "depot": "CB", "location_code": "a", "kg": 1},
+            {"order_number": "O2", "depot": "HK", "location_code": "b", "kg": 1},
+            {"order_number": "O3", "depot": "CB", "location_code": "c", "kg": 1}]}
+        assert l3.orders_by_depot(block) == {"CB": ["O1", "O3"], "HK": ["O2"]}

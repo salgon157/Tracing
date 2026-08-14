@@ -2999,6 +2999,11 @@ def main():
     cfg_clusters = CONFIG["num_clusters"]
     n_clusters   = (auto_n_clusters(len(orders), len(vehicles_expanded))
                     if cfg_clusters == "auto" else int(cfg_clusters))
+    # Nikdy víc clusterů než vozidel — cluster bez vozidla shodí OR-Tools
+    # nativně (žádná python výjimka). Týká se malých flotil (L3: 1-2 kamiony).
+    if n_clusters > len(vehicles_expanded):
+        n_clusters = max(1, len(vehicles_expanded))
+        print(f"  [!] Clusterů víc než vozidel — snižuji na {n_clusters}")
 
     cfg_workers = CONFIG["parallel_workers"]
     n_workers   = (max(1, multiprocessing.cpu_count() - 1)
