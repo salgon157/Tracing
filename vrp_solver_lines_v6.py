@@ -235,6 +235,13 @@ CONFIG = {
 
     # Reprodukovatelnost
     "random_seed":                   42,
+
+    # ── Pauzy řidiče (jen s --driver-breaks; L3 kamionové trasy) ──────
+    # EU zjednodušeně: žádných driver_break_after_h hodin JÍZDY bez
+    # driver_break_min minutové pauzy (span-based, ne tachograf).
+    # Běžné dodávkové linky pauzy nemodelují — čistá jízda je krátká.
+    "driver_break_after_h":          4.5,
+    "driver_break_min":              45,
 }
 
 
@@ -1234,6 +1241,29 @@ def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list
     }
 
 
+def _add_driver_breaks(routing, time_dim, data) -> None:
+    """
+    Povinné pauzy řidiče (EU zjednodušeně): žádných driver_break_after_h
+    hodin JÍZDY bez driver_break_min pauzy. Kandidátní pauzy jsou volitelné
+    intervaly kdekoli v dni — SetBreakDistanceDuration je aktivuje jen
+    když je trasa potřebuje (krátká trasa = žádná pauza, žádný trest).
+    """
+    solver      = routing.solver()
+    drive_limit = int(CONFIG["driver_break_after_h"] * 60)
+    break_min   = int(CONFIG["driver_break_min"])
+    horizon     = 24 * 60
+    max_breaks  = max(1, horizon // drive_limit)
+    transits    = [int(s) for s in data["service_times"]]
+    for v_idx in range(data["num_vehicles"]):
+        intervals = [
+            solver.FixedDurationIntervalVar(
+                0, horizon, break_min, True, f"break_v{v_idx}_{b}")
+            for b in range(max_breaks)]
+        time_dim.SetBreakIntervalsOfVehicle(intervals, v_idx, transits)
+        time_dim.SetBreakDistanceDurationOfVehicle(drive_limit, break_min,
+                                                   v_idx)
+
+
 def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
                   time_limit_sec: int,
                   strategy=routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION):
@@ -1298,6 +1328,10 @@ def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
         est = data.get("earliest_start", [0] * data["num_vehicles"])[v_idx]
         if est:
             time_dim.CumulVar(routing.Start(v_idx)).SetMin(est)
+
+    # Pauzy řidiče (jen --driver-breaks; L3 kamionové trasy)
+    if CONFIG.get("_driver_breaks_enabled"):
+        _add_driver_breaks(routing, time_dim, data)
 
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy    = strategy
@@ -1413,6 +1447,10 @@ def _extract_routes(manager, routing, solution, time_dim,
 # ============================================================
 
 def _worker_solve_cluster(args: dict) -> dict:
+    # Windows spawn: worker je ČERSTVÝ import modulu s defaultním CONFIG.
+    # Snapshot z hlavního procesu vrací runtime overridy (TW okna z CLI,
+    # pauzy řidiče…) — bez něj by je fáze C/E tiše ignorovaly.
+    CONFIG.update(args.get("config", {}))
     cluster_orders   = args["cluster_orders"]
     cluster_vehicles = args["cluster_vehicles"]
     sub_dist         = np.array(args["sub_dist"])
@@ -1598,6 +1636,7 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
                 "sub_dist":        sub_dist.tolist(),
                 "sub_times":       [st.tolist() for st in sub_times],
                 "time_limit_sec":  time_per_cluster,
+                "config":          dict(CONFIG),
             })
 
     print(f"  {len(all_worker_args)} cluster-solve úloh paralelně "
@@ -1841,6 +1880,7 @@ def _lns_iteration(state, distances_km, vehicle_time_by_id, destroy_size,
             "sub_dist":        sub_dist.tolist(),
             "sub_times":       [st.tolist() for st in sub_times],
             "time_limit_sec":  time_limit_sec,
+            "config":          dict(CONFIG),
         })
 
     if not worker_args:
@@ -2033,6 +2073,7 @@ def phase_e_intensify(finalists, distances_km, vehicle_time_by_id,
             "sub_dist":        sub_dist.tolist(),
             "sub_times":       [st.tolist() for st in sub_times],
             "time_limit_sec":  time_per_task,
+            "config":          dict(CONFIG),
         })
 
     new_routes = [list(st.cluster_routes) for _, st in finalists]
@@ -2230,6 +2271,7 @@ def _build_run_record(
             "vehicle_capacity_multiplier":  CONFIG.get("vehicle_capacity_multiplier", 1.0),
             "double_runs":                  bool(CONFIG.get("_double_runs_enabled", False)),
             "seed_finalists":               CONFIG.get("_seed_finalists_resolved", 1),
+            "driver_breaks":                bool(CONFIG.get("_driver_breaks_enabled", False)),
         },
 
         "closures": [c["id"] for c in closures],
@@ -2690,6 +2732,13 @@ def parse_args():
                              "fyzická auta (návrat + nakládka), jinak běh "
                              "spadne. Zapíná plan_day podle decision.")
 
+    parser.add_argument("--driver-breaks", action="store_true",
+                        help="Povinné pauzy řidiče (EU zjednodušeně): žádných "
+                             f"{CONFIG['driver_break_after_h']:g} h JÍZDY bez "
+                             f"{CONFIG['driver_break_min']} min pauzy. Používají "
+                             "L3 kamionové trasy; běžné dodávkové linky pauzy "
+                             "nemodelují (čistá jízda je krátká).")
+
     parser.add_argument("--seed-finalists", default=None,
                         choices=["auto", "1", "2", "3"],
                         help="Kolik nejlepších seedů fáze C dotáhnout ve fázi E "
@@ -2854,6 +2903,13 @@ def main():
         CONFIG["total_time_budget_sec"] = int(args.budget_min * 60)
         print(f"[BUDGET] Override: {args.budget_min:g} min "
               f"({CONFIG['total_time_budget_sec']} s)")
+
+    # ── --driver-breaks: povinné pauzy řidiče (L3 kamionové trasy) ────────
+    if args.driver_breaks:
+        CONFIG["_driver_breaks_enabled"] = True
+        print(f"[PAUZY] Řidičské pauzy ZAPNUTY: max "
+              f"{CONFIG['driver_break_after_h']:g} h jízdy bez "
+              f"{CONFIG['driver_break_min']} min pauzy (EU zjednodušeně)")
 
     # ── --seed-finalists: kolik seedů fáze C dotáhnout ve fázi E ──────────
     if args.seed_finalists is not None:

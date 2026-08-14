@@ -657,3 +657,51 @@ class TestLoadOrdersDayRamp:
         # zpětná kompatibilita se starými prepared soubory
         orders = self._load(tmp_path, self.HEADER, self.ROW)
         assert orders[0]["ramp"] == 0
+
+
+class TestDriverBreaks:
+    """--driver-breaks: EU zjednodušeně — žádných 4,5 h jízdy bez 45 min
+    pauzy. Malý reálný solve (1 auto, 2 zastávky, jízda 6 h > limit)."""
+
+    def _solve(self, breaks_enabled):
+        from vrp_solver_lines_v6 import solve_cluster
+        orders = [
+            _make_order(lat=50.0, lon=14.0, time_from="00:00", time_to="23:00",
+                        weight_kg=100.0, service_sec=60),
+            _make_order(lat=51.0, lon=15.0, time_from="00:00", time_to="23:00",
+                        weight_kg=100.0, service_sec=60),
+        ]
+        for i, o in enumerate(orders):
+            o["id"] = o["order_number"] = f"O{i}"
+            o["name"] = f"stop{i}"
+        vehicles = [{"id": "TYPE_05_01", "type": "kamion", "type_code": "TYPE_05",
+                     "max_kg": 8000, "cost_per_km": 28.0, "start_cost": 1000,
+                     "osrm_profile": "driving-hgv", "time_multiplier": 1.0}]
+        # jízda: sklad->A 150 min, A->B 150, B->sklad 120  (celkem 420 > 270)
+        dist = [[0, 100, 200], [100, 0, 100], [200, 100, 0]]
+        times = [[0, 150, 260], [150, 0, 150], [260, 120, 0]]
+        old = solver_mod.CONFIG.get("_driver_breaks_enabled")
+        solver_mod.CONFIG["_driver_breaks_enabled"] = breaks_enabled
+        try:
+            routes, _ = solve_cluster(orders, vehicles, dist, [times],
+                                      time_limit_sec=3)
+        finally:
+            if old is None:
+                solver_mod.CONFIG.pop("_driver_breaks_enabled", None)
+            else:
+                solver_mod.CONFIG["_driver_breaks_enabled"] = old
+        return routes
+
+    def test_breaks_extend_route_duration(self):
+        base = self._solve(breaks_enabled=False)
+        with_breaks = self._solve(breaks_enabled=True)
+        assert base and with_breaks
+        # 420 min jízdy => aspoň jedna 45min pauza navíc v trvání trasy
+        assert with_breaks[0]["duration_h"] >= base[0]["duration_h"] + 0.7
+
+    def test_default_off_deterministic(self):
+        # bez flagu je malý model deterministický — cesta pauz se nedotkla
+        a = self._solve(breaks_enabled=False)
+        b = self._solve(breaks_enabled=False)
+        assert a[0]["duration_h"] == b[0]["duration_h"]
+        assert a[0]["total_km"] == b[0]["total_km"]
