@@ -132,6 +132,24 @@ def summarize_run(lines: list[dict], small_codes: set[str],
           + f"  |  {elapsed / 60:.1f} min")
 
 
+def print_uninflated_cost(out_dir: Path, lines_count: int, delta: int,
+                          prefix: str = "  →") -> float:
+    """
+    Kolik by plán stál bez zdražení výjezdu (#2). Jen výpis do konzole —
+    soubory nesou navýšené ceny (decision má deltu, přepočet je triviální).
+    Každá linka platí přesně jeden start (dvojlinka = 2 řádky lines_summary),
+    takže odpočet = delta × počet linek.
+    """
+    if not delta:
+        return 0.0
+    summary = out_dir / "zone_summary.json"
+    cost = json.loads(summary.read_text(encoding="utf-8"))["total_cost_kc"]
+    real_cost = cost - delta * lines_count
+    print(f"{prefix} nenavýšená cena aut = {cost:,.0f} − ({delta} × "
+          f"{lines_count} linek) = {real_cost:,.0f} Kč")
+    return real_cost
+
+
 def build_solver_cmd(depot: str, date_str: str, out_dir: Path,
                      fleet_file: Path, budget_min: float,
                      osm_source: str, force_matrix: bool,
@@ -169,7 +187,8 @@ def lines_from_run(out_dir: Path) -> list[dict]:
 
 def format_report(date_str: str, stamp: str, depots: list[str],
                   allocation: dict, p2_by_depot: dict[str, list[dict]],
-                  decision: dict, decision_path: Path) -> str:
+                  decision: dict, decision_path: Path,
+                  esc: dict | None = None) -> str:
     lines = ["", "=" * 66,
              f"PLAN_DAY PREDICT — {date_str}  (session {stamp})",
              "=" * 66]
@@ -192,6 +211,12 @@ def format_report(date_str: str, stamp: str, depots: list[str],
     for t in allocation["truncated"]:
         lines.append(f"  [!] {t['type']}: přání {t['wanted']} > "
                      f"sklad {t['available']} — ořezáno")
+
+    if esc and esc.get("delta"):
+        lines.append(f"\nZdražení výjezdu (#2): +{esc['delta']} Kč všem typům "
+                     f"(chybí {esc['missing_small']} malých, střední na "
+                     f"{esc['medium_usage']:.0%}) — platí pro P2 i večer; "
+                     f"ceny v plánech jsou o deltu×linky vyšší než skutečné")
 
     lines.append("\nP2 (sekvenčně, velká podle rezervací, malá neomezená):")
     for depot in depots:
@@ -294,6 +319,20 @@ def main_predict(args: argparse.Namespace) -> None:
     for t in allocation["truncated"]:
         print(f"  [!] {t['type']}: přání {t['wanted']} > sklad {t['available']}")
 
+    # ── Zdražení výjezdu (#2): chybí malá a střední stojí? ───────────────
+    # Vyhodnocuje se z P1; delta platí už pro P2 (a večer pro real).
+    esc = fb.start_cost_escalation(p1_by_depot, fleet_rows)
+    if esc["delta"]:
+        print(f"\n  [#2] Chybí {esc['missing_small']} malých aut a střední "
+              f"jedou jen na {esc['medium_usage']:.0%} "
+              f"({esc['medium_used']}/{esc['medium_available']}) → "
+              f"výjezd VŠECH aut +{esc['delta']} Kč (P2 i večerní běh)")
+    elif esc["missing_small"] > 0:
+        print(f"\n  [#2] Chybí {esc['missing_small']} malých, ale zdražení "
+              f"se nezapíná (limit >{fb.START_COST_TRIGGER_MISSING} chybějících "
+              f"a střední pod {fb.MEDIUM_USAGE_TRIGGER:.0%}; "
+              f"teď {esc['medium_usage']:.0%})")
+
     # ── P2: sekvenčně s budgetem ─────────────────────────────────────────
     step_header(f"P2 — generálka s ubíráním ({len(depots)} běhů)",
                 f"pořadí uzávěrek {' → '.join(depots)} · velká podle rezervací, "
@@ -312,7 +351,8 @@ def main_predict(args: argparse.Namespace) -> None:
               f"   velká k dispozici: {fmt_mix(large_caps)}"
               + (f"   (chráněno pro {', '.join(protected)})" if protected else ""))
         p2_fleet = fb.write_fleet_file(fleet_rows,
-                                       session / f"fleet_P2_{depot}.csv", caps)
+                                       session / f"fleet_P2_{depot}.csv", caps,
+                                       start_cost_delta=esc["delta"])
         out_dir = PREDICTION_ROOT / "results" / depot / f"{date_str}_{stamp}_P2"
         elapsed = run_cmd(build_solver_cmd(depot, date_str, out_dir, p2_fleet,
                                            args.budget, args.osm_source,
@@ -322,6 +362,7 @@ def main_predict(args: argparse.Namespace) -> None:
         depot_lines = lines_from_run(out_dir)
         p2_by_depot[depot] = depot_lines
         summarize_run(depot_lines, small_codes, elapsed)
+        print_uninflated_cost(out_dir, len(depot_lines), esc["delta"])
         # z budgetu ubývají jen velká — malá se měří, ne maskují
         used_large = {t: n for t, n in fb.vehicles_used_by_type(depot_lines).items()
                       if t not in small_codes}
@@ -349,6 +390,7 @@ def main_predict(args: argparse.Namespace) -> None:
         "free_pool": allocation["free_pool"],
         "wishes_p1": allocation["wishes"],
         "truncated": allocation["truncated"],
+        "start_cost": esc,
         "small": {k: v for k, v in decision.items()
                   if not k.startswith("_")},
         "fleet_file": Path(fleet_path).name,
@@ -373,7 +415,7 @@ def main_predict(args: argparse.Namespace) -> None:
 
     decision["_small_codes"] = small_codes
     print(format_report(date_str, stamp, depots, allocation, p2_by_depot,
-                        decision, decision_path))
+                        decision, decision_path, esc=esc))
     print(f"Celková doba: {(time.time() - t_start) / 60:.1f} min "
           f"({2 * len(depots)} solver běhů)")
 
@@ -472,6 +514,8 @@ def main_real(args: argparse.Namespace) -> None:
     fleet_rows = fb.load_fleet_rows(fleet_path)
     small_codes = fb.small_type_codes(fleet_rows)
     reservations = decision.get("reservations", {})
+    # Zdražení výjezdu (#2) rozhodnuté predikcí platí i večer
+    start_cost_delta = int(decision.get("start_cost", {}).get("delta", 0))
 
     state_dir = real_state_dir(date_str, args.label)
     state_path = state_dir / "state.json"
@@ -483,6 +527,10 @@ def main_real(args: argparse.Namespace) -> None:
     print("=" * 66)
     print(f"PLAN_DAY REAL — {date_str} | depa: {', '.join(to_plan)} "
           f"| level: {_flags_label(flags)}")
+    if start_cost_delta:
+        print(f"[#2] Výjezd všech aut +{start_cost_delta} Kč (rozhodnuto "
+              f"predikcí — chybí malá, střední stojí); skutečná cena se "
+              f"dopočítává pod každým depem")
     if decision.get("l3_needed"):
         print("[!] PREDIKCE HLÁSÍ POTŘEBU L3 (kamiony/rampa) — zatím není "
               "postavené, den může skončit alertem.")
@@ -497,6 +545,8 @@ def main_real(args: argparse.Namespace) -> None:
     day_depots = decision.get("depots") or depots
 
     t_start = time.time()
+    day_uninflated = 0.0
+    day_lines_count = 0
 
     for i, depot in enumerate(to_plan, 1):
         protected = [d for d in day_depots
@@ -516,7 +566,8 @@ def main_real(args: argparse.Namespace) -> None:
 
         fleet_file = fb.write_fleet_file(fleet_rows,
                                          state_dir / f"fleet_{depot}.csv",
-                                         caps)
+                                         caps,
+                                         start_cost_delta=start_cost_delta)
 
         planned_ok = False
         while True:
@@ -562,6 +613,9 @@ def main_real(args: argparse.Namespace) -> None:
         save_real_state(state_path, state)
 
         summarize_run(lines, small_codes, solve_min * 60, prefix=f"\n  ✓ {depot}:")
+        day_uninflated += print_uninflated_cost(out_dir, len(lines),
+                                                start_cost_delta)
+        day_lines_count += len(lines)
         rest_small = sum(n for t, n in budget.remaining.items()
                          if t in small_codes)
         rest_large = {t: n for t, n in budget.remaining.items()
@@ -584,6 +638,10 @@ def main_real(args: argparse.Namespace) -> None:
     print("Zbytek flotily: "
           + fmt_mix({t: n for t, n in budget.remaining.items() if n > 0},
                     small_codes))
+    if start_cost_delta and day_lines_count:
+        print(f"[#2] Skutečná (nenavýšená) cena dep tohoto běhu: "
+              f"{day_uninflated:,.0f} Kč "
+              f"(odečteno {start_cost_delta} × {day_lines_count} linek)")
     print(f"Celková doba: {(time.time() - t_start) / 60:.1f} min")
     print(f"Stav: {state_path}")
     print("=" * 66)

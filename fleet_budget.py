@@ -34,6 +34,18 @@ SMALL_MAX_KG          = 1350   # nosnost do tohoto limitu = "malé auto"
 SMALL_FLEET_RESERVE   = 1      # bezpečnostní rezerva malých aut
 L3_THRESHOLD_PCT      = 3.0    # nad tolik % denních kg nestačí L1+L2
 
+# ── Zdražení výjezdu (#2): když chybí malá a střední auta stojí ───────────────
+# Cenový model je mezi „1 velké" a „N malých" prakticky lhostejný (změřeno
+# 10.8.2026: rozdíl 5 Kč ze 73 tis.), takže solver při neomezených malých
+# střední auta nenasadí. Dočasné zdražení výjezdu VŠEM typům ho donutí
+# konsolidovat do větších aut — deficit malých klesne bez porušení.
+MEDIUM_KG_RANGE            = (1351, 3999)  # "střední" (dnes TYPE_03/04/07)
+START_COST_TRIGGER_MISSING = 3     # zdražuj až když chybí VÍC než tolik malých
+MEDIUM_USAGE_TRIGGER       = 0.5   # ...a střední jedou pod 50 % dostupných
+START_COST_BASE_DELTA      = 200   # chybí 4 -> +200 Kč
+START_COST_STEP            = 100   # každé další chybějící malé +100 Kč
+START_COST_DELTA_MAX       = 500   # strop navýšení
+
 # Pořadí uzávěrek — v tomhle pořadí se plánuje P2 i večerní ostrý běh
 DEPOT_ORDER = ["CB", "MO", "HK", "PR"]
 
@@ -66,8 +78,16 @@ def is_small(row: dict) -> bool:
     return float(row["max_kg"]) <= SMALL_MAX_KG
 
 
+def is_medium(row: dict) -> bool:
+    return MEDIUM_KG_RANGE[0] <= float(row["max_kg"]) <= MEDIUM_KG_RANGE[1]
+
+
 def small_type_codes(rows: list[dict]) -> set[str]:
     return {r["type_code"].strip() for r in rows if is_small(r)}
+
+
+def medium_type_codes(rows: list[dict]) -> set[str]:
+    return {r["type_code"].strip() for r in rows if is_medium(r)}
 
 
 def available_by_type(rows: list[dict]) -> dict[str, int]:
@@ -76,9 +96,12 @@ def available_by_type(rows: list[dict]) -> dict[str, int]:
 
 
 def write_fleet_file(rows: list[dict], path: Path | str,
-                     overrides: dict[str, int]) -> Path:
+                     overrides: dict[str, int],
+                     start_cost_delta: int = 0) -> Path:
     """
     Zapíše kopii vozového parku s přepsaným `available_count` podle overrides.
+    `start_cost_delta` > 0 navíc zdraží výjezd VŠEM typům (viz
+    start_cost_escalation) — solver si novou cenu přečte sám, nemění se.
     Formát (středníky, sloupce) zůstává — soubor musí projít
     load_vehicle_types_db beze změny.
     """
@@ -94,6 +117,9 @@ def write_fleet_file(rows: list[dict], path: Path | str,
             code = out["type_code"].strip()
             if code in overrides:
                 out["available_count"] = str(int(overrides[code]))
+            if start_cost_delta:
+                out["start_cost_kc"] = str(
+                    int(float(out["start_cost_kc"]) + start_cost_delta))
             writer.writerow(out)
     return path
 
@@ -195,6 +221,61 @@ def allocate_reservations(lines_by_depot: dict[str, list[dict]],
     }
     return {"reservations": reservations, "wishes": wishes,
             "free_pool": free_pool, "truncated": truncated}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Zdražení výjezdu (#2) — trigger a delta z P1
+# ═════════════════════════════════════════════════════════════════════════════
+
+def start_cost_escalation(p1_lines_by_depot: dict[str, list[dict]],
+                          fleet_rows: list[dict], *,
+                          reserve: int = SMALL_FLEET_RESERVE) -> dict:
+    """
+    Z P1 rozhodne, jestli dočasně zdražit výjezd (platí pro P2 i večer).
+
+    Trigger: chybí VÍC než START_COST_TRIGGER_MISSING malých aut
+    (Σ malých linek P1 vs. available − rezerva) A ZÁROVEŇ střední auta
+    jedou pod MEDIUM_USAGE_TRIGGER dostupných (2/3 použité → ne, 1/3 → ano).
+
+    Delta: chybí 4 → +BASE (200), každé další +STEP (100), strop MAX (500):
+    `min(MAX, BASE + STEP × (chybějící − 4))`. Pod triggerem se cena
+    NIKDY nesahá (delta 0) — žádné zlevňování neexistuje.
+    """
+    small_codes = small_type_codes(fleet_rows)
+    medium_codes = medium_type_codes(fleet_rows)
+    avail = available_by_type(fleet_rows)
+
+    small_available = sum(avail.get(t, 0) for t in small_codes)
+    small_need = sum(1 for lines in p1_lines_by_depot.values()
+                     for l in lines if l["type_code"] in small_codes)
+    missing = small_need - (small_available - reserve)
+
+    medium_available = sum(avail.get(t, 0) for t in medium_codes)
+    medium_used = sum(
+        n for lines in p1_lines_by_depot.values()
+        for t, n in vehicles_used_by_type(lines).items() if t in medium_codes)
+    # Bez středních aut nemá zdražení co nasadit → chovej se jako plné využití
+    medium_usage = (medium_used / medium_available) if medium_available else 1.0
+
+    triggered = (missing > START_COST_TRIGGER_MISSING
+                 and medium_usage < MEDIUM_USAGE_TRIGGER)
+    delta = 0
+    if triggered:
+        delta = min(START_COST_DELTA_MAX,
+                    START_COST_BASE_DELTA
+                    + START_COST_STEP * (missing - START_COST_TRIGGER_MISSING - 1))
+
+    return {
+        "delta": delta,
+        "triggered": triggered,
+        "missing_small": missing,
+        "small_need": small_need,
+        "small_available": small_available,
+        "reserve": reserve,
+        "medium_used": medium_used,
+        "medium_available": medium_available,
+        "medium_usage": round(medium_usage, 3),
+    }
 
 
 # ═════════════════════════════════════════════════════════════════════════════

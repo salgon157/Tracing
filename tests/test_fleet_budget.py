@@ -390,3 +390,111 @@ class TestEscalateFlags:
         from fleet_budget import escalate_flags
         assert escalate_flags({"capacity_multiplier": 1.03,
                                "double_runs": True}) is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Zdražení výjezdu (#2) — trigger z P1, delta do flotilových souborů
+# ═════════════════════════════════════════════════════════════════════════════
+
+from fleet_budget import (          # noqa: E402
+    medium_type_codes,
+    start_cost_escalation,
+)
+
+
+def _vline(vehicle_id, zone="CB", kg=1000.0):
+    """Linka s vehicle_id (start_cost_escalation počítá fyzická vozidla)."""
+    return {"zone": zone, "line_id": f"L_{vehicle_id}", "vehicle_id": vehicle_id,
+            "type_code": vehicle_id.rsplit("_", 1)[0], "total_kg": kg,
+            "double_run": False}
+
+
+def _p1(small_lines, medium_ids=()):
+    """P1 výsledek: N malých linek (TYPE_02) + střední dle vehicle_id."""
+    lines = [_vline(f"TYPE_02_{i:02d}") for i in range(small_lines)]
+    lines += [_vline(v) for v in medium_ids]
+    return {"CB": lines}
+
+
+class TestStartCostEscalation:
+    """Fixture flotila: malá TYPE_01×3 + TYPE_02×53 (rezerva 1 → usable 55);
+    střední TYPE_03 (2000 kg)×1 + TYPE_05 (3200 kg)×2; TYPE_07 8700 kg
+    není střední. Chybějící = malé linky − 55."""
+
+    def _rows(self, tmp_path):
+        return load_fleet_rows(_fleet_file(tmp_path))
+
+    def test_medium_codes_by_kg_band(self, tmp_path):
+        assert medium_type_codes(self._rows(tmp_path)) == {"TYPE_03", "TYPE_05"}
+
+    def test_missing_at_threshold_no_delta(self, tmp_path):
+        # chybí přesně 3 (58 linek − 55) → pod triggerem, cena se nesahá
+        esc = start_cost_escalation(_p1(58), self._rows(tmp_path))
+        assert esc["missing_small"] == 3
+        assert esc["triggered"] is False and esc["delta"] == 0
+
+    def test_missing_4_low_usage_delta_200(self, tmp_path):
+        # chybí 4, střední 1/3 (33 %) → +200 Kč
+        esc = start_cost_escalation(_p1(59, ["TYPE_03_01"]),
+                                    self._rows(tmp_path))
+        assert esc["missing_small"] == 4
+        assert esc["medium_usage"] == pytest.approx(1 / 3, abs=1e-3)
+        assert esc["triggered"] is True and esc["delta"] == 200
+
+    def test_missing_6_delta_400(self, tmp_path):
+        esc = start_cost_escalation(_p1(61, ["TYPE_03_01"]),
+                                    self._rows(tmp_path))
+        assert esc["delta"] == 400
+
+    def test_missing_8_capped_500(self, tmp_path):
+        esc = start_cost_escalation(_p1(63, ["TYPE_03_01"]),
+                                    self._rows(tmp_path))
+        assert esc["delta"] == 500
+
+    def test_high_medium_usage_blocks_trigger(self, tmp_path):
+        # střední 2/3 (66 %) → nezapíná se, i když chybí hodně malých
+        esc = start_cost_escalation(
+            _p1(63, ["TYPE_03_01", "TYPE_05_01"]), self._rows(tmp_path))
+        assert esc["medium_usage"] == pytest.approx(2 / 3, abs=1e-3)
+        assert esc["triggered"] is False and esc["delta"] == 0
+
+    def test_no_mediums_in_fleet_never_triggers(self, tmp_path):
+        rows = [r for r in self._rows(tmp_path)
+                if r["type_code"] not in ("TYPE_03", "TYPE_05")]
+        esc = start_cost_escalation(_p1(63), rows)
+        assert esc["triggered"] is False and esc["delta"] == 0
+
+    def test_double_run_lines_count_one_vehicle(self, tmp_path):
+        # dvojlinka = 2 linky téhož středního auta → 1 použité vozidlo
+        lines = _p1(59)["CB"] + [_vline("TYPE_03_01"), _vline("TYPE_03_01")]
+        esc = start_cost_escalation({"CB": lines}, self._rows(tmp_path))
+        assert esc["medium_used"] == 1
+
+
+class TestWriteFleetFileStartCostDelta:
+    def _read(self, path):
+        import csv
+        with open(path, encoding="utf-8-sig") as f:
+            return list(csv.DictReader(f, delimiter=";"))
+
+    def test_delta_added_to_all_types(self, tmp_path):
+        rows = load_fleet_rows(_fleet_file(tmp_path))
+        out = write_fleet_file(rows, tmp_path / "out.csv", {},
+                               start_cost_delta=300)
+        base = {r["type_code"]: float(r["start_cost_kc"]) for r in rows}
+        for r in self._read(out):
+            assert float(r["start_cost_kc"]) == base[r["type_code"]] + 300
+
+    def test_zero_delta_keeps_costs(self, tmp_path):
+        rows = load_fleet_rows(_fleet_file(tmp_path))
+        out = write_fleet_file(rows, tmp_path / "out.csv", {})
+        for orig, written in zip(rows, self._read(out)):
+            assert written["start_cost_kc"] == orig["start_cost_kc"]
+
+    def test_delta_composes_with_available_override(self, tmp_path):
+        rows = load_fleet_rows(_fleet_file(tmp_path))
+        out = write_fleet_file(rows, tmp_path / "out.csv",
+                               {"TYPE_02": 40}, start_cost_delta=200)
+        got = {r["type_code"]: r for r in self._read(out)}
+        assert got["TYPE_02"]["available_count"] == "40"
+        assert float(got["TYPE_02"]["start_cost_kc"]) == 1200.0
