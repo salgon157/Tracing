@@ -1057,15 +1057,169 @@ def labels_to_clusters(orders: list, labels: list) -> tuple:
     return clusters, indices
 
 
+def is_virtual_vehicle(v: dict) -> bool:
+    """Virtuální „druhá jízda" (dvojlinka) — smí vyjet až od earliest_start_min.
+    Poznává se podle ID i podle pole, aby přežila i ručně sestavené flotily."""
+    return bool(v.get("earliest_start_min")) or is_double_run_vehicle(v.get("id", ""))
+
+
+def _cluster_latest_end_min(order: dict) -> int:
+    """Nejzazší minuta, kdy jde objednávku obsloužit (okno + povolené
+    protažení). Stejný výpočet jako v build_data_model."""
+    return (time_to_minutes(order["time_to"])
+            + int(CONFIG.get("tw_expand_after_min", 0) or 0))
+
+
+def _spread_virtual_vehicles(clusters: list, assignments: list,
+                             virtual: list) -> None:
+    """
+    Rozdělí dvojlinky (virtuální jízdy) mezi clustery POMĚRNĚ — podle
+    počtu objednávek, které cluster vůbec může obsloužit po jejich
+    nejdřívějším výjezdu. Cluster, kde po té hodině není co vozit,
+    nedostane žádnou.
+
+    Proč: 16. 8. 2026 (PR, poslední depo, 19 fyzických + 10 virtuálních
+    aut) skončilo všech 10 virtuálních jízd v jednom clusteru, protože se
+    auta rozdávala jako souvislý úsek seznamu seřazeného podle nosnosti.
+    Cluster pak měl 4 fyzická auta na 41 ranních objednávek → neřešitelný
+    ve všech třech seedech → depo bez plánu. Nemá to nic společného
+    s budgetem solveru: řešení fyzicky neexistovalo.
+    """
+    if not virtual:
+        return
+    n_clusters = len(clusters)
+    starts = [int(v.get("earliest_start_min") or 0) for v in virtual]
+    earliest = min(starts) if starts else 0
+
+    weights = [sum(1 for o in c if _cluster_latest_end_min(o) >= earliest)
+               for c in clusters]
+    if sum(weights) == 0:
+        # nikde není odpolední práce → dvojlinky jsou k ničemu, ale
+        # nesmí zůstat na hromadě; rozdej je podle velikosti clusteru
+        weights = [len(c) for c in clusters]
+    total = sum(weights) or 1
+
+    # největší zbytek (Hamiltonova metoda) — součet sedí přesně
+    quotas = [w / total * len(virtual) for w in weights]
+    counts = [int(q) for q in quotas]
+    for i in sorted(range(n_clusters), key=lambda i: quotas[i] - counts[i],
+                    reverse=True)[: len(virtual) - sum(counts)]:
+        counts[i] += 1
+
+    # Cluster bez jediného fyzického auta virtuální nedostane — neměl by
+    # by kdo jezdit ráno; jeho podíl přejde clusteru s nejvíc prací.
+    for i in range(n_clusters):
+        if counts[i] and not any(not is_virtual_vehicle(v)
+                                 for v in assignments[i]):
+            j = max((k for k in range(n_clusters) if k != i),
+                    key=lambda k: weights[k], default=None)
+            if j is not None:
+                counts[j] += counts[i]
+            counts[i] = 0
+
+    # Rozdávat střídavě podle typu (větší typ první), aby cluster
+    # nedostal jen jeden druh druhé jízdy, když je jich víc typů.
+    pool = sorted(virtual, key=lambda v: (-v["max_kg"], v["id"]))
+    for i in sorted(range(n_clusters), key=lambda i: weights[i], reverse=True):
+        take, pool = pool[:counts[i]], pool[counts[i]:]
+        assignments[i].extend(take)
+
+
+def _repair_heaviest_order(clusters: list, assignments: list) -> list[str]:
+    """
+    Tvrdá podmínka VRP, kterou skóre podle součtů nevidí: každá objednávka
+    se musí vejít do aspoň jednoho auta svého clusteru. Když ne, prohodí
+    se nejmenší dostačující auto z jiného clusteru za nejmenší auto
+    clusteru, kterému chybí — počty se nemění. Vrací seznam hlášek
+    (prázdný = nic k opravě), aby si to fáze C mohla vypsat.
+    """
+    notes: list[str] = []
+    n_clusters = len(clusters)
+
+    def biggest(vs):
+        return max((v["max_kg"] for v in vs), default=0.0)
+
+    order = sorted(range(n_clusters),
+                   key=lambda i: max((o["weight_kg"] for o in clusters[i]),
+                                     default=0.0), reverse=True)
+    for i in order:
+        if not clusters[i] or not assignments[i]:
+            continue
+        heaviest = max(clusters[i], key=lambda o: o["weight_kg"])
+        need = heaviest["weight_kg"]
+        if biggest(assignments[i]) >= need:
+            continue
+        # kandidát: nejmenší auto jinde, které stačí a jehož odchodem
+        # dárce nepřijde o auto na SVOJI nejtěžší objednávku
+        best = None
+        for j in range(n_clusters):
+            if j == i:
+                continue
+            donor_need = max((o["weight_kg"] for o in clusters[j]), default=0.0)
+            for v in assignments[j]:
+                if is_virtual_vehicle(v) or v["max_kg"] < need:
+                    continue
+                rest = [w for w in assignments[j] if w is not v]
+                if rest and biggest(rest) >= donor_need:
+                    if best is None or v["max_kg"] < best[1]["max_kg"]:
+                        best = (j, v)
+        if best is None:
+            notes.append(
+                f"[!] Cluster {i}: objednávka {heaviest['order_number']} "
+                f"({need:,.0f} kg) se nevejde do žádného auta clusteru "
+                f"(největší {biggest(assignments[i]):,.0f} kg) a jinde není "
+                f"volné dostačující auto — cluster bude neřešitelný.")
+            continue
+        j, v_in = best
+        v_out = min((w for w in assignments[i] if not is_virtual_vehicle(w)),
+                    key=lambda w: w["max_kg"], default=None)
+        if v_out is None:
+            v_out = min(assignments[i], key=lambda w: w["max_kg"])
+        assignments[j].remove(v_in)
+        assignments[i].remove(v_out)
+        assignments[i].append(v_in)
+        assignments[j].append(v_out)
+        notes.append(
+            f"[i] Cluster {i}: {v_in['id']} ({v_in['max_kg']:,.0f} kg) "
+            f"přesunuto z clusteru {j} kvůli objednávce "
+            f"{heaviest['order_number']} ({need:,.0f} kg); zpět jde {v_out['id']}.")
+    return notes
+
+
 def assign_vehicles_to_clusters(clusters: list, vehicles_expanded: list) -> list:
     """
     Přidělí vozidla clusterům dle kombinovaného demand score
     (kg + počet stop + TW tlak + vzdálenost od depa).
+
+    Tři kroky, v tomto pořadí:
+      1) FYZICKÁ auta podle demand score (souvislé úseky seznamu
+         seřazeného podle nosnosti + lokální vyrovnání kapacit),
+      2) tvrdá podmínka: nejtěžší objednávka každého clusteru se vejde
+         do některého z jeho aut (jinak výměna s jiným clusterem),
+      3) VIRTUÁLNÍ dvojlinky poměrně podle odpolední práce — nikdy jako
+         souvislý blok do jednoho clusteru (viz _spread_virtual_vehicles).
     """
     n_clusters = len(clusters)
-    n_vehicles = len(vehicles_expanded)
     if n_clusters == 0:
         return []
+
+    physical = [v for v in vehicles_expanded if not is_virtual_vehicle(v)]
+    virtual  = [v for v in vehicles_expanded if is_virtual_vehicle(v)]
+    if not physical:
+        # degenerovaný vstup (jen virtuální) — chovej se jako dřív
+        physical, virtual = list(vehicles_expanded), []
+
+    assignments = _assign_physical_by_demand(clusters, physical)
+    for note in _repair_heaviest_order(clusters, assignments):
+        print(f"      {note}")
+    _spread_virtual_vehicles(clusters, assignments, virtual)
+    return assignments
+
+
+def _assign_physical_by_demand(clusters: list, vehicles_expanded: list) -> list:
+    """Původní alokace podle demand score — jen pro fyzická auta."""
+    n_clusters = len(clusters)
+    n_vehicles = len(vehicles_expanded)
 
     profiles      = [cluster_profile(c) for c in clusters]
     demand_scores = [p["demand_score"] for p in profiles]
@@ -1505,6 +1659,8 @@ def _unsolvable_cluster_report(seed_name: str, cluster_idx: int,
     max_dur_min = int(CONFIG["max_route_duration_h"] * 60)
     total_kg  = sum(o["weight_kg"] for o in c_orders)
     total_cap = sum(v["max_kg"] for v in c_vehicles)
+    physical  = [v for v in c_vehicles if not is_virtual_vehicle(v)]
+    virtual   = [v for v in c_vehicles if is_virtual_vehicle(v)]
     worst_svc = sorted(c_orders, key=lambda o: o.get("service_sec", 0),
                        reverse=True)[:5]
     msg = ["", "=" * 65,
@@ -1512,15 +1668,43 @@ def _unsolvable_cluster_report(seed_name: str, cluster_idx: int,
            f"i po záchranném re-solve",
            "=" * 65,
            f"Objednávek: {len(c_orders)} ({total_kg:,.0f} kg) | "
-           f"vozidel: {len(c_vehicles)} (kapacita {total_cap:,.0f} kg)",
-           f"Strop trasy: {max_dur_min} min | nejdelší servisy:"]
+           f"vozidel: {len(c_vehicles)} (kapacita {total_cap:,.0f} kg = součet "
+           f"nosností, NE náklad)"]
+
+    # ── Konkrétní viníci, které skóre podle součtů nevidí ────────────────
+    findings: list[str] = []
+    if c_orders and c_vehicles:
+        heaviest = max(c_orders, key=lambda o: o["weight_kg"])
+        biggest  = max(c_vehicles, key=lambda v: v["max_kg"])
+        if heaviest["weight_kg"] > biggest["max_kg"]:
+            findings.append(
+                f"!!! Objednávka {heaviest['order_number']} "
+                f"({heaviest['weight_kg']:,.0f} kg) je těžší než největší "
+                f"auto clusteru {biggest['id']} ({biggest['max_kg']:,.0f} kg).")
+    if virtual:
+        earliest = min(int(v.get("earliest_start_min") or 0) for v in virtual)
+        early_orders = [o for o in c_orders
+                        if _cluster_latest_end_min(o) < earliest]
+        line = (f"Fyzických aut {len(physical)}, dvojlinek {len(virtual)} "
+                f"(smí vyjet až od {earliest // 60:02d}:{earliest % 60:02d}); "
+                f"objednávek, které musí být hotové DŘÍV: {len(early_orders)}.")
+        if len(physical) == 0 or (
+                early_orders and len(early_orders) / max(len(physical), 1) > 12):
+            line = "!!! " + line + " Na ranní okna je málo fyzických aut."
+        findings.append(line)
+    if findings:
+        msg.append("Nálezy:")
+        msg.extend(f"  {f}" for f in findings)
+
+    msg.append(f"Strop trasy: {max_dur_min} min | nejdelší servisy:")
     for o in worst_svc:
         svc_min = math.ceil(int(o.get("service_sec", 0)) / 60)
         msg.append(f"  - {o['order_number']} {o.get('customer_name', '')}: "
                    f"servis {svc_min} min, okno {o['time_from']}–{o['time_to']}, "
                    f"{o['weight_kg']:.0f} kg")
     msg.append("\nNejčastější příčiny: vadné SEC z ESO9 (servis > strop trasy), "
-               "nesplnitelná časová okna, málo aut/kapacity pro cluster.")
+               "nesplnitelná časová okna, objednávka těžší než největší auto, "
+               "málo FYZICKÝCH aut na ranní okna (dvojlinky ráno nejedou).")
     msg.append("Plán se NEUKLÁDÁ — jinak by objednávky clusteru tiše zmizely "
                "a zboží by se nerozvezlo.")
     return "\n".join(msg)
@@ -2999,11 +3183,14 @@ def main():
     cfg_clusters = CONFIG["num_clusters"]
     n_clusters   = (auto_n_clusters(len(orders), len(vehicles_expanded))
                     if cfg_clusters == "auto" else int(cfg_clusters))
-    # Nikdy víc clusterů než vozidel — cluster bez vozidla shodí OR-Tools
-    # nativně (žádná python výjimka). Týká se malých flotil (L3: 1-2 kamiony).
-    if n_clusters > len(vehicles_expanded):
-        n_clusters = max(1, len(vehicles_expanded))
-        print(f"  [!] Clusterů víc než vozidel — snižuji na {n_clusters}")
+    # Nikdy víc clusterů než FYZICKÝCH vozidel — cluster bez vozidla shodí
+    # OR-Tools nativně (žádná python výjimka), cluster jen s virtuálními
+    # dvojlinkami nemá kdo obsloužit ráno. Týká se malých flotil
+    # (L3: 1-2 kamiony; poslední depo dne s dvojlinkami).
+    n_physical = sum(1 for v in vehicles_expanded if not is_virtual_vehicle(v))
+    if n_clusters > n_physical:
+        n_clusters = max(1, n_physical)
+        print(f"  [!] Clusterů víc než fyzických vozidel — snižuji na {n_clusters}")
 
     cfg_workers = CONFIG["parallel_workers"]
     n_workers   = (max(1, multiprocessing.cpu_count() - 1)

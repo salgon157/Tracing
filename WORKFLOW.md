@@ -262,6 +262,18 @@ python vrp_solver_lines_v6.py --orders-file ... --double-runs
 - **výstupy**: druhá jízda nese vehicle_id fyzického auta; v lines_summary
   má sloupec `double_run` = „2. jízda". Max virtuálních jízd:
   `CONFIG double_runs_max` (10).
+- **rozdělení mezi clustery** (od 16. 8. 2026): fyzická auta se dělí
+  podle demand score jako dřív; virtuální jízdy se pak **rozprostřou
+  poměrně** podle toho, kolik objednávek clusteru jde obsloužit po
+  jejich nejdřívějším výjezdu — nikdy jako souvislý blok do jednoho
+  clusteru. Cluster bez fyzického auta žádnou nedostane a počet
+  clusterů se stropuje počtem **fyzických** aut. Důvod: PR 17. 8.
+  (poslední depo, 19 fyzických + 10 virtuálních) — všech 10 dvojlinek
+  skončilo v jednom clusteru, ten měl 4 fyzická auta na 41 ranních
+  objednávek → neřešitelné, depo bez plánu. Zároveň se hlídá, že
+  nejtěžší objednávka každého clusteru se vejde do některého jeho
+  auta (jinak výměna aut mezi clustery); report neřešitelného clusteru
+  obě věci vypisuje.
 
 ### Večerní ostrý běh (`plan_day.py real`)
 

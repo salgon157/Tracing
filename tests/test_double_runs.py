@@ -203,3 +203,154 @@ class TestSolveWithDoubleRun:
                                   [times, times], time_limit_sec=5)
         assert len(routes) == 2
         assert not any(is_double_run_vehicle(r["vehicle_id"]) for r in routes)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Alokace aut clusterům s dvojlinkami — 16. 8. 2026 (PR, poslední depo):
+#  všech 10 virtuálních jízd skončilo v jednom clusteru → 4 fyzická auta na
+#  41 ranních objednávek → neřešitelné ve všech seedech → depo bez plánu.
+# ═════════════════════════════════════════════════════════════════════════════
+
+from vrp_solver_lines_v6 import (       # noqa: E402  (sekce má vlastní importy)
+    assign_vehicles_to_clusters,
+    is_virtual_vehicle,
+    _repair_heaviest_order,
+    _unsolvable_cluster_report,
+)
+
+
+def _order(no, time_from="06:00", time_to="09:00", kg=300.0, lat=50.0, lon=14.0):
+    return {"order_number": no, "id": no, "customer_name": no,
+            "location_code": no.lower(), "time_from": time_from,
+            "time_to": time_to, "weight_kg": kg, "lat": lat, "lon": lon,
+            "service_sec": 600}
+
+
+def _fleet(n_small=19, with_virtual=True):
+    physical = [_vehicle("TYPE_02", i, max_kg=1350) for i in range(1, n_small + 1)]
+    return physical + (build_double_run_vehicles(physical) if with_virtual else [])
+
+
+def _two_clusters(n_per=40):
+    # dva geograficky oddělené shluky, každý půl ranních (do 09:00) a půl
+    # odpoledních (do 14:00) objednávek — obraz PR 17. 8. 2026
+    def make(prefix, lat):
+        out = []
+        for i in range(n_per):
+            early = i % 2 == 0
+            out.append(_order(f"{prefix}{i:02d}",
+                              time_from="06:00" if early else "10:00",
+                              time_to="09:00" if early else "14:00",
+                              lat=lat + i * 0.001, lon=14.0 + i * 0.001))
+        return out
+    return [make("A", 49.0), make("B", 51.0)]
+
+
+class TestVirtualSpreadAcrossClusters:
+    def test_is_virtual_by_field_or_id(self):
+        assert is_virtual_vehicle({"id": "TYPE_02_2R01"})
+        assert is_virtual_vehicle({"id": "X", "earliest_start_min": 600})
+        assert not is_virtual_vehicle({"id": "TYPE_02_01"})
+
+    def test_virtual_never_piles_into_one_cluster(self):
+        clusters = _two_clusters()
+        fleet = _fleet()
+        n_virtual = sum(1 for v in fleet if is_virtual_vehicle(v))
+        assert n_virtual >= 2, "test potřebuje aspoň 2 dvojlinky"
+        asg = assign_vehicles_to_clusters(clusters, fleet)
+        per_cluster = [sum(1 for v in a if is_virtual_vehicle(v)) for a in asg]
+        # každý cluster s odpolední prací dostane díl; žádný nedostane vše
+        assert all(c > 0 for c in per_cluster)
+        assert max(per_cluster) < n_virtual
+        # poměr odpovídá odpolední práci (tady 1:1) — rozdíl nejvýš 1
+        assert abs(per_cluster[0] - per_cluster[1]) <= 1
+
+    def test_physical_split_is_not_starved_by_virtual(self):
+        # Původní chyba: cluster s virtuálními měl jen 4 fyzická auta z 19.
+        clusters = _two_clusters()
+        asg = assign_vehicles_to_clusters(clusters, _fleet())
+        physical_counts = [sum(1 for v in a if not is_virtual_vehicle(v))
+                           for a in asg]
+        assert min(physical_counts) >= 8, physical_counts
+
+    def test_all_vehicles_assigned_exactly_once(self):
+        fleet = _fleet()
+        asg = assign_vehicles_to_clusters(_two_clusters(), fleet)
+        ids = [v["id"] for a in asg for v in a]
+        assert sorted(ids) == sorted(v["id"] for v in fleet)
+
+    def test_cluster_without_afternoon_work_gets_no_virtual(self):
+        morning_only = [_order(f"M{i}", "05:00", "08:00", lat=49.0 + i * 0.001)
+                        for i in range(30)]
+        afternoon = [_order(f"P{i}", "10:00", "15:00", lat=51.0 + i * 0.001)
+                     for i in range(30)]
+        asg = assign_vehicles_to_clusters([morning_only, afternoon], _fleet())
+        assert sum(1 for v in asg[0] if is_virtual_vehicle(v)) == 0
+        assert sum(1 for v in asg[1] if is_virtual_vehicle(v)) > 0
+
+    def test_without_virtual_behaviour_unchanged_shape(self):
+        # bez dvojlinek: jen fyzická auta, žádné virtuální nikde
+        asg = assign_vehicles_to_clusters(_two_clusters(),
+                                          _fleet(with_virtual=False))
+        assert all(not is_virtual_vehicle(v) for a in asg for v in a)
+        assert sum(len(a) for a in asg) == 19
+
+    def test_more_clusters_than_physical_gets_capped_upstream(self):
+        # samotná alokace: 3 clustery, 2 fyzická + 2 virtuální — cluster
+        # bez fyzického auta nesmí dostat virtuální
+        physical = [_vehicle("TYPE_02", 1), _vehicle("TYPE_02", 2)]
+        fleet = physical + build_double_run_vehicles(physical)
+        clusters = [[_order("A", "10:00", "14:00", lat=49)],
+                    [_order("B", "10:00", "14:00", lat=50)],
+                    [_order("C", "10:00", "14:00", lat=51)]]
+        asg = assign_vehicles_to_clusters(clusters, fleet)
+        for a in asg:
+            if a and all(is_virtual_vehicle(v) for v in a):
+                pytest.fail("cluster jen s virtuálními jízdami")
+
+
+class TestHeaviestOrderRepair:
+    def test_swaps_in_sufficient_vehicle(self):
+        heavy_cluster = [_order("H", kg=1900.0, lat=49.0),
+                         _order("h2", kg=200.0, lat=49.0)]
+        light_cluster = [_order("L", kg=300.0, lat=51.0)]
+        big = _vehicle("TYPE_04", 1, max_kg=3200)
+        smalls = [_vehicle("TYPE_02", i, max_kg=1350) for i in range(1, 4)]
+        assignments = [[smalls[0], smalls[1]], [big, smalls[2]]]
+        notes = _repair_heaviest_order([heavy_cluster, light_cluster], assignments)
+        assert big in assignments[0]
+        assert len(assignments[0]) == 2 and len(assignments[1]) == 2
+        assert notes and "přesunuto" in notes[0]
+
+    def test_no_swap_when_donor_would_break(self):
+        c0 = [_order("H0", kg=1900.0, lat=49.0)]
+        c1 = [_order("H1", kg=1900.0, lat=51.0)]
+        big = _vehicle("TYPE_04", 1, max_kg=3200)
+        small = _vehicle("TYPE_02", 1, max_kg=1350)
+        assignments = [[small], [big]]
+        notes = _repair_heaviest_order([c0, c1], assignments)
+        assert big in assignments[1]          # dárce si auto nechá
+        assert notes and "neřešitelný" in notes[0]
+
+    def test_end_to_end_allocation_respects_heaviest(self):
+        heavy_cluster = [_order("H", kg=1900.0, lat=49.0)] + \
+            [_order(f"a{i}", kg=200.0, lat=49.0 + i * 0.001) for i in range(20)]
+        light_cluster = [_order(f"b{i}", kg=200.0, lat=51.0 + i * 0.001)
+                         for i in range(20)]
+        fleet = [_vehicle("TYPE_04", 1, max_kg=3200)] + \
+            [_vehicle("TYPE_02", i, max_kg=1350) for i in range(1, 12)]
+        asg = assign_vehicles_to_clusters([heavy_cluster, light_cluster], fleet)
+        assert max(v["max_kg"] for v in asg[0]) >= 1900
+
+
+class TestUnsolvableReportNamesCulprits:
+    def test_reports_virtual_ratio_and_heavy_order(self):
+        orders = [_order("H", kg=1900.0)] + [_order(f"e{i}") for i in range(30)]
+        physical = [_vehicle("TYPE_02", 1)]
+        vehicles = physical + build_double_run_vehicles(
+            [_vehicle("TYPE_02", i) for i in range(1, 6)])
+        txt = _unsolvable_cluster_report("sweep", 0, orders, vehicles)
+        assert "těžší než největší auto" in txt
+        assert "Fyzických aut 1" in txt
+        assert "málo fyzických aut" in txt.lower()
+        assert "NE náklad" in txt
