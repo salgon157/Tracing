@@ -358,7 +358,8 @@ def decide_level(small_lines: list[dict], small_available: int, day_kg: float,
     deficit = počet malých linek − (available − rezerva). Kladný deficit se
     přepočte na kg: X_NEED nejméně naložených malých linek = odhad toho, co
     nezavezeme. Do threshold_pct % denních kg stačí L1+L2 (103 % + dvojlinky),
-    nad to navíc hlásíme potřebu L3 (kamiony/rampa — zatím jen alert).
+    nad to navíc hlásíme potřebu L3 (kamion předem — výběr dělá l3_planner
+    v predikci, trasu plan_day l3 večer).
     """
     need = len(small_lines)
     usable = small_available - reserve

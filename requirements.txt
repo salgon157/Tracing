@@ -10,6 +10,7 @@ ortools>=9.15            # OR-Tools routing (jádro VRP solveru)
 numpy>=2.0               # matice vzdáleností/časů
 pandas>=2.0              # CSV/XLSX výstupy plánů
 scikit-learn>=1.5        # KMeans clustering (seed partition)
+scipy>=1.13              # linear_sum_assignment (přiřazení řidičů, driver_assignment.py)
 openpyxl>=3.1            # zápis lines_plan.xlsx (backend pandas)
 
 # ── Routing (HTTP klient k OSRM/ORS) ─────────────────────────────

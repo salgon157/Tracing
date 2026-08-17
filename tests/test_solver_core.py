@@ -5,7 +5,10 @@ Testované funkce (pure, bez OSRM/OR-Tools volání):
   time_to_minutes, service_time_min, auto_n_clusters,
   cluster_profile, expected_vehicle_need, build_data_model
 """
+import json
 import math
+from pathlib import Path
+
 import pytest
 import numpy as np
 
@@ -627,7 +630,7 @@ class TestUnreachableThresholds:
         # Jádro bezpečnosti: nedosažitelný úsek se do trasy nevejde,
         # takže ho solver nepoužije ani při vysokém prahu.
         from vrp_solver_lines_v6 import UNREACHABLE_TIME_MIN, CONFIG
-        assert UNREACHABLE_TIME_MIN > CONFIG["max_route_duration_h"] * 60
+        assert UNREACHABLE_TIME_MIN > CONFIG["latest_return_h"] * 60
 
 
 class TestLoadOrdersDayRamp:
@@ -805,3 +808,96 @@ class TestDriverBreaks:
                     assert tr[idx] == 0
                 else:
                     assert tr[idx] == 10
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Audit 2.12: print_run_diff nesmí shodit běh po uložení výstupů
+#  Audit 2.1:  latest_return_h (nejzazší návrat), ne „délka trasy"
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _saved_route():
+    return {
+        "vehicle_id": "TYPE_02_01", "vehicle_type": "Dodávka", "type_code": "TYPE_02",
+        "cost_per_km": 11.0, "total_km": 42.0, "total_kg": 300.0,
+        "total_kc": 1462.0, "duration_h": 3.5,
+        "stops": [
+            {"stop": "Sklad", "arrival": "06:00", "departure": "06:00", "kg": 0},
+            {"stop": "Z1", "id": "O1", "location_code": "l1", "arrival": "07:00",
+             "departure": "07:10", "kg": 300, "lat": 49.4, "lon": 15.6,
+             "service_min": 10, "window": "06:00-10:00", "leg_km": 21.0},
+            {"stop": "Sklad (návrat)", "arrival": "08:00", "departure": "08:00", "kg": 0},
+        ],
+    }
+
+
+class TestRunDiffGuard:
+    def test_print_run_diff_exception_does_not_propagate(self, tmp_path, monkeypatch, capsys):
+        from vrp_solver_lines_v6 import save_outputs
+        # předchozí záznam bez klíče 'results' → print_run_diff by vyhodil KeyError
+        log = tmp_path / "run_log.jsonl"
+        log.write_text(json.dumps({"run_id": "old", "input": {
+            "zone": "CB", "delivery_date": "2026-08-17"}}) + "\n", encoding="utf-8")
+        monkeypatch.setattr(solver_mod, "find_vehicle_types_file",
+                            lambda: str(tmp_path / "vt.csv"))
+        (tmp_path / "vt.csv").write_text(
+            "type_code;type_name;max_kg;valid_for_date\nTYPE_02;Dodávka;1350;20260817\n",
+            encoding="utf-8")
+        out = tmp_path / "out"
+        save_outputs([_saved_route()], 1462.0, out, "CB", 1.0,
+                     orders=[], delivery_date="2026-08-17", closures=[],
+                     run_log_path=log)                        # nesmí vyhodit
+        assert (out / "lines_summary.csv").exists()
+        assert (out / "zone_summary.json").exists()
+        text = capsys.readouterr().out
+        assert "Porovnání s minulým během se nepovedlo" in text
+        # nový záznam se přesto zapsal
+        assert sum(1 for _ in open(log, encoding="utf-8")) == 2
+
+    def test_print_run_diff_itself_still_reports_when_valid(self, capsys):
+        from vrp_solver_lines_v6 import print_run_diff
+        base = {"run_id": "x", "results": {"total_cost_kc": 100.0, "lines_count": 2,
+                                           "total_km": 10.0, "total_hours": 1.0,
+                                           "avg_kg_per_line": 50.0, "avg_km_per_line": 5.0,
+                                           "vehicle_type_mix": {}, "elapsed_min": 1.0,
+                                           "output_dir": "", "finalists": []}}
+        cur = json.loads(json.dumps(base)); cur["results"]["total_cost_kc"] = 90.0
+        print_run_diff(cur, base)
+        assert "SROVNÁNÍ" in capsys.readouterr().out
+
+
+class TestLatestReturnRename:
+    def test_latest_return_key_present_and_old_key_absent(self):
+        assert "latest_return_h" in CONFIG
+        assert "max_route_duration_h" not in CONFIG
+        # run log záznam používá nový klíč
+        from vrp_solver_lines_v6 import _build_run_record
+        rec = _build_run_record([_saved_route()], 1462.0, Path("x"), "CB",
+                                "2026-08-17", 1.0, [], [])
+        assert "latest_return_h" in rec["config"]
+        assert "max_route_duration_h" not in rec["config"]
+
+    def test_route_returning_after_latest_return_infeasible(self):
+        # zastávka s oknem 23:00–23:30: s nejzazším návratem 22:00 řešení
+        # neexistuje, s 23,5 ano — parametr omezuje NÁVRAT, ne délku trasy
+        from vrp_solver_lines_v6 import solve_cluster
+        o = _make_order(time_from="23:00", time_to="23:30", service_sec=60)
+        o["id"] = o["order_number"] = "OL"; o["name"] = "late"
+        veh = [{"id": "TYPE_02_01", "type": "d", "type_code": "TYPE_02",
+                "max_kg": 1350, "cost_per_km": 11.0, "start_cost": 1000,
+                "osrm_profile": "driving", "time_multiplier": 1.0}]
+        dist = [[0, 10], [10, 0]]; times = [[0, 10], [10, 0]]
+        saved = CONFIG["latest_return_h"]
+        try:
+            CONFIG["latest_return_h"] = 22.0
+            # okno leží celé za nejzazším návratem: OR-Tools buď nenajde
+            # řešení, nebo model vůbec nesestaví (CP Solver fail) — obojí
+            # znamená „neřešitelné"; v ostrém běhu to chytí
+            # validate_orders_servable (bod 5) dřív, než se sem dojde
+            try:
+                assert solve_cluster([o], veh, dist, [times], 2)[0] == []
+            except Exception as e:                    # noqa: BLE001
+                assert "fail" in str(e).lower()
+            CONFIG["latest_return_h"] = 23.5
+            assert solve_cluster([o], veh, dist, [times], 2)[0]
+        finally:
+            CONFIG["latest_return_h"] = saved

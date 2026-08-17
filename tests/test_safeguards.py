@@ -105,7 +105,7 @@ class TestValidateOrdersServable:
         validate_orders_servable([_order(), _order("O2", service_sec=3600)])
 
     def test_service_over_route_cap_fatal(self):
-        max_dur_sec = int(CONFIG["max_route_duration_h"] * 3600)
+        max_dur_sec = int(CONFIG["latest_return_h"] * 3600)
         bad = _order("OBAD", service_sec=max_dur_sec + 60)
         with pytest.raises(SystemExit) as e:
             validate_orders_servable([_order(), bad])
@@ -215,3 +215,128 @@ class TestUnsolvableClusterReport:
         assert "OBAD" in msg and "1613 min" in msg
         assert "sweep" in msg
         assert "NEUKLÁDÁ" in msg
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  4. solver: load_orders_day — vadný řádek prepared souboru NIKDY tiše
+#     nezmizí (audit 1.2). Exit 2 = vadná data.
+# ═════════════════════════════════════════════════════════════════════════════
+
+PREPARED_HEADER = ("order_number,location_code,customer_name,block_id,time_from,"
+                   "time_to,payload_raw,weight_kg,lat,lon,city,note,service_sec,ramp")
+
+
+def _prepared_row(no="O1", weight="300", lat="49.4", lon="15.6", sec="600"):
+    return (f"{no},loc_{no},Firma {no},CB,08:00,12:00,KG:{weight}#SEC:{sec},"
+            f"{weight},{lat},{lon},Jihlava,,{sec},0")
+
+
+def _write_prepared(tmp_path, rows):
+    p = tmp_path / "orders_CB_2026-08-17.csv"
+    p.write_text(PREPARED_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    return p
+
+
+class TestLoadOrdersDayStrict:
+    def test_prepared_row_missing_column_is_fatal_and_named(self, tmp_path):
+        from vrp_solver_lines_v6 import EXIT_DATA, load_orders_day
+        rows = [_prepared_row("O1"), _prepared_row("O2", lat=""), _prepared_row("O3")]
+        with pytest.raises(SystemExit) as e:
+            load_orders_day(str(_write_prepared(tmp_path, rows)))
+        assert e.value.code == EXIT_DATA
+        msg = str(e.value)
+        assert "řádek 2" in msg and "O2" in msg and "lat" in msg
+
+    def test_prepared_row_bad_number_is_fatal(self, tmp_path):
+        from vrp_solver_lines_v6 import EXIT_DATA, load_orders_day
+        rows = [_prepared_row("O1"), _prepared_row("O2", weight="abc")]
+        with pytest.raises(SystemExit) as e:
+            load_orders_day(str(_write_prepared(tmp_path, rows)))
+        assert e.value.code == EXIT_DATA and "O2" in str(e.value)
+
+    def test_prepared_multiple_bad_rows_all_listed(self, tmp_path):
+        from vrp_solver_lines_v6 import load_orders_day
+        rows = [_prepared_row("O1", lon=""), _prepared_row("O2"),
+                _prepared_row("O3", sec="x")]
+        with pytest.raises(SystemExit) as e:
+            load_orders_day(str(_write_prepared(tmp_path, rows)))
+        msg = str(e.value)
+        assert "O1" in msg and "O3" in msg and "2 z 3" in msg
+
+    def test_prepared_clean_file_unchanged(self, tmp_path):
+        from vrp_solver_lines_v6 import load_orders_day
+        rows = [_prepared_row("O1"), _prepared_row("O2", weight="150.5")]
+        orders = load_orders_day(str(_write_prepared(tmp_path, rows)))
+        assert [o["order_number"] for o in orders] == ["O1", "O2"]
+        assert orders[1]["weight_kg"] == 150.5
+        assert orders[0]["id"] == "O1" and orders[0]["service_sec"] == 600
+        for k in ("location_code", "time_from", "time_to", "lat", "lon", "ramp"):
+            assert k in orders[0]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  5. solver: validate_orders_servable — váha a okno (audit 2.6)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _veh(vid="TYPE_02_01", max_kg=1350.0):
+    return {"id": vid, "type_code": vid.rsplit("_", 1)[0], "max_kg": max_kg,
+            "cost_per_km": 11.0, "start_cost": 1000, "osrm_profile": "driving",
+            "time_multiplier": 1.0}
+
+
+class TestValidateWeightAndWindow:
+    def test_order_heavier_than_biggest_vehicle_fatal(self):
+        from vrp_solver_lines_v6 import EXIT_DATA
+        heavy = _order("OHEAVY", kg=1900.0)
+        with pytest.raises(SystemExit) as e:
+            validate_orders_servable([_order(), heavy],
+                                     vehicles_expanded=[_veh(), _veh("TYPE_02_02")])
+        assert e.value.code == EXIT_DATA
+        msg = str(e.value)
+        assert "OHEAVY" in msg and "1,350 kg" in msg and "největší" in msg
+
+    def test_order_fits_some_vehicle_passes(self):
+        heavy = _order("OHEAVY", kg=1900.0)
+        validate_orders_servable([_order(), heavy],
+                                 vehicles_expanded=[_veh(), _veh("TYPE_04_01", 3200.0)])
+
+    def test_capacity_multiplier_respected(self):
+        # nosnost v seznamu vozidel už násobenou rezervou nese loader —
+        # validace porovnává s tím, co dostane (1 390 = 1 350 × 1,03)
+        o = _order("O1", kg=1380.0)
+        validate_orders_servable([o], vehicles_expanded=[_veh(max_kg=1390.5)])
+        with pytest.raises(SystemExit):
+            validate_orders_servable([o], vehicles_expanded=[_veh(max_kg=1350.0)])
+
+    def test_window_unreachable_in_time_fatal(self):
+        from vrp_solver_lines_v6 import EXIT_DATA
+        o = _order("OFAR")
+        o["time_from"], o["time_to"] = "04:00", "05:00"
+        m = np.array([[0, 400], [400, 0]], dtype=float)     # 6 h 40 min tam
+        with pytest.raises(SystemExit) as e:
+            validate_orders_servable([o], {"V1": m})
+        assert e.value.code == EXIT_DATA
+        assert "OFAR" in str(e.value) and "okno" in str(e.value)
+
+    def test_window_reachable_passes(self):
+        o = _order("ONEAR")
+        o["time_from"], o["time_to"] = "04:00", "05:00"
+        m = np.array([[0, 60], [60, 0]], dtype=float)
+        validate_orders_servable([o], {"V1": m})
+
+    def test_return_after_latest_return_fatal(self):
+        # okno až večer + dlouhá zpáteční cesta = návrat po nejzazším čase
+        o = _order("OLATE", service_sec=1800)
+        o["time_from"], o["time_to"] = "22:00", "23:00"
+        m = np.array([[0, 60], [200, 0]], dtype=float)      # zpět 3 h 20 min
+        with pytest.raises(SystemExit) as e:
+            validate_orders_servable([o], {"V1": m})
+        assert "OLATE" in str(e.value) and "návrat" in str(e.value)
+
+    def test_fastest_vehicle_matrix_counts(self):
+        # pomalá matice by okno nestihla, rychlá ano → projde
+        o = _order("O1")
+        o["time_from"], o["time_to"] = "04:00", "05:00"
+        slow = np.array([[0, 400], [400, 0]], dtype=float)
+        fast = np.array([[0, 50], [50, 0]], dtype=float)
+        validate_orders_servable([o], {"SLOW": slow, "FAST": fast})

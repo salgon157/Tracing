@@ -445,7 +445,7 @@ def main_predict(args: argparse.Namespace) -> None:
         truck_units = l3_truck_units(fleet_rows, budget.remaining)
         if not truck_units:
             print("  [!] Po P2 nezbyl žádný kamion 18t — L3 se NEKONÁ, "
-                  "den zůstává na L1+L2 (+ alert jako dosud)")
+                  "den zůstává na L1+L2 (deficit se nezmenší; večer může skončit alertem)")
         else:
             candidates = l3.load_l3_candidates(
                 PREDICTION_ROOT / "prepared", depots, date_str)

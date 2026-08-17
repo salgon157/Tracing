@@ -27,6 +27,8 @@ import csv
 import re
 import argparse
 import json
+import os
+import sys
 import subprocess
 import requests
 import numpy as np
@@ -47,6 +49,33 @@ from osm_routing import (add_osm_args, apply_osm_source,
                          resolve_osm_source, start_hint)
 
 SOLVER_VERSION = "v6"   # verze solveru — zvedni ručně při větších změnách logiky
+
+# ── Exit kódy solveru (čte je plan_day i server / UI) ────────────────────
+#   0  OK — plán uložen
+#   1  technická chyba (výjimka, routing instance neběží, IO)
+#   2  vadná data — validace/závory (vstup je třeba opravit a spustit znovu);
+#      NIKDY se na to nesmí eskalovat porušení
+#   3  řešení neexistuje — žádný seed / záchrana nevyšla / dvojlinky se
+#      nespárovaly; tady dává smysl eskalace (L0 → L1+L2)
+EXIT_OK, EXIT_ERROR, EXIT_DATA, EXIT_INFEASIBLE = 0, 1, 2, 3
+
+
+class SolverAbort(SystemExit):
+    """SystemExit se zprávou i číselným kódem. `str(e)` vrací zprávu
+    (testy), interpret končí kódem `e.code`."""
+    def __init__(self, message: str, code: int):
+        super().__init__(code)
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+def abort(message: str, code: int = EXIT_ERROR) -> None:
+    """Ukončí běh s hláškou (stderr) a exit kódem. Jednotné místo —
+    plan_day podle kódu rozhoduje, jestli má eskalovat (jen 3)."""
+    print(message, file=sys.stderr, flush=True)
+    raise SolverAbort(message, code)
 
 # Sentinel pro nedosažitelné páry v OSRM/ORS matici.
 # 999_999 minut ≈ 16 666 hodin → OR-Tools to chápe jako prohibitivně drahou hranu.
@@ -155,15 +184,20 @@ CONFIG = {
     "max_stops_per_route":           20,
 
     # Max čekání na JEDNÉ zastávce (slack Time dimenze) v minutách — auto smí
-    # stát nejvýš tolik, než pojede dál. Pauza řidiče (45 min) se do toho
-    # vejde; delší prostoj (čekání na okno) ne. Výběr L3 čte stejnou hodnotu.
-    "time_slack_max_min":            60,
+    # stát nejvýš tolik, než pojede dál (čekání na okno další zastávky, pauza
+    # řidiče 45 min se vejde). 120 = auto smí počkat až 2 h místo toho, aby
+    # solver posílal na pozdější okno druhé auto (do 16. 8. 2026 bylo 60).
+    # Výběr L3 čte stejnou hodnotu.
+    "time_slack_max_min":            120,
 
     # Pozn.: fixní náklad za výjezd vozidla (mzda řidiče atd.) je per-type
     # ve sloupci `start_cost_kc` v vehicle_types.csv. Není v CONFIG.
 
-    # Max délka jedné trasy
-    "max_route_duration_h":          23.5,
+    # NEJZAZŠÍ HODINA NÁVRATU do skladu (hodiny od půlnoci) — horní mez
+    # kumulativního času v Time dimenzi. NENÍ to délka trasy (span): trasa
+    # smí být libovolně dlouhá, jen musí být zpátky do této hodiny.
+    # 23,5 = do 23:30. Dřív se jmenovalo max_route_duration_h a mátlo.
+    "latest_return_h":               23.5,
 
     # Nakládka ve skladu před výjezdem (minuty). Pro export do ESO
     # (plán příjezd Depo = odjezd − nakládka) a pro dvojlinky (druhá jízda
@@ -610,11 +644,16 @@ def load_orders_day(path: str) -> list:
                 "z ESO9.\n"
                 "        Vytvoř soubor znovu: python prepare_inputs_v6.py {DEPO}"
             )
+        # Vadný řádek NIKDY nepřeskočit: objednávka by zmizela dřív, než ji
+        # uvidí závory (validate_orders_servable, verify_plan_complete) —
+        # plán by se uložil bez ní a nikdo by to nepoznal. Chyby se sbírají
+        # a po dočtení souboru běh spadne se soupisem (exit 2 = vadná data).
+        bad_rows: list[str] = []
         for i, row in enumerate(reader, 1):
-            # Kontrola povinných sloupců
-            missing = [c for c in required if c not in row or not row[c].strip()]
+            order_no = (row.get("order_number") or "").strip() or "?"
+            missing = [c for c in required if c not in row or not (row[c] or "").strip()]
             if missing:
-                print(f"  [!] Řádek {i}: chybí {missing}, přeskakuji")
+                bad_rows.append(f"  - řádek {i} ({order_no}): chybí {missing}")
                 continue
 
             try:
@@ -623,7 +662,7 @@ def load_orders_day(path: str) -> list:
                 lon       = float(row["lon"])
                 service_sec = int(float(row["service_sec"]))
             except ValueError as e:
-                print(f"  [!] Řádek {i}: neplatná čísla — {e}, přeskakuji")
+                bad_rows.append(f"  - řádek {i} ({order_no}): neplatná čísla — {e}")
                 continue
 
             orders.append({
@@ -641,9 +680,9 @@ def load_orders_day(path: str) -> list:
                 "city":          row.get("city", "").strip(),
                 "note":          row.get("note", "").strip(),
                 "service_sec":   service_sec,
-                # Rampa (0/1) — jen se veze do výstupů, optimalizaci neřídí
-                # (L3 čeká na definici). Volitelné: starší prepared soubory
-                # sloupec nemají → 0.
+                # Rampa (0/1) — do výstupů a pro výběr L3 (kamion předem);
+                # optimalizaci linek neřídí. Starší prepared soubory sloupec
+                # nemají → 0.
                 "ramp":          1 if row.get("ramp", "").strip() == "1" else 0,
 
                 # Aliasy pro kompatibilitu s algoritmem (neměň)
@@ -651,8 +690,22 @@ def load_orders_day(path: str) -> list:
                 "name":          row.get("customer_name", row["order_number"]).strip(),
             })
 
+    if bad_rows:
+        abort("\n".join([
+            "", "=" * 65,
+            f"[CHYBA] VADNÉ ŘÁDKY V {p.name} — plánování zastaveno",
+            "=" * 65,
+            f"{len(bad_rows)} z {len(bad_rows) + len(orders)} řádků nejde načíst:",
+            *bad_rows,
+            "",
+            "Žádný plán se neuložil — plán bez těchto objednávek by znamenal "
+            "nerozvezené zboží.",
+            "Prepared soubor vzniká z prepare_inputs_v6.py; vygeneruj ho znovu "
+            "(nebo oprav ručně upravený soubor).",
+        ]), EXIT_DATA)
+
     if not orders:
-        raise ValueError(f"[CHYBA] {path} neobsahuje žádné objednávky.")
+        abort(f"[CHYBA] {path} neobsahuje žádné objednávky.", EXIT_DATA)
 
     return orders
 
@@ -699,18 +752,28 @@ def service_time_min(order: dict) -> int:
 # ============================================================
 
 def validate_orders_servable(orders: list,
-                             vehicle_time_by_id: dict | None = None) -> None:
+                             vehicle_time_by_id: dict | None = None,
+                             vehicles_expanded: list | None = None) -> None:
     """
     Fail-fast PŘED solvem: každá objednávka musí být vůbec obsloužitelná.
+    Každá kontrola je levná (O(objednávky × vozidla)) a odpoví za sekundy —
+    místo aby solver půl hodiny hledal řešení, které neexistuje, a pak
+    hlásil „cluster neřešitelný" bez viníka.
 
-    1. servis < strop trasy (max_route_duration_h) — chytá vadné SEC z ESO9
+    1. servis < nejzazší návrat (latest_return_h) — chytá vadné SEC z ESO9
        (prepare má vlastní limit SERVICE_SEC_MAX, tohle je druhá závora
        přímo v solveru, chytí i staré prepared soubory)
     2. je-li k dispozici matice: objednávka dosažitelná ze skladu tam i zpět
        alespoň v jedné vozidlové matici (sentinel UNREACHABLE_TIME_MIN)
     3. s --driver-breaks: cesta tam a zpět <= denní limit jízdy řidiče
+    4. je-li k dispozici flotila: objednávka se vejde do NEJVĚTŠÍHO auta
+       (nosnost už s capacity_multiplier)
+    5. je-li k dispozici matice: okno je stihnutelné — nejrychlejší auto
+       tam dojede do konce okna (+ povolené protažení) a po nejdřívějším
+       možném začátku okna se stihne vrátit do nejzazšího návratu
+    Vše končí exit 2 (vadná data) — na tohle se nesmí eskalovat porušení.
     """
-    max_dur_min = int(CONFIG["max_route_duration_h"] * 60)
+    max_dur_min = int(CONFIG["latest_return_h"] * 60)
     bad_service = []
     for o in orders:
         svc = service_time_min(o)
@@ -718,7 +781,7 @@ def validate_orders_servable(orders: list,
             bad_service.append(
                 f"  - {o['order_number']} {o.get('customer_name', '')}: "
                 f"servis {svc} min ({int(o['service_sec']):,} s) "
-                f">= strop trasy {max_dur_min} min"
+                f">= nejzazší návrat {max_dur_min} min"
             )
 
     bad_reach = []
@@ -751,13 +814,56 @@ def validate_orders_servable(orders: list,
                     f"{max_drive} min ({CONFIG['driver_max_drive_h']:g} h)"
                 )
 
-    if bad_service or bad_reach or bad_drive:
+    # 4. váha: objednávka těžší než největší dostupné auto nemá kam
+    bad_weight = []
+    if vehicles_expanded:
+        biggest = max(vehicles_expanded, key=lambda v: v["max_kg"])
+        for o in orders:
+            if float(o["weight_kg"]) > float(biggest["max_kg"]):
+                bad_weight.append(
+                    f"  - {o['order_number']} {o.get('customer_name', '')}: "
+                    f"{o['weight_kg']:,.0f} kg > největší dostupné auto "
+                    f"{biggest['id']} ({biggest['max_kg']:,.0f} kg vč. rezervy)"
+                )
+
+    # 5. okno: nejrychlejší auto to musí stihnout tam do konce okna a zpět
+    #    do nejzazšího návratu — jinak je objednávka neobsloužitelná
+    #    nezávisle na zbytku dne (jen matice + okno, žádný solver)
+    bad_window = []
+    if vehicle_time_by_id:
+        mats = list(vehicle_time_by_id.values())
+        tw_before = int(CONFIG.get("tw_expand_before_min", 0) or 0)
+        tw_after  = int(CONFIG.get("tw_expand_after_min", 0) or 0)
+        depot_open = time_to_minutes(DEPOT["open"])
+        for i, o in enumerate(orders, start=1):
+            go   = min(m[0][i] for m in mats)
+            back = min(m[i][0] for m in mats)
+            if go >= UNREACHABLE_TIME_MIN or back >= UNREACHABLE_TIME_MIN:
+                continue                       # už hlásí bod 2
+            tw_start = max(depot_open, time_to_minutes(o["time_from"]) - tw_before)
+            tw_end   = time_to_minutes(o["time_to"]) + tw_after
+            svc      = service_time_min(o)
+            if depot_open + go > tw_end:
+                bad_window.append(
+                    f"  - {o['order_number']} {o.get('customer_name', '')}: "
+                    f"okno {o['time_from']}–{o['time_to']}, ale ze skladu je to "
+                    f"{go:.0f} min — do konce okna (+{tw_after} min) se nedá dojet"
+                )
+            elif max(tw_start, depot_open + go) + svc + back > max_dur_min:
+                bad_window.append(
+                    f"  - {o['order_number']} {o.get('customer_name', '')}: "
+                    f"okno {o['time_from']}–{o['time_to']}, servis {svc} min, "
+                    f"zpět {back:.0f} min — návrat po nejzazším čase "
+                    f"({max_dur_min // 60:02d}:{max_dur_min % 60:02d})"
+                )
+
+    if bad_service or bad_reach or bad_drive or bad_weight or bad_window:
         msg = ["", "=" * 65,
                "[CHYBA] NEOBSLOUŽITELNÉ OBJEDNÁVKY — plánování zastaveno",
                "=" * 65]
         if bad_service:
-            msg.append(f"\nServis delší než strop trasy "
-                       f"({CONFIG['max_route_duration_h']} h) — vadné SEC z ESO9:")
+            msg.append(f"\nServis delší než nejzazší návrat "
+                       f"({CONFIG['latest_return_h']} h) — vadné SEC z ESO9:")
             msg.extend(bad_service)
         if bad_reach:
             msg.append("\nNedosažitelné ze skladu (zkontroluj GPS / routing instanci):")
@@ -765,9 +871,16 @@ def validate_orders_servable(orders: list,
         if bad_drive:
             msg.append("\nPřes denní limit jízdy řidiče (--driver-breaks):")
             msg.extend(bad_drive)
+        if bad_weight:
+            msg.append("\nTěžší než největší dostupné auto (chybí kamion / "
+                       "střední auto ve flotile, nebo vadná váha):")
+            msg.extend(bad_weight)
+        if bad_window:
+            msg.append("\nNestihnutelné okno (vzdálenost vs. okno / nejzazší návrat):")
+            msg.extend(bad_window)
         msg.append("\nŽádný plán se neuložil — plán bez těchto objednávek by "
                    "znamenal nerozvezené zboží. Oprav data a spusť znovu.")
-        raise SystemExit("\n".join(msg))
+        abort("\n".join(msg), EXIT_DATA)
 
 
 def verify_plan_complete(orders: list, routes: list) -> None:
@@ -1405,7 +1518,7 @@ def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list
     # Dvojlinky: virtuální „druhá jízda" vozidla smí vyjet až od této minuty
     earliest_start = [int(v.get("earliest_start_min") or 0)
                       for v in vehicles_expanded]
-    max_dur_min   = int(CONFIG["max_route_duration_h"] * 60)
+    max_dur_min   = int(CONFIG["latest_return_h"] * 60)
 
     max_stops = int(CONFIG["max_stops_per_route"]) if CONFIG.get("max_stops_per_route") else None
 
@@ -1719,7 +1832,7 @@ class SolutionState:
 def _unsolvable_cluster_report(seed_name: str, cluster_idx: int,
                                c_orders: list, c_vehicles: list) -> str:
     """Diagnostika pro fatální selhání clusteru — ať je hned vidět PROČ."""
-    max_dur_min = int(CONFIG["max_route_duration_h"] * 60)
+    max_dur_min = int(CONFIG["latest_return_h"] * 60)
     total_kg  = sum(o["weight_kg"] for o in c_orders)
     total_cap = sum(v["max_kg"] for v in c_vehicles)
     physical  = [v for v in c_vehicles if not is_virtual_vehicle(v)]
@@ -1759,7 +1872,7 @@ def _unsolvable_cluster_report(seed_name: str, cluster_idx: int,
         msg.append("Nálezy:")
         msg.extend(f"  {f}" for f in findings)
 
-    msg.append(f"Strop trasy: {max_dur_min} min | nejdelší servisy:")
+    msg.append(f"Nejzazší návrat: {max_dur_min // 60:02d}:{max_dur_min % 60:02d} | nejdelší servisy:")
     for o in worst_svc:
         svc_min = math.ceil(int(o.get("service_sec", 0)) / 60)
         msg.append(f"  - {o['order_number']} {o.get('customer_name', '')}: "
@@ -2511,7 +2624,7 @@ def _build_run_record(
             "travel_time_speed_factor":     CONFIG.get("travel_time_speed_factor", 1.0),
             "time_buffer_fixed_min":        CONFIG["time_buffer_fixed_min"],
             "time_buffer_pct":              CONFIG["time_buffer_pct"],
-            "max_route_duration_h":         CONFIG["max_route_duration_h"],
+            "latest_return_h":         CONFIG["latest_return_h"],
             "budget_phase_C_pct":           CONFIG["budget_phase_C_pct"],
             "budget_phase_D_pct":           CONFIG["budget_phase_D_pct"],
             "budget_phase_E_pct":           CONFIG["budget_phase_E_pct"],
@@ -2799,7 +2912,14 @@ def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elaps
     print(f"\n  [run log] uloženo → {run_log_path}  (run_id: {record['run_id']})")
 
     if previous:
-        print_run_diff(record, previous)
+        # Jen informativní výpis nad už ULOŽENÝMI výstupy — chyba tady
+        # (starý formát záznamu, chybějící klíč) nesmí shodit běh, který
+        # je hotový a v pořádku.
+        try:
+            print_run_diff(record, previous)
+        except Exception as e:                        # noqa: BLE001
+            print(f"  [!] Porovnání s minulým během se nepovedlo ({type(e).__name__}: "
+                  f"{e}) — na plán to nemá vliv, výstupy jsou uložené.")
 
 
 # ============================================================
@@ -2853,7 +2973,7 @@ def print_run_settings(args, orders, vehicles_expanded, block_id, zone_label, n_
 
     print(f"time_buffer_fixed_min:       {CONFIG['time_buffer_fixed_min']}")
     print(f"time_buffer_pct:             {CONFIG['time_buffer_pct']}")
-    print(f"max_route_duration_h:        {CONFIG['max_route_duration_h']}")
+    print(f"latest_return_h:        {CONFIG['latest_return_h']}")
 
     print(f"lns_destroy_min:             {CONFIG['lns_destroy_min']}")
     print(f"lns_destroy_max:             {CONFIG['lns_destroy_max']}")
@@ -3222,7 +3342,7 @@ def main():
 
     # Pojistka č. 1: neobsloužitelná objednávka (vadné SEC) = stop hned,
     # ne tichá ztráta celého clusteru o pár minut později.
-    validate_orders_servable(orders)
+    validate_orders_servable(orders, vehicles_expanded=vehicles_expanded)
 
     # ── Dvojlinky (L2): virtuální „druhá jízda" vozidla ──────────────────
     CONFIG["_double_runs_enabled"] = bool(args.double_runs)   # do run logu
@@ -3347,7 +3467,7 @@ def main():
 
     # Pojistka č. 2: každá objednávka musí být dosažitelná ze skladu
     # alespoň v jedné vozidlové matici (kontrola sentinelů po sanitizaci).
-    validate_orders_servable(orders, vehicle_time_by_id)
+    validate_orders_servable(orders, vehicle_time_by_id, vehicles_expanded)
 
     t_after_osrm = time.time()
     osrm_elapsed = t_after_osrm - t_global_start
