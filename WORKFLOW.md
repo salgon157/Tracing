@@ -72,7 +72,7 @@ počtu sloupců):
 | **P** (15) | poznámka |
 | **Q** (16) | `KG:51.475#SEC:261` — váha + **kompletní čas zastávky v sekundách** |
 | **R** (17) | kg z minulého závozu; `-1000` = minule bez závozu |
-| **S** (18) | **rampa**: `1` má, `0` nemá — přísně validováno, zatím jen informativně (příprava na L3) |
+| **S** (18) | **rampa**: `1` má, `0` nemá — přísně validováno; podle ní vybírá L3 (kamion předem) |
 
 - **`SEC` je celý čas zastávky** — solver ho použije tak, jak je (`ceil` na minuty).
   Žádný vzorec za váhu se nepřipočítává.
@@ -113,12 +113,17 @@ plánu PR** — tiše zmizely z výstupu. Od té doby jsou v pipeline čtyři z�
 
 1. **prepare: `SERVICE_SEC_MAX` (2 h)** — legitimní SEC nikdy nepřekročil
    ~1,5 h; řádek nad limit = vadný payload → přísný režim odmítne celý soubor.
-2. **solver: `validate_orders_servable`** — před solvem: servis < strop trasy
-   (chytí i staré prepared soubory) a objednávka dosažitelná ze skladu tam
-   i zpět alespoň v jednom profilu.
+2. **solver: `validate_orders_servable`** — před solvem: servis < nejzazší
+   návrat (chytí i staré prepared soubory), objednávka dosažitelná ze
+   skladu tam i zpět alespoň v jednom profilu, **vejde se do největšího
+   auta** a **okno je stihnutelné** (od 17. 8.); s `--driver-breaks` navíc
+   tam a zpět ≤ denní limit jízdy. Vše exit 2 se jménem objednávky.
+   Zároveň `load_orders_day` už **nikdy tiše nepřeskočí vadný řádek**
+   prepared souboru — exit 2 se soupisem.
 3. **phase C: záchranný re-solve** — nevyřešený cluster vítězného seedu dostane
-   druhý pokus s 3× časem a náhradní strategií; když neuspěje, běh **spadne
-   s diagnostikou** (dřív objednávky clusteru tiše zmizely).
+   druhý pokus (3× čas, ale nejvýš zbytek budgetu; obě strategie paralelně,
+   všechny nevyřešené clustery najednou); když neuspěje, běh **spadne
+   s diagnostikou a exit 3** (dřív objednávky clusteru tiše zmizely).
 4. **finální invariant `verify_plan_complete`** — před uložením: každá vstupní
    objednávka je v plánu právě jednou, jinak se neuloží nic a vypíše se seznam.
 
@@ -398,9 +403,35 @@ díky které jsou benchmarky porovnatelné napříč časem.
 
 ## 3. Užitečné přepínače solveru
 
+### Exit kódy a `run_status.json` (pro server / UI, od 17. 8. 2026)
+
+Solver končí vždy jedním ze čtyř kódů a zapíše **`run_status.json`** do
+výstupní složky (jakmile je z názvu orders souboru známá — tedy i při
+pádu při načítání dat):
+
+| exit | `status` | význam | co s tím dělá `plan_day` |
+|---|---|---|---|
+| **0** | `ok` | plán uložen (`lines_count`, `total_cost_kc`, `total_kg`, `output_dir`) | pokračuje |
+| **1** | `error` | technická chyba (routing instance neběží, výjimka, ORS profil) | ALERT, **neeskaluje** |
+| **2** | `data_error` | vadná data — validace / závory (vadný řádek prepared, servis nad strop, objednávka těžší než největší auto, nestihnutelné okno, nedosažitelná GPS) | ALERT „oprav data a spusť znovu", **neeskaluje** |
+| **3** | `infeasible` | řešení neexistuje (žádný seed / záchrana nevyšla / dvojlinky se nespárovaly) | **eskalace** L0 → L1+L2; z L1+L2 už není kam → ALERT |
+
+Soubor nese `reason` (první řádek hlášky), plnou `message`, `orders`
+(čísla dotčených objednávek vytažená z hlášky), `zone`, `delivery_date`,
+`run_id`, `elapsed_sec`, `finished_at`. Dřív každý nenulový kód přepnul
+zbytek večera na L1+L2 — i kvůli vadnému řádku v datech (audit 1.4).
+
+**Záchranný re-solve** nevyřešeného clusteru vítězného seedu se od 17. 8.
+vejde do celkového budgetu (3× čas původního pokusu, ale nejvýš to, co
+zbývá do konce budgetu; fáze E dostane zbytek), běží **paralelně** (všechny
+nevyřešené clustery × obě strategie najednou). Když nevyjde → exit 3 hned.
+Vědomě zkusit déle: `--rescue-extra-min N` (default 0; `plan_day real/l3`
+ho předává; na serveru nechat 0 — běh drží slovo o délce).
+
 | Přepínač | Význam |
 |---|---|
 | `--budget-min 5` | Časový budget solveru v minutách (default 30). Rychlé porovnávací běhy. |
+| `--rescue-extra-min N` | Druhé kolo záchranného re-solve NAD budget (default 0). Viz výše. |
 | `--output-dir CESTA` | Ruční výstupní složka (jinak auto-detekce). Nutné pro porovnávací běhy, ať se nepřepíšou. |
 | `--force-matrix` | **Nouzový** přepínač — vypne limit nedosažitelných párů pro všechny profily. Běžně NENÍ potřeba: limity jsou per profil (`driving` 0,1 %, `driving-hgv` 5 %) a pokrývají i Prahu. |
 | `--allow-profile-fallback` | Dovol tichý fallback kamionů na osobní profil když ORS selže. **DEFAULT je hard-fail** (jinak by kamiony jely po špatných trasách). Používej jen vědomě. |

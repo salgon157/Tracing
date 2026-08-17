@@ -418,3 +418,28 @@ def escalate_flags(flags: dict) -> dict | None:
     if not flags.get("double_runs"):
         return {"capacity_multiplier": 1.03, "double_runs": True}
     return None
+
+
+# Exit kódy solveru (zrcadlo vrp_solver_lines_v6.EXIT_*; drženo tady, aby
+# fleet_budget zůstal bez importu solveru)
+SOLVER_EXIT_OK, SOLVER_EXIT_ERROR, SOLVER_EXIT_DATA, SOLVER_EXIT_INFEASIBLE = 0, 1, 2, 3
+
+
+def decide_after_solver(rc: int, flags: dict) -> tuple[str, dict | None]:
+    """
+    Co udělat po návratu solveru pro depo (audit 1.4):
+      rc 0 → ("ok", flags)
+      rc 3 → řešení neexistuje → ("escalate", tvrdší flags) nebo
+             ("give_up", None), když už není kam
+      rc 2 → vadná data → ("data_error", None) — eskalace porušení by
+             data neopravila, jen by prodloužila večer o další marný běh
+      jinak → ("error", None) — technická chyba (routing instance, výjimka)
+    """
+    if rc == SOLVER_EXIT_OK:
+        return "ok", flags
+    if rc == SOLVER_EXIT_INFEASIBLE:
+        harder = escalate_flags(flags)
+        return ("escalate", harder) if harder is not None else ("give_up", None)
+    if rc == SOLVER_EXIT_DATA:
+        return "data_error", None
+    return "error", None

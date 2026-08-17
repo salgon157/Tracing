@@ -60,6 +60,16 @@ SOLVER_VERSION = "v6"   # verze solveru — zvedni ručně při větších změn
 EXIT_OK, EXIT_ERROR, EXIT_DATA, EXIT_INFEASIBLE = 0, 1, 2, 3
 
 
+EXIT_STATUS_NAME = {EXIT_OK: "ok", EXIT_ERROR: "error",
+                    EXIT_DATA: "data_error", EXIT_INFEASIBLE: "infeasible"}
+
+# Kontext běhu pro run_status.json — plní main(), jakmile zná výstupní
+# složku. Dokud ji nezná (chybí --orders-file…), status soubor nevzniká
+# a platí jen exit kód.
+RUN_CONTEXT: dict = {"output_dir": None, "zone": None, "delivery_date": None,
+                     "started": None, "run_id": None}
+
+
 class SolverAbort(SystemExit):
     """SystemExit se zprávou i číselným kódem. `str(e)` vrací zprávu
     (testy), interpret končí kódem `e.code`."""
@@ -71,10 +81,69 @@ class SolverAbort(SystemExit):
         return self.message
 
 
-def abort(message: str, code: int = EXIT_ERROR) -> None:
-    """Ukončí běh s hláškou (stderr) a exit kódem. Jednotné místo —
-    plan_day podle kódu rozhoduje, jestli má eskalovat (jen 3)."""
+def _extract_order_numbers(message: str) -> list[str]:
+    """Čísla objednávek z hlášky (formát ESO `O1234…`) — pro UI, ať nemusí
+    parsovat text. Duplicitní se sloučí, pořadí zůstane."""
+    seen, out = set(), []
+    for m in re.findall(r"\bO\d{6,}\b", message or ""):
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def write_run_status(status: str, exit_code: int, message: str = "",
+                     orders: list[str] | None = None,
+                     extra: dict | None = None) -> Path | None:
+    """
+    Strojově čitelný stav běhu → `run_status.json` ve výstupní složce.
+    Píše se při KAŽDÉM konci (ok i chyba), aby server / UI nemusely
+    parsovat konzoli:
+      {status: ok|error|data_error|infeasible, exit_code, reason (1. řádek),
+       message, orders: [dotčené objednávky], zone, delivery_date, run_id,
+       elapsed_sec, finished_at, …extra (lines_count, total_cost_kc)}
+    Vrací cestu, nebo None když výstupní složka není známá.
+    """
+    out_dir = RUN_CONTEXT.get("output_dir")
+    if not out_dir:
+        return None
+    started = RUN_CONTEXT.get("started")
+    first_line = next((ln.strip() for ln in (message or "").splitlines()
+                       if ln.strip() and not set(ln.strip()) <= {"=", "-", "!"}), "")
+    doc = {
+        "status": status,
+        "exit_code": int(exit_code),
+        "reason": first_line[:200],
+        "message": message or "",
+        "orders": list(orders) if orders is not None else _extract_order_numbers(message),
+        "zone": RUN_CONTEXT.get("zone"),
+        "delivery_date": RUN_CONTEXT.get("delivery_date"),
+        "run_id": RUN_CONTEXT.get("run_id"),
+        "elapsed_sec": round(time.time() - started, 1) if started else None,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        "solver_version": SOLVER_VERSION,
+    }
+    if extra:
+        doc.update(extra)
+    try:
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "run_status.json"
+        path.write_text(json.dumps(doc, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        return path
+    except OSError as e:                                    # status je bonus
+        print(f"  [!] run_status.json se nepodařilo zapsat: {e}", file=sys.stderr)
+        return None
+
+
+def abort(message: str, code: int = EXIT_ERROR,
+          orders: list[str] | None = None) -> None:
+    """Ukončí běh s hláškou (stderr), run_status.json a exit kódem.
+    Jednotné místo — plan_day podle kódu rozhoduje, jestli má eskalovat
+    (jen 3 = řešení neexistuje; 2 = vadná data se opravují, ne eskalují)."""
     print(message, file=sys.stderr, flush=True)
+    write_run_status(EXIT_STATUS_NAME.get(code, "error"), code, message, orders)
     raise SolverAbort(message, code)
 
 # Sentinel pro nedosažitelné páry v OSRM/ORS matici.
@@ -605,7 +674,7 @@ def pair_double_runs(routes: list) -> list:
         v_route["double_run"] = True
 
     if failures:
-        raise SystemExit(
+        abort(
             "\n" + "=" * 65 + "\n"
             "[CHYBA] DVOJLINKY NEJDOU SPÁROVAT — plán se neukládá\n"
             + "=" * 65 + "\n"
@@ -613,7 +682,7 @@ def pair_double_runs(routes: list) -> list:
             f"Druhá jízda potřebuje fyzické auto vrácené aspoň "
             f"{reload_min} min před svým výjezdem (nakládka).\n"
             "Zvaž pozdější CONFIG double_run_earliest, nebo je den pro "
-            "dvojlinky nevhodný (dlouhé první trasy).")
+            "dvojlinky nevhodný (dlouhé první trasy).", EXIT_INFEASIBLE)
     return routes
 
 
@@ -638,12 +707,12 @@ def load_orders_day(path: str) -> list:
         # Fail-fast na hlavičce: bez service_sec by se skipnul KAŽDÝ řádek
         # a uživatel by dostal matoucí "neobsahuje žádné objednávky".
         if "service_sec" not in (reader.fieldnames or []):
-            raise ValueError(
+            abort(
                 f"[CHYBA] {path} je ze starého prepare — chybí sloupec 'service_sec'.\n"
                 "        Solver podporuje jen data s předpočítaným časem zastávky "
                 "z ESO9.\n"
-                "        Vytvoř soubor znovu: python prepare_inputs_v6.py {DEPO}"
-            )
+                "        Vytvoř soubor znovu: python prepare_inputs_v6.py {DEPO}",
+                EXIT_DATA)
         # Vadný řádek NIKDY nepřeskočit: objednávka by zmizela dřív, než ji
         # uvidí závory (validate_orders_servable, verify_plan_complete) —
         # plán by se uložil bez ní a nikdo by to nepoznal. Chyby se sbírají
@@ -916,7 +985,7 @@ def verify_plan_complete(orders: list, routes: list) -> None:
                    + ", ".join(extra))
     msg.append("\nPlán s tiše vynechanými objednávkami = nerozvezené zboží. "
                "Tohle je chyba solveru nebo dat — nahlas ji.")
-    raise SystemExit("\n".join(msg))
+    abort("\n".join(msg), EXIT_ERROR, EXIT_DATA)
 
 
 def auto_n_clusters(n_orders: int, n_vehicles: int) -> int:
@@ -1032,7 +1101,7 @@ def _sanitize_matrix(
 
     limit = unreachable_fail_pct(profile)
     if bad_pct > limit:
-        raise SystemExit(
+        abort(
             f"\n[CHYBA] OSRM/ORS matrix má {bad_count} nedosažitelných párů "
             f"({bad_pct*100:.2f} % > limit {limit*100:.1f} % pro profil '{profile}').\n"
             f"Zkontroluj GPS souřadnice — pravděpodobně jsou body mimo silniční "
@@ -1081,14 +1150,14 @@ def _profile_fallback_or_fail(locations: list, profile: str, reason: str) -> tup
         print(f"  [WARN] Profil '{profile}': {reason} → fallback na 'driving' "
               f"(--allow-profile-fallback aktivní).")
         return get_matrix(locations, profile="driving")
-    raise SystemExit(
+    abort(
         f"\n[CHYBA] Routing pro profil '{profile}' selhal: {reason}\n"
         f"        Těžká vozidla (ORS / driving-hgv) NEJSOU dostupná. Plánování by je\n"
         f"        jinak tiše počítalo jako osobní auta → špatné trasy pro kamiony\n"
         f"        (mosty, úzké uličky, váhové/výškové zákazy).\n"
         f"        • Zkontroluj ORS kontejner (ors-current / ors-stable) a jeho logy.\n"
         f"        • Vědomě dovolit fallback na osobní profil: --allow-profile-fallback"
-    )
+    , EXIT_ERROR)
 
 
 def get_matrix(locations: list, profile: str = "driving") -> tuple:
@@ -1140,7 +1209,7 @@ def get_matrix(locations: list, profile: str = "driving") -> tuple:
             if profile != "driving":
                 return _profile_fallback_or_fail(
                     locations, profile, f"{base_url} neodpovídá ({type(e).__name__})")
-            raise SystemExit("\n[CHYBA] OSRM neběží. Spusť: docker start osrm-server")
+            abort("\n[CHYBA] OSRM neběží. Spusť: docker start osrm-server", EXIT_ERROR)
         print(f"  Matice OK ({time.time() - t0:.0f} s).")
         return _parse_matrix_result(r.json(), profile, locations)
 
@@ -1786,16 +1855,91 @@ def _worker_solve_cluster(args: dict) -> dict:
     sub_dist         = np.array(args["sub_dist"])
     sub_times        = [np.array(st) for st in args["sub_times"]]
     time_limit       = args["time_limit_sec"]
+    strategy         = args.get("strategy")
 
-    routes, cost = solve_cluster(
-        cluster_orders, cluster_vehicles, sub_dist, sub_times, time_limit
-    )
+    if strategy is None:
+        routes, cost = solve_cluster(
+            cluster_orders, cluster_vehicles, sub_dist, sub_times, time_limit)
+    else:
+        routes, cost = solve_cluster(
+            cluster_orders, cluster_vehicles, sub_dist, sub_times, time_limit,
+            strategy=strategy)
     return {
         "seed_name":   args["seed_name"],
         "cluster_idx": args["cluster_idx"],
         "routes":      routes,
         "cost":        cost,
+        "strategy":    strategy,
     }
+
+
+# ── Záchranný re-solve (audit 2.11): boxovaný budgetem, paralelní ────────────
+RESCUE_MIN_SEC = 20        # kratší pokus nemá smysl (jen stavba modelu)
+RESCUE_STRATEGIES = (
+    routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION,
+    routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
+)
+
+
+def rescue_time_for(time_per_cluster: int, remaining_sec: float | None) -> int:
+    """
+    Kolik sekund smí dostat záchranný re-solve nevyřešeného clusteru:
+    3× čas původního pokusu, ale NIKDY víc, než kolik zbývá do konce
+    celkového budgetu (běh musí držet slovo — na serveru na něj čekají
+    další depa). `remaining_sec=None` = bez stropu (jen 3× tpc).
+    Vrací 0, když už nezbývá nic → záchrana se přeskočí a běh končí exit 3
+    (ledaže volající přidá --rescue-extra-min).
+    """
+    base = 3 * int(time_per_cluster)
+    if remaining_sec is None:
+        return max(0, base)
+    return max(0, min(base, int(remaining_sec)))
+
+
+def _rescue_unsolved_parallel(unsolved: list[int], seed_name: str, clusters,
+                              c_indices, vehicle_asgn, distances_km,
+                              vehicle_time_by_id, rescue_time: int,
+                              n_workers: int) -> dict[int, dict]:
+    """
+    Všechny nevyřešené clustery najednou (paralelně stejným executorem jako
+    fáze C), každý dvěma strategiemi VEDLE SEBE — wall clock = rescue_time,
+    ne 2 × počet clusterů × rescue_time jako dřív. Vrací {cluster_idx:
+    nejlevnější nalezený výsledek}.
+    """
+    tasks = []
+    for ci in unsolved:
+        c_orders, c_ix, c_vehicles = clusters[ci], c_indices[ci], vehicle_asgn[ci]
+        cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
+        sub_dist, sub_times = extract_submatrix(distances_km, cluster_v_times, c_ix)
+        for strat in RESCUE_STRATEGIES:
+            tasks.append({
+                "seed_name":        seed_name,
+                "cluster_idx":      ci,
+                "cluster_orders":   c_orders,
+                "cluster_vehicles": c_vehicles,
+                "sub_dist":         sub_dist.tolist(),
+                "sub_times":        [st.tolist() for st in sub_times],
+                "time_limit_sec":   int(rescue_time),
+                "strategy":         int(strat),
+                "config":           dict(CONFIG),
+            })
+    found: dict[int, dict] = {}
+    with ProcessPoolExecutor(max_workers=max(1, n_workers)) as executor:
+        futures = {executor.submit(_worker_solve_cluster, a): a for a in tasks}
+        for fut in as_completed(futures):
+            a = futures[fut]
+            try:
+                res = fut.result()
+            except Exception as e:                    # noqa: BLE001
+                print(f"  [!] Záchrana cluster={a['cluster_idx']} "
+                      f"strategie={a['strategy']}: {e}")
+                continue
+            if not res.get("routes"):
+                continue
+            ci = res["cluster_idx"]
+            if ci not in found or res["cost"] < found[ci]["cost"]:
+                found[ci] = res
+    return found
 
 
 # ============================================================
@@ -1962,9 +2106,14 @@ def _state_from_cluster_results(orders, scd: dict, cluster_res: dict,
 
 def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_id,
                        n_clusters, time_budget_sec, n_workers,
-                       n_finalists: int = 1) -> list[tuple[str, SolutionState]]:
+                       n_finalists: int = 1,
+                       deadline: float | None = None,
+                       rescue_extra_sec: int = 0) -> list[tuple[str, SolutionState]]:
     """Vrací finalisty pro fázi E: [(seed_name, state)], vítěz první.
-    S n_finalists=1 přesně dosavadní chování (jen vítěz + rescue)."""
+    S n_finalists=1 přesně dosavadní chování (jen vítěz + rescue).
+    `deadline` = absolutní čas (time.time()), kdy končí CELKOVÝ budget běhu —
+    záchranný re-solve se do něj musí vejít; `rescue_extra_sec` = vědomé
+    druhé kolo záchrany nad budget (--rescue-extra-min)."""
     seed = CONFIG["random_seed"]
     seeds_labels = {
         "kmeans":      partition_kmeans(orders, n_clusters, seed),
@@ -2029,7 +2178,9 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
 
     ranked = rank_seeds(results_by_seed, expected_clusters, seed_penalty)
     if not ranked:
-        raise RuntimeError("Žádný seed nenašel řešení. Zkontroluj TW nebo kapacity.")
+        abort("\n[CHYBA] Žádný seed nenašel řešení ani pro jeden rozklad — "
+              "s touto flotilou a okny plán neexistuje (řešení neexistuje, "
+              "ne vadná data: validace prošla).", EXIT_INFEASIBLE)
 
     best_seed_name = ranked[0]["seed"]
     print(f"\n  ✓ Nejlepší seed: '{best_seed_name}' "
@@ -2049,29 +2200,45 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
     unsolved_cidx = [ci for ci in range(len(clusters))
                      if not cluster_res.get(ci, {}).get("routes")]
     if unsolved_cidx:
-        rescue_time = max(120, 3 * time_per_cluster)
-        for ci in unsolved_cidx:
-            c_orders, c_ix, c_vehicles = clusters[ci], c_indices[ci], vehicle_asgn[ci]
-            print(f"  [!] Cluster {ci} ({len(c_orders)} objednávek) nevyřešen — "
-                  f"záchranný re-solve ({rescue_time} s)...")
-            cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
-            sub_dist, sub_times = extract_submatrix(distances_km, cluster_v_times, c_ix)
-            routes_r, cost_r = [], 0
-            for strat in (
-                routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION,
-                routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC,
-            ):
-                routes_r, cost_r = solve_cluster(
-                    c_orders, c_vehicles, sub_dist, sub_times,
-                    rescue_time, strategy=strat)
-                if routes_r:
-                    break
-            if not routes_r:
-                raise SystemExit(_unsolvable_cluster_report(
-                    best_seed_name, ci, c_orders, c_vehicles))
-            print(f"      ✓ zachráněno: {len(routes_r)} tras, {cost_r:,.0f} Kč")
-            cluster_res[ci] = {"seed_name": best_seed_name, "cluster_idx": ci,
-                               "routes": routes_r, "cost": cost_r}
+        remaining = (deadline - time.time()) if deadline is not None else None
+        rounds: list[tuple[str, int]] = []
+        first = rescue_time_for(time_per_cluster, remaining)
+        if first >= RESCUE_MIN_SEC:
+            rounds.append(("v budgetu", first))
+        elif remaining is not None:
+            print(f"  [!] Na záchranný re-solve nezbývá čas v budgetu "
+                  f"({max(0, remaining):.0f} s) — přeskakuji"
+                  + ("" if rescue_extra_sec else
+                     "; vědomé prodloužení: --rescue-extra-min N"))
+        if rescue_extra_sec > 0:
+            rounds.append(("nad budget, --rescue-extra-min", int(rescue_extra_sec)))
+        for label, rescue_time in rounds:
+            todo = [ci for ci in unsolved_cidx
+                    if not cluster_res.get(ci, {}).get("routes")]
+            if not todo:
+                break
+            print(f"  [!] Nevyřešené clustery {todo} ("
+                  + ", ".join(f"{len(clusters[ci])} obj." for ci in todo)
+                  + f") — záchranný re-solve {rescue_time} s ({label}), "
+                  f"{len(todo) * len(RESCUE_STRATEGIES)} úloh paralelně...")
+            found = _rescue_unsolved_parallel(
+                todo, best_seed_name, clusters, c_indices, vehicle_asgn,
+                distances_km, vehicle_time_by_id, rescue_time, n_workers)
+            for ci, res in found.items():
+                print(f"      ✓ cluster {ci} zachráněn: {len(res['routes'])} tras, "
+                      f"{res['cost']:,.0f} Kč")
+                cluster_res[ci] = {"seed_name": best_seed_name, "cluster_idx": ci,
+                                   "routes": res["routes"], "cost": res["cost"]}
+        still = [ci for ci in unsolved_cidx
+                 if not cluster_res.get(ci, {}).get("routes")]
+        if still:
+            ci = still[0]
+            report = _unsolvable_cluster_report(
+                best_seed_name, ci, clusters[ci], vehicle_asgn[ci])
+            if not rescue_extra_sec:
+                report += ("\nVědomě zkusit déle (nad budget): "
+                           "--rescue-extra-min N")
+            abort(report, EXIT_INFEASIBLE)
 
     finalists = [(best_seed_name,
                   _state_from_cluster_results(orders, scd, cluster_res,
@@ -2909,6 +3076,7 @@ def save_outputs(routes, total_cost_kc, output_dir: Path, zone_label: str, elaps
         _date, elapsed_min, _orders, _closures,
     )
     append_run_log(record, log_path=run_log_path)
+    RUN_CONTEXT["run_id"] = record["run_id"]
     print(f"\n  [run log] uloženo → {run_log_path}  (run_id: {record['run_id']})")
 
     if previous:
@@ -3102,6 +3270,11 @@ def parse_args():
                              "fyzická auta (návrat + nakládka), jinak běh "
                              "spadne. Zapíná plan_day podle decision.")
 
+    parser.add_argument("--rescue-extra-min", type=float, default=0.0,
+                        help="Když se cluster nevyřeší ani záchranou v budgetu, "
+                             "zkusit ještě N minut NAD budget (default 0 = ne; "
+                             "běh drží slovo o délce). Na serveru raději "
+                             "nechat 0 a nechat rozhodnout člověka.")
     parser.add_argument("--driver-breaks", action="store_true",
                         help="Režim řidiče EU (zjednodušeně): v žádném úseku "
                              f"trasy delším než {CONFIG['driver_break_after_h']:g} h "
@@ -3239,16 +3412,33 @@ def main():
 
     # Validace: --orders-file je povinný (CONFIG default je prázdný)
     if not args.orders_file:
-        raise SystemExit(
+        abort(
             "\n[CHYBA] Chybí --orders-file.\n"
             "Příklad: python vrp_solver_lines_v6.py "
-            "--orders-file data/prepared/CB/orders_CB_2026-04-10.csv"
-        )
+            "--orders-file data/prepared/CB/orders_CB_2026-04-10.csv",
+            EXIT_DATA)
     if not Path(args.orders_file).exists():
-        raise SystemExit(
+        abort(
             f"\n[CHYBA] Orders soubor neexistuje: {args.orders_file}\n"
-            f"Nejdříve spusť: python prepare_inputs_v6.py <DEPOT_CODE>"
-        )
+            f"Nejdříve spusť: python prepare_inputs_v6.py <DEPOT_CODE>",
+            EXIT_DATA)
+
+    # Auto-detekce výstupní složky z názvu orders souboru — HNED, ať má
+    # každý konec běhu (i pád při načítání dat) run_status.json.
+    # Pattern: orders_{DEPOT}_{YYYY-MM-DD}.csv → data/results/{DEPOT}/{YYYY-MM-DD}/
+    # delivery_date se z názvu bere VŽDY (i s explicitním --output-dir) — jinak
+    # by běhy s vlastní output složkou (predikce, porovnávací běhy) měly
+    # v run logu prázdné datum a nešly párovat.
+    orders_path = Path(args.orders_file)
+    depot_code_out, date_out = orders_file_meta(orders_path.name)
+    if depot_code_out and args.output_dir == "output":
+        output_dir = Path(f"data/results/{depot_code_out}/{date_out}")
+    else:
+        output_dir = Path(args.output_dir)
+    delivery_date = date_out
+    output_dir.mkdir(parents=True, exist_ok=True)
+    RUN_CONTEXT.update({"output_dir": output_dir, "delivery_date": delivery_date,
+                        "started": t_global_start, "zone": depot_code_out or None})
     # Synchronizace CONFIG s reálně použitým souborem, aby to downstream
     # kód (zone_summary.json, logging) zaznamenal správně, ne starý default.
     CONFIG["orders_file"] = args.orders_file
@@ -3318,11 +3508,11 @@ def main():
     try:
         requests.get(_osrm_ping_url, timeout=2)
     except requests.exceptions.RequestException:
-        raise SystemExit(
+        abort(
             f"\n[CHYBA] Routing instance '{osm_source}' ({CONFIG['osrm_url']}) "
             f"neodpovídá.\n"
             f"        Nastartuj ji:  {start_hint(osm_source)}"
-        )
+        , EXIT_ERROR)
 
     # Routing instance je nahoře — spusť integrační testy ORS vs OSRM.
     run_routing_tests(
@@ -3352,20 +3542,6 @@ def main():
         print(f"  [DVOJLINKY] Povoleno: +{len(virtuals)} virtuálních jízd "
               f"(od {CONFIG['double_run_earliest']}, plný druhý fix, "
               f"nakládka {CONFIG['depot_loading_min']} min)")
-
-    # Auto-detekce výstupní složky z názvu orders souboru
-    # Pattern: orders_{DEPOT}_{YYYY-MM-DD}.csv → data/results/{DEPOT}/{YYYY-MM-DD}/
-    # delivery_date se z názvu bere VŽDY (i s explicitním --output-dir) — jinak
-    # by běhy s vlastní output složkou (predikce, porovnávací běhy) měly
-    # v run logu prázdné datum a nešly párovat.
-    orders_path = Path(args.orders_file)
-    depot_code_out, date_out = orders_file_meta(orders_path.name)
-    if depot_code_out and args.output_dir == "output":
-        output_dir = Path(f"data/results/{depot_code_out}/{date_out}")
-    else:
-        output_dir = Path(args.output_dir)
-    delivery_date = date_out
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     cfg_clusters = CONFIG["num_clusters"]
     n_clusters   = (auto_n_clusters(len(orders), len(vehicles_expanded))
@@ -3400,6 +3576,7 @@ def main():
     print(f"  Buffery:     TW -{_tw_bef} min / +{_tw_aft} min  |  "
           f"speed ×{_spd:.3f}  (čas /{_spd:.3f})  |  kg ×{_kg_mul:.3f}")
     zone_label = args.zone_label.strip() or (orders[0].get("block_id", "") if orders else "")
+    RUN_CONTEXT["zone"] = zone_label
     print(f"  Zóna/block:  {zone_label}")
     print(f"  Clustery:    {n_clusters}")
     print(f"  CPU workerů: {n_workers}")
@@ -3484,12 +3661,24 @@ def main():
     print("\n" + "─" * 65)
     print("[B+C] Seed partice + paralelní solve")
     print("─" * 65)
+    deadline = t_global_start + total_budget          # konec CELKOVÉHO budgetu
     finalists = phase_c_best_seed(
         orders, vehicles_expanded, distances_km, vehicle_time_by_id,
-        n_clusters, int(budget_C), n_workers, n_finalists=n_finalists
+        n_clusters, int(budget_C), n_workers, n_finalists=n_finalists,
+        deadline=deadline,
+        rescue_extra_sec=int(round(float(getattr(args, "rescue_extra_min", 0) or 0) * 60)),
     )
     state = finalists[0][1]
     print(f"Phase C: {time.time() - t_after_osrm:.0f} sec | {state.total_cost:,.0f} Kč")
+    # Záchrana mohla ukousnout z času fáze E — E dostane nejvýš to, co zbývá
+    # do deadline (jinak by běh přetekl budget). Když nezbývá nic, E se
+    # zkrátí na minimum, ale plán už existuje.
+    left = deadline - time.time()
+    if left < budget_E - 5:                            # drobný posun nehlásit
+        print(f"  [budget] Fáze E zkrácena z {budget_E:.0f} s na "
+              f"{max(0, left):.0f} s (záchranný re-solve / přetečení C)")
+    if left < budget_E:
+        budget_E = max(0.0, left)
 
     # ── Phase D: LNS ─────────────────────────────────────────
     # (budget 0 = vypnutá; kdyby se zapnula, jede jen na vítězi fáze C)
@@ -3538,8 +3727,32 @@ def main():
         closures=active_closures,
         run_log_path=Path(args.run_log_path),
     )
+    write_run_status("ok", EXIT_OK, "plán uložen", orders=[], extra={
+        "lines_count": len(all_routes),
+        "total_cost_kc": round(float(total_cost), 1),
+        "total_kg": round(sum(r.get("total_kg", 0) for r in all_routes), 1),
+        "output_dir": output_dir.as_posix(),
+    })
 
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()   # nutné na Windows
-    main()
+    try:
+        main()
+    except SolverAbort:
+        raise                                   # status už zapsaný v abort()
+    except SystemExit as e:                     # cizí SystemExit (argparse…)
+        code = e.code if isinstance(e.code, int) else EXIT_ERROR
+        if code != EXIT_OK:
+            write_run_status(EXIT_STATUS_NAME.get(code, "error"), code, str(e))
+        raise
+    except KeyboardInterrupt:
+        write_run_status("error", EXIT_ERROR, "přerušeno uživatelem (Ctrl+C)")
+        raise
+    except Exception as e:                      # noqa: BLE001 — poslední záchrana
+        import traceback
+        tb = traceback.format_exc()
+        print(tb, file=sys.stderr)
+        write_run_status("error", EXIT_ERROR,
+                         f"[CHYBA] Neočekávaná výjimka: {type(e).__name__}: {e}\n{tb}")
+        sys.exit(EXIT_ERROR)

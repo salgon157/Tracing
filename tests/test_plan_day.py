@@ -247,3 +247,56 @@ class TestL3TrucksAndFallback:
                                          tmp_path / "s", "2026-08-17",
                                          reason="t", out_dir=out_dir)
         assert out_dir.exists()
+
+
+class TestDecideAfterSolver:
+    """Audit 1.4: eskalace porušení JEN na exit 3 (řešení neexistuje)."""
+
+    def test_rc0_ok_keeps_flags(self):
+        import fleet_budget as fb
+        flags = {"capacity_multiplier": 1.0, "double_runs": False}
+        assert fb.decide_after_solver(0, flags) == ("ok", flags)
+
+    def test_rc3_escalates_l0_to_l1l2(self):
+        import fleet_budget as fb
+        out, harder = fb.decide_after_solver(3, {"capacity_multiplier": 1.0,
+                                                 "double_runs": False})
+        assert out == "escalate" and harder["double_runs"] is True
+
+    def test_rc3_on_l1l2_gives_up(self):
+        import fleet_budget as fb
+        assert fb.decide_after_solver(3, {"capacity_multiplier": 1.03,
+                                          "double_runs": True}) == ("give_up", None)
+
+    def test_rc2_data_error_never_escalates(self):
+        import fleet_budget as fb
+        assert fb.decide_after_solver(2, {"double_runs": False}) == ("data_error", None)
+
+    def test_rc1_technical_never_escalates(self):
+        import fleet_budget as fb
+        assert fb.decide_after_solver(1, {"double_runs": False}) == ("error", None)
+        assert fb.decide_after_solver(137, {"double_runs": False}) == ("error", None)
+
+    def test_status_hint_reads_run_status(self, tmp_path):
+        import json
+        (tmp_path / "run_status.json").write_text(json.dumps({
+            "status": "data_error", "reason": "[CHYBA] VADNÉ ŘÁDKY",
+            "orders": ["O1", "O2"]}), encoding="utf-8")
+        hint = plan_day._solver_status_hint(tmp_path)
+        assert "data_error" in hint and "O1, O2" in hint
+        assert plan_day._solver_status_hint(tmp_path / "neni") == ""
+
+    def test_rescue_extra_min_passthrough(self):
+        import argparse
+        args = argparse.Namespace(budget=5.0, label="", run_log_path="",
+                                  osm_source="current", force_matrix=False,
+                                  seed_finalists="", rescue_extra_min=2.5)
+        cmd = plan_day.build_real_solver_cmd("PR", "2026-08-17", Path("f.csv"),
+                                             {"capacity_multiplier": 1.0,
+                                              "double_runs": False}, args)
+        assert cmd[cmd.index("--rescue-extra-min") + 1] == "2.5"
+        args.rescue_extra_min = 0
+        cmd = plan_day.build_real_solver_cmd("PR", "2026-08-17", Path("f.csv"),
+                                             {"capacity_multiplier": 1.0,
+                                              "double_runs": False}, args)
+        assert "--rescue-extra-min" not in cmd

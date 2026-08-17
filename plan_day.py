@@ -611,12 +611,51 @@ def build_real_solver_cmd(depot: str, date_str: str, fleet_file: Path,
     # Bez zadání se nepředává nic → solver jede na CONFIG (dnes "auto")
     if getattr(args, "seed_finalists", ""):
         cmd += ["--seed-finalists", args.seed_finalists]
+    if getattr(args, "rescue_extra_min", 0):
+        cmd += ["--rescue-extra-min", _fmt_num(args.rescue_extra_min)]
     return cmd
 
 
 def real_out_dir(depot: str, date_str: str, label: str) -> Path:
     suffix = f"_{label}" if label else ""
     return REAL_ROOT / "results" / depot / f"{date_str}{suffix}"
+
+
+def solve_depot_with_escalation(run_once, flags: dict, on_escalate=None):
+    """
+    Řídicí smyčka jednoho depa (audit 1.4), oddělená od subprocessů, aby se
+    dala testovat: `run_once(flags) -> rc` spustí solver, podle exit kódu
+    se rozhodne (fb.decide_after_solver): eskalace porušení JEN na 3
+    (řešení neexistuje) — vadná data (2) ani technická chyba (1) se
+    porušením neopraví. Vrací (outcome, flags, rc):
+    outcome ∈ ok | data_error | error | give_up.
+    """
+    while True:
+        rc = run_once(flags)
+        outcome, harder = fb.decide_after_solver(rc, flags)
+        if outcome != "escalate":
+            return outcome, flags, rc
+        if on_escalate is not None:
+            on_escalate(flags, harder)
+        flags = harder
+
+
+def _solver_status_hint(out_dir: Path) -> str:
+    """Důvod z run_status.json solveru (když existuje) — do ALERTu, ať člověk
+    ani UI nemusí hledat v konzoli."""
+    p = Path(out_dir) / "run_status.json"
+    if not p.exists():
+        return ""
+    try:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    line = f"Důvod ({st.get('status')}): {st.get('reason', '')}"
+    if st.get("orders"):
+        line += f" | objednávky: {', '.join(st['orders'][:10])}"
+        if len(st["orders"]) > 10:
+            line += f" (+{len(st['orders']) - 10})"
+    return line + f"\n(detail: {p.as_posix()})\n"
 
 
 def _flags_label(flags: dict) -> str:
@@ -709,40 +748,57 @@ def main_real(args: argparse.Namespace) -> None:
                                          caps,
                                          start_cost_delta=start_cost_delta)
 
-        planned_ok = False
-        while True:
-            cmd = build_real_solver_cmd(depot, date_str, fleet_file, flags, args)
-            print(f"\n  solver ({_flags_label(flags)}):")
+        solve_min = 0.0
+
+        def _run_once(fl: dict) -> int:
+            nonlocal solve_min
+            cmd = build_real_solver_cmd(depot, date_str, fleet_file, fl, args)
+            print(f"\n  solver ({_flags_label(fl)}):")
             print(f"  $ {' '.join(cmd[1:])}")
             t_solve = time.time()
             rc = subprocess.run(cmd, env=env).returncode
             solve_min = (time.time() - t_solve) / 60
-            if rc == 0:
-                planned_ok = True
-                break
-            harder = fb.escalate_flags(flags)
-            if harder is None:
-                break
+            return rc
+
+        def _on_escalate(old: dict, new: dict) -> None:
             print("\n" + "!" * 66)
-            print(f"[ESKALACE] {depot} nevyšlo na {_flags_label(flags)} — "
-                  f"zvyšuji na {_flags_label(harder)} (platí i pro další depa)")
+            print(f"[ESKALACE] {depot} nevyšlo na {_flags_label(old)} — řešení "
+                  f"neexistuje (exit 3); zvyšuji na {_flags_label(new)} "
+                  f"(platí i pro další depa)")
             print("!" * 66)
-            flags = harder
-            state["flags"] = flags
+            state["flags"] = new
             state["escalated"] = True
             save_real_state(state_path, state)
 
+        outcome, flags, rc = solve_depot_with_escalation(_run_once, flags,
+                                                         on_escalate=_on_escalate)
+        planned_ok = outcome == "ok"
+
         if not planned_ok:
+            status_hint = _solver_status_hint(real_out_dir(depot, date_str, args.label))
+            done = f"Hotová depa ({', '.join(state['planned']) or 'žádná'}) jsou definitivní"
+            if outcome == "data_error":
+                raise SystemExit(
+                    "\n" + "=" * 66 + "\n"
+                    f"[ALERT] Depo {depot}: VADNÁ DATA (solver exit 2) — porušení "
+                    f"se NEeskaluje, data je třeba opravit a depo spustit znovu.\n"
+                    + status_hint + done + "; stav se nemění.\n" + "=" * 66)
+            if outcome == "error":
+                raise SystemExit(
+                    "\n" + "=" * 66 + "\n"
+                    f"[ALERT] Depo {depot}: TECHNICKÁ CHYBA solveru (exit {rc}) — "
+                    f"routing instance / výjimka; porušení se NEeskaluje.\n"
+                    + status_hint + done + "; stav se nemění.\n" + "=" * 66)
             raise SystemExit(
                 "\n" + "=" * 66 + "\n"
                 f"[ALERT] Depo {depot} nejde naplánovat ani s "
-                f"{_flags_label(flags)}.\n"
-                f"L3 (kamion předem) se rozhoduje odpoledne v predikci — večer "
+                f"{_flags_label(flags)} (řešení neexistuje).\n"
+                + status_hint
+                + f"L3 (kamion předem) se rozhoduje odpoledne v predikci — večer "
                 f"už není kam eskalovat.\n"
                 f"Zbytek flotily: "
                 + ", ".join(f"{t}×{n}" for t, n in sorted(budget.remaining.items()))
-                + f"\nHotová depa ({', '.join(state['planned']) or 'žádná'}) "
-                  "jsou definitivní; tohle a další depa čekají na člověka.\n"
+                + f"\n{done}; tohle a další depa čekají na člověka.\n"
                 + "=" * 66)
 
         out_dir = real_out_dir(depot, date_str, args.label)
@@ -948,11 +1004,17 @@ def main_l3(args: argparse.Namespace) -> None:
         cmd += ["--run-log-path", args.run_log_path]
     if args.osm_source:
         cmd += ["--osm-source", args.osm_source]
+    if getattr(args, "rescue_extra_min", 0):
+        cmd += ["--rescue-extra-min", _fmt_num(args.rescue_extra_min)]
     print(f"  $ {' '.join(cmd[1:])}")
     rc = subprocess.run(cmd, env=env).returncode
     if rc != 0:
+        outcome, _ = fb.decide_after_solver(rc, {"double_runs": True})
+        reason = {"data_error": "vadná data (solver exit 2)",
+                  "error": f"technická chyba solveru (exit {rc})"}.get(
+                      outcome, "řešení neexistuje (solver exit 3)")
         _l3_unplanned_alert(l3_block, locs, merged, state_dir, date_str,
-                            reason="solver trasu nenašel", out_dir=out_dir)
+                            reason=reason, out_dir=out_dir)
 
     lines = lines_from_run(out_dir)
     kg = sum(l["total_kg"] for l in lines)
@@ -1020,6 +1082,10 @@ def main() -> None:
                       help="Vynutit počet finalistů fáze E. Bez zadání jede "
                            "solver na svém defaultu (CONFIG: auto). "
                            "'1' = chování před 11.8.2026 — na srovnávací běhy.")
+    real.add_argument("--rescue-extra-min", type=float, default=0.0,
+                      help="Předá se solveru: když se cluster nevyřeší ani "
+                           "záchranou v budgetu, zkusit ještě N minut nad budget "
+                           "(default 0 — na serveru nechat 0).")
     l3p = sub.add_parser(
         "l3", help="Trasa kamionu (porušení L3) — spouští se až PO "
                    "doplánování všech dep dne (po posledním real)")
@@ -1038,6 +1104,8 @@ def main() -> None:
                      help="Přeskočit startup testy")
     l3p.add_argument("--label", default="",
                      help="Přípona výstupů a stavu (testovací běhy)")
+    l3p.add_argument("--rescue-extra-min", type=float, default=0.0,
+                     help="Předá se solveru (viz real).")
     l3p.add_argument("--run-log-path", default="",
                      help="Vlastní run log (testy); default = ostrý log")
     args = parser.parse_args()

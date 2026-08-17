@@ -53,3 +53,46 @@ class TestScenarioSlackWaiting:
         gap = int(CONFIG["time_slack_max_min"]) + 60
         routes = self._solve(gap_min=gap)
         assert len(routes) == 2
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Scénář 1 + 2 (audit 1.2/1.4/2.11): reakce večera na exit kódy solveru
+#  — eskalace porušení jen když řešení neexistuje, nikdy na vadná data
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestScenarioEveningReactsToExitCodes:
+    L0 = {"capacity_multiplier": 1.0, "double_runs": False}
+
+    def _run(self, rcs):
+        import plan_day
+        calls, escalations = [], []
+        it = iter(rcs)
+
+        def run_once(flags):
+            calls.append(dict(flags))
+            return next(it)
+        outcome, flags, rc = plan_day.solve_depot_with_escalation(
+            run_once, dict(self.L0),
+            on_escalate=lambda old, new: escalations.append((old, new)))
+        return outcome, flags, rc, calls, escalations
+
+    def test_bad_prepared_row_no_escalation(self):
+        # 1.2 → solver exit 2 (vadný řádek prepared) → večer NEeskaluje,
+        # flags zůstávají L0, jediný běh
+        outcome, flags, rc, calls, esc = self._run([2])
+        assert outcome == "data_error" and rc == 2
+        assert flags == self.L0 and len(calls) == 1 and esc == []
+
+    def test_infeasible_escalates_once_then_ok(self):
+        outcome, flags, rc, calls, esc = self._run([3, 0])
+        assert outcome == "ok" and flags["double_runs"] is True
+        assert len(calls) == 2 and len(esc) == 1
+        assert calls[1]["double_runs"] is True           # druhý běh už na L1+L2
+
+    def test_infeasible_twice_gives_up_not_infinite(self):
+        outcome, flags, rc, calls, esc = self._run([3, 3])
+        assert outcome == "give_up" and len(calls) == 2 and len(esc) == 1
+
+    def test_technical_error_no_escalation(self):
+        outcome, flags, rc, calls, esc = self._run([1])
+        assert outcome == "error" and esc == [] and flags == self.L0

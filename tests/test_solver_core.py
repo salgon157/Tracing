@@ -901,3 +901,83 @@ class TestLatestReturnRename:
             assert solve_cluster([o], veh, dist, [times], 2)[0]
         finally:
             CONFIG["latest_return_h"] = saved
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Audit 2.11: záchranný re-solve boxovaný budgetem, paralelní, volitelné
+#  druhé kolo (--rescue-extra-min)
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestRescueBudget:
+    def test_rescue_time_capped_by_remaining_budget(self):
+        from vrp_solver_lines_v6 import rescue_time_for
+        assert rescue_time_for(100, None) == 300          # bez stropu 3×
+        assert rescue_time_for(100, 1000) == 300          # zbývá dost
+        assert rescue_time_for(100, 120) == 120           # strop = zbytek
+        assert rescue_time_for(100, 0) == 0               # nic nezbývá
+        assert rescue_time_for(100, -50) == 0             # nikdy záporné
+
+    def _fake_cluster_env(self, monkeypatch, outcomes):
+        """Nahradí worker: outcomes = {(cluster_idx): routes|[]} — a zaznamená
+        všechny submitované úlohy."""
+        submitted = []
+
+        class FakeFuture:
+            def __init__(self, res): self._res = res
+            def result(self): return self._res
+
+        class FakeExecutor:
+            def __init__(self, max_workers=None): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def submit(self, fn, args):
+                submitted.append(args)
+                routes = outcomes.get(args["cluster_idx"], [])
+                return FakeFuture({"seed_name": args["seed_name"],
+                                   "cluster_idx": args["cluster_idx"],
+                                   "routes": routes, "cost": 100 + args["cluster_idx"],
+                                   "strategy": args.get("strategy")})
+        monkeypatch.setattr(solver_mod, "ProcessPoolExecutor", FakeExecutor)
+        monkeypatch.setattr(solver_mod, "as_completed", lambda d: list(d))
+        return submitted
+
+    def _clusters(self):
+        o = lambda i: {"id": f"O{i}", "order_number": f"O{i}", "name": f"O{i}",
+                       "customer_name": "", "lat": 50.0, "lon": 14.0,
+                       "time_from": "06:00", "time_to": "10:00",
+                       "weight_kg": 100.0, "service_sec": 60}
+        clusters = [[o(1), o(2)], [o(3)]]
+        c_indices = [[0, 1], [2]]            # indexy objednávek (uzel = idx + 1)
+        veh = {"id": "V1", "type_code": "TYPE_02", "max_kg": 1350,
+               "cost_per_km": 11.0, "start_cost": 1000,
+               "osrm_profile": "driving", "time_multiplier": 1.0}
+        asg = [[veh], [dict(veh, id="V2")]]
+        dist = np.ones((4, 4)); times = {"V1": np.ones((4, 4)), "V2": np.ones((4, 4))}
+        return clusters, c_indices, asg, dist, times
+
+    def test_rescue_runs_parallel_over_unsolved(self, monkeypatch):
+        from vrp_solver_lines_v6 import RESCUE_STRATEGIES, _rescue_unsolved_parallel
+        submitted = self._fake_cluster_env(monkeypatch, {0: [{"r": 1}], 1: [{"r": 2}]})
+        clusters, c_ix, asg, dist, times = self._clusters()
+        found = _rescue_unsolved_parallel([0, 1], "sweep", clusters, c_ix, asg,
+                                          dist, times, rescue_time=42, n_workers=4)
+        # oba clustery × obě strategie submitované NAJEDNOU, každá se stejným časem
+        assert len(submitted) == 2 * len(RESCUE_STRATEGIES)
+        assert {a["time_limit_sec"] for a in submitted} == {42}
+        assert set(found) == {0, 1}
+
+    def test_rescue_returns_only_solved(self, monkeypatch):
+        from vrp_solver_lines_v6 import _rescue_unsolved_parallel
+        self._fake_cluster_env(monkeypatch, {0: [{"r": 1}]})      # cluster 1 nevyjde
+        clusters, c_ix, asg, dist, times = self._clusters()
+        found = _rescue_unsolved_parallel([0, 1], "sweep", clusters, c_ix, asg,
+                                          dist, times, rescue_time=30, n_workers=4)
+        assert set(found) == {0}
+
+    def test_cli_has_rescue_extra_min_default_zero(self):
+        import subprocess, sys
+        out = subprocess.run([sys.executable, "vrp_solver_lines_v6.py", "--help"],
+                             capture_output=True, encoding="utf-8", errors="replace",
+                             env={**__import__("os").environ, "SKIP_STARTUP_TESTS": "1",
+                                  "PYTHONIOENCODING": "utf-8"}).stdout or ""
+        assert "--rescue-extra-min" in out
