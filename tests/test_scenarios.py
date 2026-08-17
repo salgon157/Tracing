@@ -141,3 +141,42 @@ class TestScenarioDoubleRunWithIdleCarsElsewhere:
             conv["vehicle_id"] in {v["id"] for v in physical}
         assert not is_virtual_vehicle({"id": conv["vehicle_id"]})
         assert conv["double_run"] is False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Scénář 4 (audit 1.3): predikce přegenerovaná uprostřed večera
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestScenarioRegeneratedPredictionMidEvening:
+    def test_second_depot_stops_force_continues_l3_stops(self, tmp_path):
+        import plan_day, fleet_budget as fb
+        rows = [{"type_code": "TYPE_02", "max_kg": "1350", "available_count": "5"},
+                {"type_code": "TYPE_05", "max_kg": "8000", "available_count": "1"}]
+        d1 = {"date": "2026-08-17", "created_at": "2026-08-16T16:39:40",
+              "depots": ["CB", "MO"], "level": 1,
+              "solver_flags": {"capacity_multiplier": 1.03, "double_runs": True},
+              "l3": {"trucks": {"TYPE_05": 1}, "orders": [{"order_number": "O1"}]},
+              "fleet_file": "vehicle_types-20260817.csv"}
+        # 16:05 — real CB začal nad d1 → state
+        state = plan_day.load_real_state(tmp_path / "state.json", rows, d1,
+                                         fleet_file_name="vehicle_types-20260817.csv")
+        state["planned"] = ["CB"]
+        plan_day.save_real_state(tmp_path / "state.json", state)
+        # 16:20 — někdo pustil predict znovu: jiný výběr L3
+        d2 = dict(d1, created_at="2026-08-16T16:20:00",
+                  l3={"trucks": {"TYPE_05": 1}, "orders": [{"order_number": "O7"}]})
+        loaded = plan_day.load_real_state(tmp_path / "state.json", rows, d2)
+        # 16:35 — real MO: musí zastavit
+        with pytest.raises(SystemExit):
+            plan_day.guard_state_identity(loaded, d2, "vehicle_types-20260817.csv",
+                                          force=False, what="real")
+        # --force projde
+        plan_day.guard_state_identity(loaded, d2, "vehicle_types-20260817.csv",
+                                      force=True, what="real")
+        # l3 bez force zastaví
+        with pytest.raises(SystemExit):
+            plan_day.guard_state_identity(loaded, d2, "vehicle_types-20260817.csv",
+                                          force=False, what="l3")
+        # nad původní decision vše sedí
+        plan_day.guard_state_identity(loaded, d1, "vehicle_types-20260817.csv",
+                                      force=False, what="real")

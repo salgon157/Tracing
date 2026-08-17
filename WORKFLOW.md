@@ -298,12 +298,21 @@ Sekvence dep **CB → MO → HK → PR** nad ostrými daty, řízená decision:
   velké typy navíc chrání rezervace dep, která ještě nebyla na řadě
 - solver jede s flagy z decision (L0, nebo L1+L2 = 103 % + `--double-runs`);
   případné zdražení výjezdu (#2) a vyřazení L3 objednávek se aplikují samy
-- **eskalace**: když depo nevyjde na denním levelu, zvedne se na L1+L2
-  (platí od tohoto depa dál); když nevyjde ani tak → **ALERT a konec**,
-  člověk rozhodne — hotová depa jsou definitivní
+- **eskalace**: když depo nevyjde na denním levelu, protože **řešení
+  neexistuje (solver exit 3)**, zvedne se na L1+L2 (platí od tohoto depa
+  dál); když nevyjde ani tak → **ALERT a konec**, člověk rozhodne — hotová
+  depa jsou definitivní. Vadná data (exit 2) ani technická chyba (exit 1)
+  **neeskalují** — ALERT s důvodem z `run_status.json`, data se opraví
+  a depo se spustí znovu (od 17. 8.)
 - **stav** (`data/results/plan_day/{DATUM}/state.json`): zbytek flotily,
   hotová depa, aktuální level — druhé spuštění naváže a hotová depa
-  přeskočí; běh po částech (každé depo po své uzávěrce) je tedy přirozený
+  přeskočí; běh po částech (každé depo po své uzávěrce) je tedy přirozený.
+  Stav nese **identitu decision** (`decision_id` = otisk obsahu,
+  `decision_created_at`) a **jméno vozového parku**: když někdo uprostřed
+  večera přegeneruje predikci (jiný výběr L3 / level) nebo vymění
+  `vehicle_types-*.csv`, `real` i `l3` **zastaví** s vysvětlením — vědomě
+  pokračovat jde přes `--force` (od 17. 8.; starší state bez identity jen
+  varuje)
 - výstupy do standardních složek `data/results/{DEPO}/{DATUM}/` (ESO
   export, mapy, run log) — `--label` přesměruje pro testovací běhy
 
@@ -531,7 +540,14 @@ python closure_map_editor.py     # klikací mapa v prohlížeci -> zapisuje clos
 python manage_closures.py        # CLI sprava
 ```
 Aktivní uzavírky (`data/static/closures.json`) solver i vizualizér berou
-automaticky. Config bez PII → **je verzován**.
+automaticky — **podle dne závozu** (z názvu orders souboru / složky
+výsledků), ne podle dneška: plán se počítá den předem, takže uzavírka
+začínající zítra už v něm je a dnes končící už ne (od 17. 8.). Když ORS
+pro potvrzený pár **objízdku nenajde**, matice zůstane s trasou přes
+uzavírku — solver to od 17. 8. **hlasitě vypíše** (`!!! N paru BEZ
+objizdky` + lokace) a zapíše počet do run logu
+(`closures_unresolved_pairs`); běh pokračuje. Config bez PII → **je
+verzován**.
 
 ---
 

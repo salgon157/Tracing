@@ -54,21 +54,27 @@ PROBE_PAIRS   = [(0, 180), (45, 225), (90, 270), (135, 315)]
 #  NAČTENÍ UZAVÍREK
 # ============================================================
 
-def load_active_closures(path=None) -> list:
-    """Vrátí seznam uzavírek aktivních pro dnešní datum."""
+def load_active_closures(path=None, as_of: str | None = None) -> list:
+    """
+    Uzavírky aktivní k danému dni (`as_of` = YYYY-MM-DD, typicky DEN ZÁVOZU).
+    Bez `as_of` dnešek — ale plán se počítá odpoledne/večer PŘED dnem
+    závozu, takže solver a vizualizace předávají datum závozu (audit 1.7):
+    uzavírka začínající zítra by jinak v dnešním plánu chyběla a naopak
+    dnes končící by se do zítřejšího plánu tiše dostala.
+    """
     p = Path(path) if path else CLOSURES_FILE
     if not p.exists():
         return []
     with open(p, encoding="utf-8") as f:
         data = json.load(f)
-    today = str(date.today())
+    day = str(as_of) if as_of else str(date.today())
     result = []
     for c in data.get("closures", []):
         if not c.get("active"):
             continue
-        if c.get("valid_from") and c["valid_from"] > today:
+        if c.get("valid_from") and c["valid_from"] > day:
             continue
-        if c.get("valid_to") and c["valid_to"] < today:
+        if c.get("valid_to") and c["valid_to"] < day:
             continue
         result.append(c)
     return result
@@ -1041,12 +1047,25 @@ def apply_closures_to_matrix(
     closures_path=None,
     closure_route_profile: str | None = None,
     debug_label: str | None = None,
+    as_of: str | None = None,
+    stats: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Apply active closures to a matrix using authoritative confirmation and
     exact ORS avoid-route replacement.
+
+    `as_of` = den závozu (YYYY-MM-DD) — které uzavírky platí (audit 1.7).
+    `stats` = volitelný dict, do kterého se zapíše bilance: confirmed,
+    updated, unresolved (páry, pro které ORS objízdku NENAŠEL a matice
+    zůstala s trasou PŘES uzavírku — audit 1.8). Ty se navíc HLASITĚ
+    vypíšou s lokacemi; běh pokračuje.
     """
-    closures = load_active_closures(closures_path)
+    if stats is not None:
+        stats.update({"closures": 0, "confirmed": 0, "updated": 0,
+                      "unresolved": [], "unresolved_count": 0})
+    closures = load_active_closures(closures_path, as_of=as_of)
+    if stats is not None:
+        stats["closures"] = len(closures)
     if not closures:
         return durations_min, distances_km
 
@@ -1132,7 +1151,33 @@ def apply_closures_to_matrix(
     )
     print(
         f"{prefix} aktualizovano {updated} paru "
-        f"(max delta +{max_delta_min:.1f} min / +{max_delta_km:.1f} km)\n"
+        f"(max delta +{max_delta_min:.1f} min / +{max_delta_km:.1f} km)"
     )
 
+    # 1.8: páry, které baseline potvrdila (trasa vede přes uzavírku), ale
+    # ORS pro ně objízdku NENAŠEL → matice zůstává s původní trasou PŘES
+    # uzavírku. Dřív se to schovalo v poměru „N/M exact route"; teď se
+    # vypíše každý pár s lokacemi. Běh pokračuje (rozhodnutí uživatele) —
+    # dispečer ale musí vědět, kde plán jede přes zavřenou silnici.
+    unresolved = sorted(set(confirmed.keys()) - set(exact_routes.keys()))
+    if unresolved:
+        print(f"{prefix} !!! {len(unresolved)} paru BEZ objizdky — trasa v matici "
+              f"vede PRES uzavirku (ORS avoid route nenasel):")
+        for (i, j) in unresolved[:25]:
+            li, lj = locations[i], locations[j]
+            print(f"{prefix}     [{i:>3}] ({li[0]:.4f},{li[1]:.4f}) -> "
+                  f"[{j:>3}] ({lj[0]:.4f},{lj[1]:.4f})"
+                  + (f"  [{', '.join(sorted(confirmed[(i, j)].get('hit_ids', [])))}]"
+                     if isinstance(confirmed.get((i, j)), dict) else ""))
+        if len(unresolved) > 25:
+            print(f"{prefix}     ... a dalsich {len(unresolved) - 25} paru")
+    print()
+
+    if stats is not None:
+        stats.update({
+            "confirmed": len(confirmed),
+            "updated": updated,
+            "unresolved": [[int(i), int(j)] for (i, j) in unresolved],
+            "unresolved_count": len(unresolved),
+        })
     return dur_out, dist_out

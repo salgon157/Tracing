@@ -2854,6 +2854,9 @@ def _build_run_record(
         },
 
         "closures": [c["id"] for c in closures],
+        "closures_unresolved_pairs": {
+            prof: st.get("unresolved_count", 0)
+            for prof, st in (CONFIG.get("_closure_stats") or {}).items()},
 
         "results": {
             "lines_count":      lines_count,
@@ -3667,8 +3670,10 @@ def main():
 
     # Aplikuj uzavírky na všechny profily
     from closures_utils import apply_closures_to_matrix
+    closure_stats_by_profile: dict[str, dict] = {}
     for prof in list(matrices_by_profile.keys()):
         dist_p, dur_p = matrices_by_profile[prof]
+        st: dict = {}
         dur_p, dist_p = apply_closures_to_matrix(
             dur_p, dist_p, locations,
             matrix_profile=prof,
@@ -3676,8 +3681,12 @@ def main():
             ors_url=CONFIG["osrm_urls"].get("driving-hgv", "http://localhost:8080"),
             closure_route_profile=CONFIG["closure_route_profiles"].get(prof),
             debug_label=prof,
+            as_of=delivery_date or None,          # uzavírky platné V DEN ZÁVOZU
+            stats=st,
         )
+        closure_stats_by_profile[prof] = st
         matrices_by_profile[prof] = (dist_p, dur_p)
+    CONFIG["_closure_stats"] = closure_stats_by_profile     # do run logu
     # Obnov distances_km po aplikaci uzavírek
     distances_km = matrices_by_profile.get(
         "driving", next(iter(matrices_by_profile.values()))
@@ -3767,7 +3776,7 @@ def main():
     verify_plan_complete(orders, all_routes)
 
     from closures_utils import load_active_closures
-    active_closures = load_active_closures()
+    active_closures = load_active_closures(as_of=delivery_date or None)
 
     save_outputs(
         all_routes, total_cost, output_dir, zone_label, elapsed_min,

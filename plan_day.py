@@ -527,6 +527,7 @@ def main_predict(args: argparse.Namespace) -> None:
                        f"{date_str}_{stamp}_P2").as_posix() for d in depots},
         },
     }
+    decision_doc["decision_id"] = fb.decision_fingerprint(decision_doc)
     decision_path = PREDICTION_ROOT / "results" / f"decision_{date_str}.json"
     for target in (decision_path, session / "decision.json"):
         target.write_text(json.dumps(decision_doc, ensure_ascii=False, indent=2),
@@ -561,7 +562,7 @@ def real_state_dir(date_str: str, label: str = "") -> Path:
 
 
 def load_real_state(state_path: Path, fleet_rows: list[dict],
-                    decision: dict) -> dict:
+                    decision: dict, fleet_file_name: str | None = None) -> dict:
     """Stav večera: zbytek flotily + hotová depa + aktuální level.
     Existuje-li (běh po částech — dřívější depa jsou definitivní),
     pokračuje se z něj; jinak start z plné flotily a decision levelu.
@@ -575,12 +576,41 @@ def load_real_state(state_path: Path, fleet_rows: list[dict],
     remaining = fb.available_by_type(fleet_rows)
     for t, n in (decision.get("l3") or {}).get("trucks", {}).items():
         remaining[t] = max(0, remaining.get(t, 0) - int(n))
-    return {
+    state = {
         "remaining": remaining,
         "planned": [],
         "flags": dict(decision["solver_flags"]),
         "escalated": False,
     }
+    # identita: nad kterou decision a jakým parkem večer začal (audit 1.3)
+    state.update(fb.decision_identity(decision))
+    if fleet_file_name:
+        state["fleet_file"] = fleet_file_name
+    return state
+
+
+def guard_state_identity(state: dict, decision: dict, fleet_file_name: str,
+                         force: bool, what: str) -> None:
+    """Zastaví běh, když state večera vznikl nad jinou decision / parkem
+    (audit 1.3). `--force` = vědomé pokračování s varováním."""
+    problems = fb.check_state_matches_decision(state, decision, fleet_file_name)
+    if not problems:
+        return
+    soft = "decision_id" not in state           # starý state = jen varování
+    head = (("[!] " if (soft or force) else "[CHYBA] ")
+            + f"{what}: stav večera nesedí na decision:")
+    body = "\n".join(f"      - {p}" for p in problems)
+    if soft or force:
+        print(head + "\n" + body
+              + ("\n      (--force: pokračuji na vlastní riziko)"
+                 if force and not soft else ""))
+        return
+    raise SystemExit(
+        head + "\n" + body
+        + "\n      Buď dokonči večer nad původní decision (obnov ji z "
+        "data/prediction/results/plan_day/{DATE}_{HHMM}/decision.json), nebo "
+        "začni znovu (smaž state.json a přeplánuj hotová depa), nebo vědomě "
+        "pokračuj: --force")
 
 
 def save_real_state(state_path: Path, state: dict) -> None:
@@ -682,7 +712,10 @@ def main_real(args: argparse.Namespace) -> None:
 
     state_dir = real_state_dir(date_str, args.label)
     state_path = state_dir / "state.json"
-    state = load_real_state(state_path, fleet_rows, decision)
+    state = load_real_state(state_path, fleet_rows, decision,
+                            fleet_file_name=Path(fleet_path).name)
+    guard_state_identity(state, decision, Path(fleet_path).name,
+                         force=bool(getattr(args, "force", False)), what="real")
     budget = fb.FleetBudget(remaining=dict(state["remaining"]))
     flags = dict(state["flags"])
     to_plan = [d for d in depots if d not in state["planned"]]
@@ -904,6 +937,8 @@ def main_l3(args: argparse.Namespace) -> None:
         raise SystemExit("[CHYBA] Chybí stav večera — L3 trasa se staví až "
                          "PO doplánování všech dep (plan_day.py real).")
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    guard_state_identity(state, decision, Path(find_vehicle_types_file()).name,
+                         force=bool(getattr(args, "force", False)), what="l3")
     day_depots = decision.get("depots") or depots
     missing = [d for d in day_depots if d not in state["planned"]]
     if missing:
@@ -1086,6 +1121,9 @@ def main() -> None:
                       help="Předá se solveru: když se cluster nevyřeší ani "
                            "záchranou v budgetu, zkusit ještě N minut nad budget "
                            "(default 0 — na serveru nechat 0).")
+    real.add_argument("--force", action="store_true",
+                      help="Pokračovat, i když stav večera vznikl nad jinou "
+                           "decision / vozovým parkem (jen vědomě).")
     l3p = sub.add_parser(
         "l3", help="Trasa kamionu (porušení L3) — spouští se až PO "
                    "doplánování všech dep dne (po posledním real)")
@@ -1106,6 +1144,9 @@ def main() -> None:
                      help="Přípona výstupů a stavu (testovací běhy)")
     l3p.add_argument("--rescue-extra-min", type=float, default=0.0,
                      help="Předá se solveru (viz real).")
+    l3p.add_argument("--force", action="store_true",
+                     help="Pokračovat, i když stav večera vznikl nad jinou "
+                          "decision / vozovým parkem (jen vědomě).")
     l3p.add_argument("--run-log-path", default="",
                      help="Vlastní run log (testy); default = ostrý log")
     args = parser.parse_args()

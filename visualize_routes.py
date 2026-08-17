@@ -17,6 +17,7 @@ Navigace v prohlížeči:
 
 import csv
 import json
+import re
 import argparse
 import sys
 import webbrowser
@@ -516,11 +517,16 @@ def main():
     # Načti aktivní uzavírky (pokud je modul dostupný)
     closures = []
     if _CLOSURES_AVAILABLE:
-        closures = load_active_closures()
+        # uzavírky platné v DEN ZÁVOZU (z názvu složky výsledků YYYY-MM-DD…),
+        # ne dnes — stejně jako solver (audit 1.7)
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", str(result_dir))
+        as_of = m.group(1) if m else None
+        closures = load_active_closures(as_of=as_of)
         if closures:
-            print(f"Uzavírky:     {len(closures)} aktivních — trasování přes objízdky")
+            print(f"Uzavírky:     {len(closures)} aktivních k {as_of or 'dnešku'} — "
+                  f"trasování přes objízdky")
         else:
-            print("Uzavírky:     žádné aktivní")
+            print(f"Uzavírky:     žádné aktivní k {as_of or 'dnešku'}")
     else:
         print("Uzavírky:     closures_utils nedostupný — přeskočeno")
 

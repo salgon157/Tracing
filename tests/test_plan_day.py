@@ -300,3 +300,89 @@ class TestDecideAfterSolver:
                                              {"capacity_multiplier": 1.0,
                                               "double_runs": False}, args)
         assert "--rescue-extra-min" not in cmd
+
+
+class TestDecisionStateIdentity:
+    """Audit 1.3: state.json nese identitu decision + vozového parku;
+    real/l3 při neshodě zastaví (--force = vědomé pokračování)."""
+
+    def _decision(self, **over):
+        d = {"date": "2026-08-17", "session": "1602",
+             "created_at": "2026-08-16T16:39:40", "depots": ["CB", "MO"],
+             "level": 1, "solver_flags": {"capacity_multiplier": 1.03,
+                                          "double_runs": True},
+             "reservations": {"CB": {}, "MO": {}}, "l3": None,
+             "fleet_file": "vehicle_types-20260817.csv",
+             "runs": {"P1": {"CB": "x/1602_P1"}}}
+        d.update(over)
+        return d
+
+    def test_decision_id_stable_for_same_content(self):
+        import fleet_budget as fb
+        a = self._decision()
+        b = self._decision(created_at="2026-08-16T18:00:00", session="1800",
+                           runs={"P1": {"CB": "x/1800_P1"}})
+        assert fb.decision_fingerprint(a) == fb.decision_fingerprint(b)
+        c = self._decision(l3={"orders": [{"order_number": "O1"}]})
+        assert fb.decision_fingerprint(a) != fb.decision_fingerprint(c)
+        assert len(fb.decision_fingerprint(a)) == 16
+
+    def test_state_carries_decision_identity(self, tmp_path):
+        rows = [{"type_code": "TYPE_02", "max_kg": "1350", "available_count": "5"}]
+        d = self._decision()
+        st = plan_day.load_real_state(tmp_path / "neni.json", rows, d,
+                                      fleet_file_name="vehicle_types-20260817.csv")
+        import fleet_budget as fb
+        assert st["decision_id"] == fb.decision_fingerprint(d)
+        assert st["decision_created_at"] == "2026-08-16T16:39:40"
+        assert st["fleet_file"] == "vehicle_types-20260817.csv"
+
+    def test_real_stops_on_decision_mismatch(self, capsys):
+        import fleet_budget as fb
+        d_old = self._decision()
+        d_new = self._decision(created_at="2026-08-16T18:30:00",
+                               l3={"orders": [{"order_number": "O9"}]})
+        state = {"planned": ["CB"], **fb.decision_identity(d_old)}
+        with pytest.raises(SystemExit) as e:
+            plan_day.guard_state_identity(state, d_new, "vehicle_types-20260817.csv",
+                                          force=False, what="real")
+        msg = str(e.value)
+        assert "PŘEGENEROVANÁ" in msg and "16:39:40" in msg and "18:30:00" in msg
+        assert "--force" in msg
+        # s --force projde a jen varuje
+        plan_day.guard_state_identity(state, d_new, "vehicle_types-20260817.csv",
+                                      force=True, what="real")
+        assert "pokračuji na vlastní riziko" in capsys.readouterr().out
+
+    def test_l3_uses_same_guard(self):
+        import fleet_budget as fb
+        d_old = self._decision(); d_new = self._decision(level=0)
+        state = {"planned": ["CB", "MO"], **fb.decision_identity(d_old)}
+        with pytest.raises(SystemExit) as e:
+            plan_day.guard_state_identity(state, d_new, "vehicle_types-20260817.csv",
+                                          force=False, what="l3")
+        assert "l3:" in str(e.value)
+
+    def test_state_stops_on_fleet_file_mismatch(self):
+        import fleet_budget as fb
+        d = self._decision()
+        state = {"planned": ["CB"], **fb.decision_identity(d)}
+        with pytest.raises(SystemExit) as e:
+            plan_day.guard_state_identity(state, d, "vehicle_types-20260818.csv",
+                                          force=False, what="real")
+        assert "vozový park se změnil" in str(e.value)
+
+    def test_matching_state_passes_silently(self, capsys):
+        import fleet_budget as fb
+        d = self._decision()
+        state = {"planned": [], **fb.decision_identity(d)}
+        plan_day.guard_state_identity(state, d, "vehicle_types-20260817.csv",
+                                      force=False, what="real")
+        assert capsys.readouterr().out == ""
+
+    def test_old_state_without_id_is_tolerated_with_warning(self, capsys):
+        d = self._decision()
+        state = {"planned": ["CB"], "remaining": {}, "flags": {}}
+        plan_day.guard_state_identity(state, d, "vehicle_types-20260817.csv",
+                                      force=False, what="real")
+        assert "nenese identitu" in capsys.readouterr().out

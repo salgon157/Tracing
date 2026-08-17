@@ -420,6 +420,68 @@ def escalate_flags(flags: dict) -> dict | None:
     return None
 
 
+# ── Identita decision ↔ state (audit 1.3) ────────────────────────────────────
+DECISION_ID_IGNORED_KEYS = ("decision_id", "created_at", "session", "runs")
+
+
+def decision_fingerprint(decision: dict) -> str:
+    """
+    Stabilní otisk OBSAHU decision (sha1 kanonického JSON bez časových a
+    cestových klíčů). Dvě predikce se stejným výsledkem mají stejný otisk;
+    přegenerovaná predikce s jiným výběrem L3 / jiným levelem jiný.
+    state.json večera si otisk uloží — `real`/`l3` pak poznají, že
+    decision mezitím někdo přegeneroval (dvojí závoz / ztracené objednávky).
+    """
+    import hashlib
+    body = {k: v for k, v in decision.items()
+            if k not in DECISION_ID_IGNORED_KEYS and not k.startswith("_")}
+    canon = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                       separators=(",", ":"), default=str)
+    return hashlib.sha1(canon.encode("utf-8")).hexdigest()[:16]
+
+
+def decision_identity(decision: dict) -> dict:
+    """{decision_id, decision_created_at, fleet_file} — co si state pamatuje."""
+    return {
+        "decision_id": decision.get("decision_id") or decision_fingerprint(decision),
+        "decision_created_at": decision.get("created_at"),
+        "fleet_file": decision.get("fleet_file"),
+    }
+
+
+def check_state_matches_decision(state: dict, decision: dict,
+                                 fleet_file_name: str | None,
+                                 force: bool = False) -> list[str]:
+    """
+    Porovná identitu uloženou ve state s aktuální decision a použitým
+    vozovým parkem. Vrací seznam nálezů (prázdný = shoda). Volající při
+    nálezech bez `force` zastaví; s `force` jen varuje.
+    Starý state bez identity (před 17. 8. 2026) → jediné varování, ne stop.
+    """
+    problems: list[str] = []
+    ident = decision_identity(decision)
+    if "decision_id" not in state:
+        return ["state.json nenese identitu decision (vznikl před zavedením "
+                "kontroly) — nelze ověřit, že decision nebyla přegenerovaná"]
+    if state.get("decision_id") != ident["decision_id"]:
+        problems.append(
+            f"decision byla PŘEGENEROVANÁ: state vznikl nad decision "
+            f"z {state.get('decision_created_at') or '?'} "
+            f"(id {state.get('decision_id')}), aktuální decision je "
+            f"z {ident['decision_created_at'] or '?'} (id {ident['decision_id']}). "
+            f"Hotová depa plánovala podle jiného výběru L3 / levelu → riziko "
+            f"dvojího závozu nebo ztracených objednávek.")
+    if state.get("fleet_file") and fleet_file_name and             state["fleet_file"] != fleet_file_name:
+        problems.append(
+            f"vozový park se změnil uprostřed dne: state {state['fleet_file']}, "
+            f"teď {fleet_file_name} — zbytek flotily ve state neodpovídá.")
+    if state.get("fleet_file") and ident["fleet_file"] and             state["fleet_file"] != ident["fleet_file"]:
+        problems.append(
+            f"decision počítala s parkem {ident['fleet_file']}, state s "
+            f"{state['fleet_file']}.")
+    return problems
+
+
 # Exit kódy solveru (zrcadlo vrp_solver_lines_v6.EXIT_*; drženo tady, aby
 # fleet_budget zůstal bez importu solveru)
 SOLVER_EXIT_OK, SOLVER_EXIT_ERROR, SOLVER_EXIT_DATA, SOLVER_EXIT_INFEASIBLE = 0, 1, 2, 3
