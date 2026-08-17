@@ -27,8 +27,9 @@ def _van(n=1):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Scénář 7 (audit 2.2): slack 120 — auto smí počkat na pozdější okno až 2 h,
-#  místo aby na ně solver poslal druhé auto
+#  Scénář 7 (audit 2.2): slack = max čekání na zastávce; mezera pod slackem
+#  = jedna linka, nad slackem = druhé auto. Hodnota se čte z CONFIG (60 —
+#  120 bylo změřeno jako horší o 0,4–3,2 %, viz CONFIG komentář).
 # ═════════════════════════════════════════════════════════════════════════════
 
 class TestScenarioSlackWaiting:
@@ -44,9 +45,9 @@ class TestScenarioSlackWaiting:
         return routes
 
     def test_gap_within_slack_is_one_line(self):
-        # slack se čte z CONFIG — test drží pod ním (100 min ≤ 120)
-        assert CONFIG["time_slack_max_min"] >= 100, "test počítá se slackem ≥ 100 min"
-        routes = self._solve(gap_min=100)
+        gap = int(CONFIG["time_slack_max_min"]) - 20         # pod slackem
+        assert gap > 0
+        routes = self._solve(gap_min=gap)
         assert len(routes) == 1, [r["vehicle_id"] for r in routes]
 
     def test_gap_beyond_slack_needs_second_line(self):

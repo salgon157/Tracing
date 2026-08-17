@@ -225,11 +225,21 @@ def main() -> None:
     ap.add_argument("--out", default="")
     ap.add_argument("--only", default="", choices=["", "A", "B"],
                     help="jen jedna strana (ladění)")
+    ap.add_argument("--candidate-dir", default="",
+                    help="složka kandidáta (default pracovní kopie = cwd)")
+    ap.add_argument("--a-args", default="",
+                    help="extra argumenty solveru jen pro stranu A (např. "
+                         "'--cost-matrix-mode legacy')")
+    ap.add_argument("--b-args", default="",
+                    help="extra argumenty solveru jen pro stranu B")
+    ap.add_argument("--label-a", default="baseline")
+    ap.add_argument("--label-b", default="kandidát")
     args = ap.parse_args()
 
     root = Path.cwd()
     baseline = Path(args.baseline_dir).resolve()
-    candidate = root
+    candidate = Path(args.candidate_dir).resolve() if args.candidate_dir else root
+    side_args = {"A": args.a_args.split(), "B": args.b_args.split()}
     if not (baseline / "vrp_solver_lines_v6.py").exists():
         raise SystemExit(f"[CHYBA] {baseline} není worktree se solverem")
 
@@ -247,7 +257,8 @@ def main() -> None:
     env = {**os.environ, "SKIP_STARTUP_TESTS": "1", "PYTHONIOENCODING": "utf-8"}
 
     print("=" * 72)
-    print(f"REGRESNÍ A/B — baseline {baseline.name} vs kandidát (pracovní kopie)")
+    print(f"REGRESNÍ A/B — A={args.label_a} ({baseline.name} {' '.join(side_args['A'])}) "
+          f"vs B={args.label_b} ({candidate.name} {' '.join(side_args['B'])})")
     print(f"dny {args.dates} | depa {args.depots} | reps {args.reps} | budget {args.budget:g} min")
     print(f"vozový park {fleet_file} | výstup {out_root}")
     print("=" * 72)
@@ -297,7 +308,7 @@ def main() -> None:
                 print(f"[{done}/{total}] {side} {c['case']} r{rep + 1} ...", end=" ", flush=True)
                 rec = run_solver(script_dir, c["orders"], out_dir, c["fleet"],
                                  args.budget, args.osm_source, run_log, console,
-                                 c["extra"], env)
+                                 c["extra"] + side_args[side], env)
                 rec.update({"case": c["case"], "side": side, "rep": rep + 1,
                             "out_dir": out_dir.as_posix()})
                 per_case[c["case"]][side].append(rec)
@@ -316,7 +327,8 @@ def main() -> None:
         evals.append(evaluate(c["case"], A, B, args.budget))
 
     lines = ["# Regresní A/B — solver", "",
-             f"baseline: `{baseline}` | kandidát: pracovní kopie | "
+             f"A={args.label_a}: `{baseline}` {' '.join(side_args['A'])} | "
+             f"B={args.label_b}: `{candidate}` {' '.join(side_args['B'])} | "
              f"budget {args.budget:g} min | reps {args.reps} | {datetime.now():%Y-%m-%d %H:%M}",
              f"celkem {done} běhů, {(time.time() - t_all) / 3600:.1f} h", "",
              "| případ | linky A→B (medián) | skutečná cena A→B (medián) | max A→B | čas B | verdikt | důvody |",

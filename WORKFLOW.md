@@ -453,6 +453,7 @@ ho předává; na serveru nechat 0 — běh drží slovo o délce).
 | `--tw-expand-before 0` / `--tw-expand-after 0` | Jen okna (default 5 / 25 min). |
 | `--seed-finalists 1` | Vynutí jen vítěze fáze C ve fázi E = **chování před 11. 8. 2026**. Na srovnávací běhy. Default je `auto` (viz níže). |
 | `--double-runs` | Dvojlinky (porušení L2) — virtuální druhé jízdy malých aut od 10:00; večer zapíná `plan_day` podle decision. Dvojlinky se dělí mezi clustery poměrně, ne jako blok. |
+| `--time-slack-max N` | Max čekání na jedné zastávce v minutách (CONFIG `time_slack_max_min`, default 60). Změřeno 17. 8. 2026 (`regression_ab.py`, 3min budget, 4 depa): 120 min zhoršuje skutečnou cenu o 0,4–3,2 % (čekání je v ceně zadarmo → heuristika si staví trasy s prostojem a GLS z nich nevyleze); se 60 = baseline na korunu. Jen na A/B. |
 | `--driver-breaks` | **Režim řidiče EU** (L3 kamiony): 45 min pauza v každém úseku do 4,5 h **uplynulého času** (jízda + vykládka — tak to počítá OR-Tools; vědomě přísnější než EU „4,5 h jízdy", stojí to nejvýš jednu pauzu navíc na dlouhé trase a solver zůstává jednoduchý a rychlý) + **denní limit čisté jízdy 9 h** jako tvrdá dimenze; objednávka, jejíž cesta tam a zpět limit přesáhne, zastaví běh hned (`validate_orders_servable`). Běžné dodávkové linky nemají. |
 
 ### Finalisté fáze E (`seed_finalists`, default `auto` od 11. 8. 2026)

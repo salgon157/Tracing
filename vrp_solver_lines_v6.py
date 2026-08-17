@@ -254,10 +254,13 @@ CONFIG = {
 
     # Max čekání na JEDNÉ zastávce (slack Time dimenze) v minutách — auto smí
     # stát nejvýš tolik, než pojede dál (čekání na okno další zastávky, pauza
-    # řidiče 45 min se vejde). 120 = auto smí počkat až 2 h místo toho, aby
-    # solver posílal na pozdější okno druhé auto (do 16. 8. 2026 bylo 60).
-    # Výběr L3 čte stejnou hodnotu.
-    "time_slack_max_min":            120,
+    # řidiče 45 min se vejde). ZMĚŘENO 17. 8. 2026 (regression_ab, 3min
+    # budget, 4 depa): 120 min zhoršilo skutečnou cenu o 0,4–3,2 %
+    # deterministicky — čekání je v účelové funkci zadarmo, heuristika si
+    # s volnějším slackem staví trasy s prostojem a GLS z nich nevyleze;
+    # se 60 min kandidát = baseline na korunu. Proto 60. A/B kdykoli:
+    # `--time-slack-max N`. Výběr L3 čte stejnou hodnotu.
+    "time_slack_max_min":            60,
 
     # Pozn.: fixní náklad za výjezd vozidla (mzda řidiče atd.) je per-type
     # ve sloupci `start_cost_kc` v vehicle_types.csv. Není v CONFIG.
@@ -3264,6 +3267,9 @@ def apply_buffer_overrides(args, config: dict | None = None) -> list[str]:
     if getattr(args, "tw_expand_after", None) is not None:
         _set("tw_expand_after_min", int(args.tw_expand_after),
              "okno po", "{} min")
+    if getattr(args, "time_slack_max", None) is not None:
+        _set("time_slack_max_min", int(args.time_slack_max),
+             "max čekání na zastávce", "{} min")
 
     return changes
 
@@ -3363,6 +3369,10 @@ def parse_args():
     parser.add_argument("--tw-expand-after", type=int, default=None,
                         help="O kolik minut smí řidič přijet PO konci okna "
                              f"(default z CONFIG: {_tw_a}). 0 = žádný posun.")
+    parser.add_argument("--time-slack-max", type=int, default=None,
+                        help="Max čekání na jedné zastávce v minutách (default "
+                             f"z CONFIG: {CONFIG.get('time_slack_max_min', 60)}). "
+                             "Na A/B porovnání.")
     add_osm_args(parser)
     return parser.parse_args()
 
