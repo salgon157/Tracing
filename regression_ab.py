@@ -14,8 +14,11 @@ rozložil na obě strany.
         --depots CB MO HK PR --reps 3 --budget 5 --extras
 
 Metriky per běh: počet linek, vykázaná cena, SKUTEČNÁ cena (Σ km × přesná
-sazba + Σ start_cost per typ — dopočítáno z lines_summary, ne z výpisu),
-km, čas běhu, exit kód, hlavičky výstupů (snapshot).
+sazba + Σ start_cost per typ — dopočítáno z lines_summary, ne z výpisu;
+kamionové linky (profil driving-hgv) se přeceňují hgv km z ORS nad
+posloupností zastávek, aby legacy — který kamionu vykazuje km z osobní
+matice — i exact platily stejným metrem), km, čas běhu, exit kód,
+hlavičky výstupů (snapshot).
 
 Kritérium „stejně nebo líp" per depo-den (všechny musí platit):
   - linky:  medián(B) ≤ medián(A)
@@ -64,13 +67,53 @@ def load_fleet_costs(fleet_file: Path) -> dict[str, dict]:
             if not code or code.startswith("#"):
                 continue
             out[code] = {"cost_per_km": float(r["cost_per_km"]),
-                         "start_cost": float(r.get("start_cost_kc") or 0)}
+                         "start_cost": float(r.get("start_cost_kc") or 0),
+                         "osrm_profile": (r.get("osrm_profile") or "driving").strip()}
     return out
 
 
-def true_cost_from_summary(summary_csv: Path, fleet_costs: dict) -> tuple[float, int, float]:
-    """(skutečná cena, linek, km) — Σ km × přesná sazba typu + Σ start_cost."""
-    cost, lines, km = 0.0, 0, 0.0
+_HGV_KM_CACHE: dict = {}
+
+
+def hgv_km_for_line(stops_csv: Path, line_id: str, get_matrix_fn) -> float | None:
+    """Km linky přepočtené hgv maticí (ORS) nad posloupností jejích zastávek
+    (sklad → zastávky → sklad). Vrací None, když ORS není / linka nemá GPS."""
+    pts = []
+    with open(stops_csv, encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            if (r.get("line_id") or "").strip() != line_id:
+                continue
+            try:
+                pts.append((int(r.get("stop_seq") or 0), float(r["lat"]), float(r["lon"])))
+            except (TypeError, ValueError):
+                return None
+    pts.sort()
+    seq = [(la, lo) for _, la, lo in pts]
+    if len(seq) < 2:
+        return None
+    key = tuple(seq)
+    if key in _HGV_KM_CACHE:
+        return _HGV_KM_CACHE[key]
+    try:
+        dist, _ = get_matrix_fn(seq, profile="driving-hgv")
+    except BaseException:                                  # SystemExit z get_matrix
+        return None
+    km = float(sum(dist[i][i + 1] for i in range(len(seq) - 1)))
+    _HGV_KM_CACHE[key] = round(km, 1)
+    return _HGV_KM_CACHE[key]
+
+
+def true_cost_from_summary(summary_csv: Path, fleet_costs: dict,
+                           get_matrix_fn=None) -> tuple[float, int, float, int]:
+    """
+    (skutečná cena, linek, km, přeceněných hgv linek) — Σ km × přesná sazba
+    typu + Σ start_cost. Linky vozidel s profilem driving-hgv se přeceňují
+    hgv km z ORS nad posloupností zastávek (když je `get_matrix_fn`): legacy
+    solver vykazuje kamionu km z osobní matice (kratší), exact z hgv —
+    aby obě strany platily stejným metrem, kamion se vždy účtuje hgv km.
+    """
+    cost, lines, km, repriced = 0.0, 0, 0.0, 0
+    stops_csv = summary_csv.parent / "lines_stops.csv"
     with open(summary_csv, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             vid = (r.get("vehicle_id") or "").strip()
@@ -81,10 +124,17 @@ def true_cost_from_summary(summary_csv: Path, fleet_costs: dict) -> tuple[float,
             rate = fc["cost_per_km"] if fc else float(r.get("cost_per_km") or 0)
             start = fc["start_cost"] if fc else 0.0
             tk = float(r.get("total_km") or 0)
+            if (fc and fc.get("osrm_profile") == "driving-hgv" and get_matrix_fn
+                    and stops_csv.exists()):
+                hk = hgv_km_for_line(stops_csv, (r.get("line_id") or "").strip(),
+                                     get_matrix_fn)
+                if hk is not None:
+                    tk = hk
+                    repriced += 1
             cost += tk * rate + start
             km += tk
             lines += 1
-    return round(cost, 1), lines, round(km, 1)
+    return round(cost, 1), lines, round(km, 1), repriced
 
 
 def header_of(path: Path, delimiter: str = ",", encoding: str = "utf-8-sig") -> list[str]:
@@ -112,7 +162,7 @@ def output_signature(out_dir: Path, zone: str) -> dict:
 
 def run_solver(script_dir: Path, orders: Path, out_dir: Path, fleet_file: Path,
                budget: float, osm: str, run_log: Path, console_log: Path,
-               extra_args: list[str], env: dict) -> dict:
+               extra_args: list[str], env: dict, get_matrix_fn=None) -> dict:
     cmd = [PY, (script_dir / "vrp_solver_lines_v6.py").as_posix(),
            "--orders-file", orders.as_posix(),
            "--output-dir", out_dir.as_posix(),
@@ -127,15 +177,16 @@ def run_solver(script_dir: Path, orders: Path, out_dir: Path, fleet_file: Path,
                             cwd=os.getcwd()).returncode
     elapsed = time.time() - t0
     rec = {"rc": rc, "elapsed_sec": round(elapsed, 1), "cost_reported": None,
-           "cost_true": None, "lines": None, "km": None,
+           "cost_true": None, "lines": None, "km": None, "hgv_repriced": 0,
            "status_file": (out_dir / "run_status.json").exists()}
     zs = out_dir / "zone_summary.json"
     if rc == 0 and zs.exists():
         z = json.loads(zs.read_text(encoding="utf-8"))
         rec["cost_reported"] = z.get("total_cost_kc")
         fc = load_fleet_costs(fleet_file)
-        rec["cost_true"], rec["lines"], rec["km"] = true_cost_from_summary(
-            out_dir / "lines_summary.csv", fc)
+        (rec["cost_true"], rec["lines"], rec["km"],
+         rec["hgv_repriced"]) = true_cost_from_summary(
+            out_dir / "lines_summary.csv", fc, get_matrix_fn)
         rec["signature"] = output_signature(out_dir, "")
     return rec
 
@@ -234,6 +285,9 @@ def main() -> None:
                     help="extra argumenty solveru jen pro stranu B")
     ap.add_argument("--label-a", default="baseline")
     ap.add_argument("--label-b", default="kandidát")
+    ap.add_argument("--no-reprice-hgv", action="store_true",
+                    help="nepřeceňovat kamionové linky hgv km z ORS (default: "
+                         "přeceňují se — obě strany stejným metrem)")
     args = ap.parse_args()
 
     root = Path.cwd()
@@ -249,6 +303,17 @@ def main() -> None:
         sys.path.insert(0, str(root))
         from vrp_solver_lines_v6 import find_vehicle_types_file
         fleet_file = Path(find_vehicle_types_file())
+
+    get_matrix_fn = None
+    if not args.no_reprice_hgv:
+        try:
+            sys.path.insert(0, str(root))
+            from osm_routing import apply_osm_source
+            import vrp_solver_lines_v6 as _S
+            apply_osm_source(_S.CONFIG, args.osm_source)
+            get_matrix_fn = _S.get_matrix
+        except Exception as e:                            # noqa: BLE001
+            print(f"  [!] přeceňování hgv km vypnuto ({e})")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     out_root = Path(args.out) if args.out else root / "data" / "results" / "_regression" / stamp
@@ -308,15 +373,16 @@ def main() -> None:
                 print(f"[{done}/{total}] {side} {c['case']} r{rep + 1} ...", end=" ", flush=True)
                 rec = run_solver(script_dir, c["orders"], out_dir, c["fleet"],
                                  args.budget, args.osm_source, run_log, console,
-                                 c["extra"] + side_args[side], env)
+                                 c["extra"] + side_args[side], env, get_matrix_fn)
                 rec.update({"case": c["case"], "side": side, "rep": rep + 1,
                             "out_dir": out_dir.as_posix()})
                 per_case[c["case"]][side].append(rec)
                 with open(results_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps({k: v for k, v in rec.items() if k != "signature"},
                                        ensure_ascii=False) + "\n")
-                print(f"rc={rec['rc']} linek={rec['lines']} cena={rec['cost_true']} "
-                      f"({rec['elapsed_sec']:.0f} s)")
+                print(f"rc={rec['rc']} linek={rec['lines']} cena={rec['cost_true']}"
+                      + (f" (hgv přeceněno {rec['hgv_repriced']})" if rec['hgv_repriced'] else "")
+                      + f" ({rec['elapsed_sec']:.0f} s)")
 
     # vyhodnocení
     evals = []

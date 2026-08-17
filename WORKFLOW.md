@@ -648,3 +648,31 @@ python -m pytest tests/ -q
 ```
 Integrační routing testy (`test_ors_hgv_integration.py`) běží automaticky po
 nastartování routing instance (ověří ORS vs OSRM).
+
+### Regresní A/B solveru — „stejně nebo líp?" (od 17. 8. 2026)
+
+Před uzavřením větší změny solveru: solver z pinnutého commitu vs pracovní
+kopie na TÝCHŽ prepared souborech, vozovém parku, routing instanci a
+budgetu, střídavě (ABAB). Baseline = git worktree `_baseline_<commit>/`
+(gitignored), skript si ho založí sám.
+
+```powershell
+# přes noc (notebook v zásuvce, nic jiného neběží, Docker Desktop + ORS/OSRM zapnuté):
+.\overnight_regression.ps1                    # 4 dny × 4 depa × 3 reps × 2 strany
+                                              # + extras (PR dvojlinky, L3), budget 5 ≈ 10 h
+.\overnight_regression.ps1 -Budget 3 -Reps 3  # ≈ 6 h
+# ručně / jiná baseline:
+python regression_ab.py --baseline-dir _baseline_4f0f879 --dates 2026-08-13 --depots HK --reps 1 --budget 1
+```
+
+Měří per běh: linky, **skutečnou cenu** (Σ km × přesná sazba + Σ start; kamionové
+linky se u obou stran přeceňují hgv km z ORS — stejný metr), km, čas, exit
+kód, hlavičky výstupů. Verdikt PASS jen když per depo-den: linky medián
+B ≤ A, cena medián ≤ +1 %, max ≤ +2 %, žádný běh > nejlepší A +3 %, exit 0
+kde A 0, `run_status.json`, shodné hlavičky, čas ≤ budget + 60 s. Report:
+`data/results/_regression/<stamp>/report.md` (+ `results.jsonl`, log
+`data/results/overnight_<stamp>.log`). Solver s daným seedem je při
+stejném vytížení téměř deterministický (opakování ~0,1 %); rozdíly ~1 %
+vznikají volbou vítězného seedu fáze C — proto medián ze 3 opakování.
+Takhle se 17. 8. chytilo, že slack 120 min zhoršuje plány (viz
+`--time-slack-max`).

@@ -47,3 +47,6 @@ webui/jobs/
 
 # --- vystupy experimentu (generovane, muzou obsahovat PII z objednavek) ---
 experiments/*/results/
+
+# git worktree s baseline solverem pro regression_ab.py (viz WORKFLOW 8)
+/_baseline_*/
