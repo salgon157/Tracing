@@ -151,8 +151,13 @@ CONFIG = {
     # (payload SEC) a prepare ji předává ve sloupci `service_sec`. Žádný vzorec.
 
     # Maximální počet zákaznických zastávek na jedné trase (sklad se nepočítá)
-    # None nebo 0 = neomezeno
+    # None nebo 0 = neomezeno. Platí i pro L3 kamion (výběr L3 ho zná).
     "max_stops_per_route":           20,
+
+    # Max čekání na JEDNÉ zastávce (slack Time dimenze) v minutách — auto smí
+    # stát nejvýš tolik, než pojede dál. Pauza řidiče (45 min) se do toho
+    # vejde; delší prostoj (čekání na okno) ne. Výběr L3 čte stejnou hodnotu.
+    "time_slack_max_min":            60,
 
     # Pozn.: fixní náklad za výjezd vozidla (mzda řidiče atd.) je per-type
     # ve sloupci `start_cost_kc` v vehicle_types.csv. Není v CONFIG.
@@ -236,12 +241,20 @@ CONFIG = {
     # Reprodukovatelnost
     "random_seed":                   42,
 
-    # ── Pauzy řidiče (jen s --driver-breaks; L3 kamionové trasy) ──────
-    # EU zjednodušeně: žádných driver_break_after_h hodin JÍZDY bez
-    # driver_break_min minutové pauzy (span-based, ne tachograf).
-    # Běžné dodávkové linky pauzy nemodelují — čistá jízda je krátká.
+    # ── Režim řidiče EU (jen s --driver-breaks; L3 kamionové trasy) ───
+    # Zjednodušeně, na bezpečné straně:
+    #   • pauza: v žádném úseku trasy delším než driver_break_after_h
+    #     (měřeno UPLYNULÝM časem trasy — jízda + vykládka, ne jen jízda,
+    #     tak to počítá OR-Tools SetBreakDistanceDuration) nesmí chybět
+    #     driver_break_min pauza. Přísnější než EU (4,5 h jízdy), o pár
+    #     desítek minut na dlouhé trase.
+    #   • denní limit ČISTÉ JÍZDY driver_max_drive_h (EU 561/2006: 9 h,
+    #     2× týdně 10 h — bereme 9). Tvrdá podmínka: trasa, kterou jeden
+    #     řidič nesmí odjet, se nesmí naplánovat.
+    # Běžné dodávkové linky (do 3,5 t) tachograf nemají — nemodeluje se.
     "driver_break_after_h":          4.5,
     "driver_break_min":              45,
+    "driver_max_drive_h":            9.0,
 }
 
 
@@ -695,6 +708,7 @@ def validate_orders_servable(orders: list,
        přímo v solveru, chytí i staré prepared soubory)
     2. je-li k dispozici matice: objednávka dosažitelná ze skladu tam i zpět
        alespoň v jedné vozidlové matici (sentinel UNREACHABLE_TIME_MIN)
+    3. s --driver-breaks: cesta tam a zpět <= denní limit jízdy řidiče
     """
     max_dur_min = int(CONFIG["max_route_duration_h"] * 60)
     bad_service = []
@@ -722,7 +736,22 @@ def validate_orders_servable(orders: list,
                     f"v žádném profilu"
                 )
 
-    if bad_service or bad_reach:
+    # 3. režim řidiče EU: samotná cesta tam a zpět nesmí překročit denní
+    #    limit jízdy — jinak objednávku neodveze žádný kamion s jedním řidičem
+    bad_drive = []
+    if vehicle_time_by_id and CONFIG.get("_driver_breaks_enabled"):
+        max_drive = int(CONFIG["driver_max_drive_h"] * 60)
+        mats = list(vehicle_time_by_id.values())
+        for i, o in enumerate(orders, start=1):
+            best = min(m[0][i] + m[i][0] for m in mats)
+            if best > max_drive:
+                bad_drive.append(
+                    f"  - {o['order_number']} {o.get('customer_name', '')}: "
+                    f"tam a zpět {best:.0f} min jízdy > denní limit "
+                    f"{max_drive} min ({CONFIG['driver_max_drive_h']:g} h)"
+                )
+
+    if bad_service or bad_reach or bad_drive:
         msg = ["", "=" * 65,
                "[CHYBA] NEOBSLOUŽITELNÉ OBJEDNÁVKY — plánování zastaveno",
                "=" * 65]
@@ -733,6 +762,9 @@ def validate_orders_servable(orders: list,
         if bad_reach:
             msg.append("\nNedosažitelné ze skladu (zkontroluj GPS / routing instanci):")
             msg.extend(bad_reach)
+        if bad_drive:
+            msg.append("\nPřes denní limit jízdy řidiče (--driver-breaks):")
+            msg.extend(bad_drive)
         msg.append("\nŽádný plán se neuložil — plán bez těchto objednávek by "
                    "znamenal nerozvezené zboží. Oprav data a spusť znovu.")
         raise SystemExit("\n".join(msg))
@@ -1395,19 +1427,28 @@ def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list
     }
 
 
-def _add_driver_breaks(routing, time_dim, data) -> None:
+def _add_driver_breaks(routing, manager, time_dim, data) -> None:
     """
-    Povinné pauzy řidiče (EU zjednodušeně): žádných driver_break_after_h
-    hodin JÍZDY bez driver_break_min pauzy. Kandidátní pauzy jsou volitelné
-    intervaly kdekoli v dni — SetBreakDistanceDuration je aktivuje jen
-    když je trasa potřebuje (krátká trasa = žádná pauza, žádný trest).
+    Povinné pauzy řidiče (EU zjednodušeně): v žádném úseku trasy delším
+    než driver_break_after_h nesmí chybět driver_break_min pauza.
+    Kandidátní pauzy jsou volitelné intervaly kdekoli v dni —
+    SetBreakDistanceDuration je aktivuje jen když je trasa potřebuje
+    (krátká trasa = žádná pauza, žádný trest).
+
+    node_visit_transits jsou indexované ROUTING INDEXEM (routing.Size()),
+    ne uzlem — start/end indexy vozidel mají 0. Dřív se předával seznam
+    v prostoru uzlů (kratší o 2×vozidla) → nedefinované chování v OR-Tools.
     """
     solver      = routing.solver()
     drive_limit = int(CONFIG["driver_break_after_h"] * 60)
     break_min   = int(CONFIG["driver_break_min"])
     horizon     = 24 * 60
     max_breaks  = max(1, horizon // drive_limit)
-    transits    = [int(s) for s in data["service_times"]]
+    transits    = [0] * routing.Size()
+    for idx in range(routing.Size()):
+        if routing.IsStart(idx) or routing.IsEnd(idx):
+            continue
+        transits[idx] = int(data["service_times"][manager.IndexToNode(idx)])
     for v_idx in range(data["num_vehicles"]):
         intervals = [
             solver.FixedDurationIntervalVar(
@@ -1416,6 +1457,26 @@ def _add_driver_breaks(routing, time_dim, data) -> None:
         time_dim.SetBreakIntervalsOfVehicle(intervals, v_idx, transits)
         time_dim.SetBreakDistanceDurationOfVehicle(drive_limit, break_min,
                                                    v_idx)
+
+
+def _add_drive_limit(routing, manager, data) -> None:
+    """
+    Denní limit ČISTÉ JÍZDY per vozidlo (EU 561/2006 — driver_max_drive_h).
+    Samostatná dimenze „Drive": transit = jen jízda (bez servisu),
+    kapacita = limit v minutách. Tvrdá podmínka — trasa přes limit
+    neexistuje. Zapíná se spolu s pauzami (--driver-breaks).
+    """
+    max_drive = int(CONFIG["driver_max_drive_h"] * 60)
+    drive_cbs = []
+    for v_idx in range(data["num_vehicles"]):
+        cb_idx = routing.RegisterTransitCallback(
+            lambda fi, ti, vi=v_idx:
+                data["time_int_list"][vi][manager.IndexToNode(fi)]
+                                         [manager.IndexToNode(ti)]
+        )
+        drive_cbs.append(cb_idx)
+    routing.AddDimensionWithVehicleTransitAndCapacity(
+        drive_cbs, 0, [max_drive] * data["num_vehicles"], True, "Drive")
 
 
 def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
@@ -1454,7 +1515,7 @@ def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
         )
         time_cb_indices.append(cb_idx)
     routing.AddDimensionWithVehicleTransitAndCapacity(
-        time_cb_indices, 60,
+        time_cb_indices, int(CONFIG.get("time_slack_max_min", 60)),
         [data["max_dur_min"]] * data["num_vehicles"],
         False, "Time"
     )
@@ -1483,9 +1544,11 @@ def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
         if est:
             time_dim.CumulVar(routing.Start(v_idx)).SetMin(est)
 
-    # Pauzy řidiče (jen --driver-breaks; L3 kamionové trasy)
+    # Režim řidiče EU (jen --driver-breaks; L3 kamionové trasy):
+    # pauzy + denní limit čisté jízdy
     if CONFIG.get("_driver_breaks_enabled"):
-        _add_driver_breaks(routing, time_dim, data)
+        _add_driver_breaks(routing, manager, time_dim, data)
+        _add_drive_limit(routing, manager, data)
 
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy    = strategy
@@ -2456,6 +2519,9 @@ def _build_run_record(
             "double_runs":                  bool(CONFIG.get("_double_runs_enabled", False)),
             "seed_finalists":               CONFIG.get("_seed_finalists_resolved", 1),
             "driver_breaks":                bool(CONFIG.get("_driver_breaks_enabled", False)),
+            "driver_break_after_h":         CONFIG["driver_break_after_h"],
+            "driver_break_min":             CONFIG["driver_break_min"],
+            "driver_max_drive_h":           CONFIG["driver_max_drive_h"],
         },
 
         "closures": [c["id"] for c in closures],
@@ -2917,11 +2983,12 @@ def parse_args():
                              "spadne. Zapíná plan_day podle decision.")
 
     parser.add_argument("--driver-breaks", action="store_true",
-                        help="Povinné pauzy řidiče (EU zjednodušeně): žádných "
-                             f"{CONFIG['driver_break_after_h']:g} h JÍZDY bez "
-                             f"{CONFIG['driver_break_min']} min pauzy. Používají "
-                             "L3 kamionové trasy; běžné dodávkové linky pauzy "
-                             "nemodelují (čistá jízda je krátká).")
+                        help="Režim řidiče EU (zjednodušeně): v žádném úseku "
+                             f"trasy delším než {CONFIG['driver_break_after_h']:g} h "
+                             f"nesmí chybět {CONFIG['driver_break_min']} min pauza "
+                             f"a čistá jízda za den max {CONFIG['driver_max_drive_h']:g} h "
+                             "(tvrdý strop). Používají L3 kamionové trasy; běžné "
+                             "dodávkové linky tachograf nemají.")
 
     parser.add_argument("--seed-finalists", default=None,
                         choices=["auto", "1", "2", "3"],
@@ -3091,9 +3158,9 @@ def main():
     # ── --driver-breaks: povinné pauzy řidiče (L3 kamionové trasy) ────────
     if args.driver_breaks:
         CONFIG["_driver_breaks_enabled"] = True
-        print(f"[PAUZY] Řidičské pauzy ZAPNUTY: max "
-              f"{CONFIG['driver_break_after_h']:g} h jízdy bez "
-              f"{CONFIG['driver_break_min']} min pauzy (EU zjednodušeně)")
+        print(f"[ŘIDIČ EU] Pauzy: {CONFIG['driver_break_min']} min v každém "
+              f"úseku do {CONFIG['driver_break_after_h']:g} h | denní limit "
+              f"jízdy {CONFIG['driver_max_drive_h']:g} h (tvrdý strop)")
 
     # ── --seed-finalists: kolik seedů fáze C dotáhnout ve fázi E ──────────
     if args.seed_finalists is not None:

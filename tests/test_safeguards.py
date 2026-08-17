@@ -140,6 +140,27 @@ class TestValidateOrdersServable:
         with pytest.raises(SystemExit):
             validate_orders_servable(orders, {"V1": m})
 
+    def test_round_trip_over_daily_drive_limit_fatal_with_breaks(self):
+        # režim řidiče EU: 5 h tam + 5 h zpět = 10 h > denní limit jízdy
+        import vrp_solver_lines_v6 as S
+        orders = [_order("O1")]
+        m = np.array([[0, 300], [300, 0]], dtype=float)
+        saved = S.CONFIG.get("_driver_breaks_enabled")
+        S.CONFIG["_driver_breaks_enabled"] = True
+        try:
+            limit_h = float(S.CONFIG["driver_max_drive_h"])
+            assert 600 > limit_h * 60, "test předpokládá limit pod 10 h"
+            with pytest.raises(SystemExit) as e:
+                validate_orders_servable(orders, {"TRUCK": m})
+            assert "O1" in str(e.value) and "denní limit" in str(e.value)
+        finally:
+            if saved is None:
+                S.CONFIG.pop("_driver_breaks_enabled", None)
+            else:
+                S.CONFIG["_driver_breaks_enabled"] = saved
+        # bez režimu řidiče stejná objednávka projde
+        validate_orders_servable(orders, {"TRUCK": m})
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  3. solver: verify_plan_complete (finální invariant)

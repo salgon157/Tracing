@@ -411,8 +411,8 @@ def escalate_flags(flags: dict) -> dict | None:
     """
     Další stupeň porušení, když depo na aktuálním nevyšlo.
 
-    L0 → L1+L2 (103 % + dvojlinky). Z L1+L2 už není kam — L3 (kamiony/rampa)
-    zatím není postavené → None = alert, člověk rozhodne.
+    L0 → L1+L2 (103 % + dvojlinky). Z L1+L2 už není kam — L3 (kamion předem)
+    se rozhoduje odpoledne v predikci, ne večer → None = alert, člověk rozhodne.
     """
     if not flags.get("double_runs"):
         return {"capacity_multiplier": 1.03, "double_runs": True}

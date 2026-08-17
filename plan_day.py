@@ -31,6 +31,7 @@ Výstupy:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -183,6 +184,49 @@ def lines_from_run(out_dir: Path) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  L3 — kamiony, hgv matice (sdílené predict + l3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def l3_truck_units(fleet_rows: list[dict], counts_by_type: dict[str, int]
+                   ) -> list[dict]:
+    """Kamiony (nad horní mezí „středních") rozbalené per kus:
+    [{type_code, max_kg, cost_per_km, start_cost}], největší první."""
+    units = []
+    for r in fleet_rows:
+        t = r["type_code"].strip()
+        if float(r["max_kg"]) <= fb.MEDIUM_KG_RANGE[1]:
+            continue
+        for _ in range(int(counts_by_type.get(t, 0))):
+            units.append({"type_code": t, "max_kg": float(r["max_kg"]),
+                          "cost_per_km": float(r["cost_per_km"]),
+                          "start_cost": float(r.get("start_cost_kc", 0) or 0)})
+    return sorted(units, key=lambda u: -u["max_kg"])
+
+
+def l3_hgv_matrix(locations: list[dict], osm_source: str):
+    """(dist_km, dur_min) přes ORS driving-hgv pro sklad + lokace, nebo None
+    když routing není k dispozici (výběr pak padá na záložní greedy)."""
+    from osm_routing import apply_osm_source
+    from vrp_solver_lines_v6 import CONFIG as SOLVER_CONFIG, DEPOT, get_matrix
+    if osm_source:
+        apply_osm_source(SOLVER_CONFIG, osm_source)
+    pts = [(DEPOT["lat"], DEPOT["lon"])] + [(l["lat"], l["lon"]) for l in locations]
+    try:
+        return get_matrix(pts, profile="driving-hgv")
+    except SystemExit as e:
+        print(f"  [!] hgv matice není k dispozici: {str(e).strip().splitlines()[0][:90]}")
+        return None
+
+
+def l3_trucks_by_type_from_bins(units: list[dict], bins: list[list]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for u, b in zip(units, bins):
+        if b:
+            out[u["type_code"]] = out.get(u["type_code"], 0) + 1
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Report
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -248,12 +292,15 @@ def format_report(date_str: str, stamp: str, depots: list[str],
                    f"{l3_block['selected_kg']:,.0f} kg "
                    f"({l3_block['trucks_used']}× 18t)")
         if l3_block["exhausted"]:
-            verdict += "  [rampové kg nestačily na celý cíl]"
+            verdict += "  [sjízdné rampové kg nestačily na chybějící]"
     else:
         verdict = ("L1 + L2 + !!! POTŘEBA L3, ale po P2 nezbyl kamion — "
                    "alert, člověk rozhodne !!!")
-    lines += [f"ROZHODNUTÍ PRO VEČER: {verdict}",
-              f"decision → {decision_path}",
+    lines += [f"ROZHODNUTÍ PRO VEČER: {verdict}"]
+    if l3_block and l3_block.get("routes"):
+        lines.append("  odhad tras kamionu (hgv matice, výběr VRP):")
+        lines.append(l3.format_routes(l3_block["routes"]))
+    lines += [f"decision → {decision_path}",
               "=" * 66]
     return "\n".join(lines)
 
@@ -395,12 +442,7 @@ def main_predict(args: argparse.Namespace) -> None:
                     "rampové SKUTEČNÉ objednávky napříč depy; kamiony 18t "
                     "zbylé po P2")
         # kamion = auto nad horní mezí "středních" (dnes TYPE_05/06)
-        truck_units = sorted(
-            [(r["type_code"].strip(), float(r["max_kg"]))
-             for r in fleet_rows
-             if float(r["max_kg"]) > fb.MEDIUM_KG_RANGE[1]
-             for _ in range(budget.remaining.get(r["type_code"].strip(), 0))],
-            key=lambda x: -x[1])
+        truck_units = l3_truck_units(fleet_rows, budget.remaining)
         if not truck_units:
             print("  [!] Po P2 nezbyl žádný kamion 18t — L3 se NEKONÁ, "
                   "den zůstává na L1+L2 (+ alert jako dosud)")
@@ -408,23 +450,47 @@ def main_predict(args: argparse.Namespace) -> None:
             candidates = l3.load_l3_candidates(
                 PREDICTION_ROOT / "prepared", depots, date_str)
             target = l3.l3_target_kg(decision["missing_kg"])
-            sel = l3.select_locations(candidates, target,
-                                      [cap for _, cap in truck_units])
+            print(f"  kandidátů (rampa, skutečné): {len(candidates)} lokací / "
+                  f"{sum(c['kg'] for c in candidates):,.0f} kg | chybí "
+                  f"{decision['missing_kg']:,.0f} kg, cíl (strop) {target:,.0f} kg | "
+                  f"kamiony k dispozici: "
+                  + ", ".join(f"{u['type_code']} {u['max_kg']:,.0f} kg"
+                              for u in truck_units))
+            # HLAVNÍ cesta: VRP nad reálnou hgv maticí — vybírá jen SJÍZDNÉ
+            # smyčky (denní jízda, pauzy, okno). Bez ORS záložní greedy.
+            mats = l3_hgv_matrix(candidates, args.osm_source) if candidates else None
+            if mats is not None:
+                rules = l3.driver_rules()
+                sel = l3.select_locations_vrp(
+                    candidates, mats[0], mats[1], truck_units,
+                    target, decision["missing_kg"], driver=rules)
+            else:
+                print("  [!] Bez hgv matice — ZÁLOŽNÍ greedy výběr, sjízdnost "
+                      "trasy se ověří až večer (plan_day l3)")
+                rules = None
+                sel = l3.select_locations(candidates, target,
+                                          [u["max_kg"] for u in truck_units])
             # bins jsou v pořadí truck_units (kapacity desc) → typy kamionů
-            trucks_by_type: dict[str, int] = {}
-            for (t_code, _), b in zip(truck_units, sel["bins"]):
-                if b:
-                    trucks_by_type[t_code] = trucks_by_type.get(t_code, 0) + 1
+            trucks_by_type = l3_trucks_by_type_from_bins(truck_units, sel["bins"])
             l3_block = l3.build_l3_decision_block(
                 sel, decision["missing_kg"], trucks_by_type)
-            print(f"  kandidátů (rampa, skutečné): {len(candidates)} lokací | "
-                  f"cíl {target:,.0f} kg")
-            print(f"  vybráno: {len(sel['selected'])} lokací / "
+            print(f"  vybráno ({sel.get('method', 'greedy')}): "
+                  f"{len(sel['selected'])} lokací / "
                   f"{len(l3_block['orders'])} objednávek / "
-                  f"{sel['selected_kg']:,.0f} kg → kamiony {fmt_mix(trucks_by_type)}")
+                  f"{sel['selected_kg']:,.0f} kg → kamiony {fmt_mix(trucks_by_type)}"
+                  + (f" | λ = {sel['kg_value_kc']:g} Kč/kg"
+                     if sel.get("kg_value_kc") else ""))
+            if sel.get("routes"):
+                print(l3.format_routes(sel["routes"],
+                                       rules["max_drive_h"] if rules else None))
+            if sel.get("dropped"):
+                print(f"  vynecháno (nevyplatí se / nevejde se): "
+                      f"{len(sel['dropped'])} lokací / "
+                      f"{sum(c['kg'] for c in sel['dropped']):,.0f} kg")
             if l3_block["exhausted"]:
-                print(f"  [!] Rampové lokace nedaly cílová kg — zbytek "
-                      f"deficitu řeší L1+L2")
+                print(f"  [!] Sjízdné rampové lokace nedaly chybějící kg "
+                      f"({sel['selected_kg']:,.0f} < {decision['missing_kg']:,.0f}) "
+                      f"— zbytek deficitu řeší L1+L2")
             for loc in sel["selected"]:
                 print(f"    {loc['depot']} {loc['location_code']:<24} "
                       f"{loc['kg']:>8,.1f} kg  {loc['customer_name'][:40]}")
@@ -597,9 +663,10 @@ def main_real(args: argparse.Namespace) -> None:
               f"kamiony {', '.join(f'{t}×{n}' for t, n in sorted(l3_block_real['trucks'].items()))} "
               f"jsou mimo budget. Po posledním depu spusť: "
               f"python plan_day.py l3")
-    if decision.get("l3_needed"):
-        print("[!] PREDIKCE HLÁSÍ POTŘEBU L3 (kamiony/rampa) — zatím není "
-              "postavené, den může skončit alertem.")
+    if decision.get("l3_needed") and not l3_block_real:
+        print("[!] PREDIKCE HLÁSÍ POTŘEBU L3, ale kamion se nevybral (po P2 "
+              "nezbyl / rampové lokace nedaly nic sjízdného) — den jede na "
+              "L1+L2 a může skončit alertem.")
     print(f"Vozový park: {fleet_path} | zbytek: "
           + ", ".join(f"{t}×{n}" for t, n in sorted(budget.remaining.items())
                       if n > 0))
@@ -670,7 +737,8 @@ def main_real(args: argparse.Namespace) -> None:
                 "\n" + "=" * 66 + "\n"
                 f"[ALERT] Depo {depot} nejde naplánovat ani s "
                 f"{_flags_label(flags)}.\n"
-                f"Vyšší porušení (L3 — kamiony/rampa) zatím není postavené.\n"
+                f"L3 (kamion předem) se rozhoduje odpoledne v predikci — večer "
+                f"už není kam eskalovat.\n"
                 f"Zbytek flotily: "
                 + ", ".join(f"{t}×{n}" for t, n in sorted(budget.remaining.items()))
                 + f"\nHotová depa ({', '.join(state['planned']) or 'žádná'}) "
@@ -724,6 +792,44 @@ def main_real(args: argparse.Namespace) -> None:
 #  Fáze l3 — trasa kamionu po doplánování všech dep
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _l3_unplanned_alert(l3_block: dict, locs: list[dict], merged: Path,
+                        state_dir: Path, date_str: str, reason: str,
+                        out_dir: Path | None = None) -> None:
+    """L3 trasa nevznikne — objednávky nejsou v ŽÁDNÉM plánu. Vypíše přesně
+    co komu vrátit, zapíše to strojově (l3_unplanned_{DATE}.json) a
+    uklidí prázdnou výstupní složku (driver_assignment by ji jinak vzal
+    jako zónu L3). Končí exit ≠ 0."""
+    by_depot: dict[str, list[dict]] = {}
+    for o in l3_block.get("orders", []):
+        by_depot.setdefault(o["depot"], []).append(o)
+    lines = ["", "=" * 66,
+             f"[ALERT] L3 trasa NEVYŠLA ({reason}) — vyřazené objednávky "
+             f"nejsou v ŽÁDNÉM plánu!",
+             f"        Objednávky: {merged.as_posix()}",
+             f"        Celkem {len(locs)} lokací / "
+             f"{sum(l['kg'] for l in locs):,.0f} kg",
+             "        Co komu vrátit (depo: objednávky):"]
+    for depot in sorted(by_depot):
+        kg = sum(o["kg"] for o in by_depot[depot])
+        lines.append(f"          {depot}: {len(by_depot[depot])} obj / {kg:,.0f} kg — "
+                     + ", ".join(o["order_number"] for o in by_depot[depot]))
+    lines += ["        Ruční zásah: přeplánovat dotčená depa bez vyřazení "
+              "(smazat depo ze state.planned + vrátit jeho auta do "
+              "state.remaining, pak `plan_day.py real {DEPO}` — bez L3 bloku "
+              "v decision, nebo s upraveným výběrem), nebo objednávky "
+              "rozvézt jinak.",
+              "        Strojově: " + (state_dir / f"l3_unplanned_{date_str}.json").as_posix(),
+              "=" * 66]
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / f"l3_unplanned_{date_str}.json").write_text(
+        json.dumps({"date": date_str, "reason": reason,
+                    "orders_by_depot": by_depot}, ensure_ascii=False, indent=2),
+        encoding="utf-8")
+    if out_dir is not None and out_dir.exists() and not any(out_dir.iterdir()):
+        out_dir.rmdir()
+    raise SystemExit("\n".join(lines))
+
+
 def main_l3(args: argparse.Namespace) -> None:
     depots, date_str = resolve_depots_and_date(
         [d.upper() for d in args.depots], root=REAL_ROOT)
@@ -761,10 +867,8 @@ def main_l3(args: argparse.Namespace) -> None:
 
     fleet_path = find_vehicle_types_file()
     fleet_rows = fb.load_fleet_rows(fleet_path)
-    overrides = {r["type_code"].strip(): 0 for r in fleet_rows}
-    overrides.update({t: int(n) for t, n in l3_block["trucks"].items()})
-    fleet_file = fb.write_fleet_file(fleet_rows, state_dir / "fleet_L3.csv",
-                                     overrides)
+    trucks_count = {t: int(n) for t, n in l3_block["trucks"].items()}
+    trucks = l3_truck_units(fleet_rows, trucks_count)
 
     suffix = f"_{args.label}" if args.label else ""
     out_dir = REAL_ROOT / "results" / "L3" / f"{date_str}{suffix}"
@@ -772,11 +876,66 @@ def main_l3(args: argparse.Namespace) -> None:
     print("=" * 66)
     print(f"PLAN_DAY L3 — {date_str} | {n_orders} objednávek / "
           f"{l3_block['selected_kg']:,.0f} kg | kamiony "
-          + ", ".join(f"{t}×{n}"
-                      for t, n in sorted(l3_block["trucks"].items())))
+          + ", ".join(f"{t}×{n}" for t, n in sorted(trucks_count.items())))
     print(f"Okna {l3.L3_CONFIG['window_from']}–{l3.L3_CONFIG['window_to']} "
-          f"(okna lokací pro L3 neplatí) | pauzy řidiče ZAPNUTY")
+          f"(okna lokací pro L3 neplatí) | režim řidiče EU ZAPNUT")
     print("=" * 66)
+
+    # ── Kontrola sjízdnosti PŘED solverem (stejný model jako odpolední
+    #    výběr, ale s REÁLNÝMI objednávkami a všechny povinné). Odpoví za
+    #    ~20 s, ne po 5–10 minutách solveru; když nevyjde, zkusí přidat
+    #    kamion ze zbytku flotily; když ani to ne, vypíše, co komu vrátit.
+    with open(merged, encoding="utf-8") as f:
+        merged_rows = list(csv.DictReader(f))
+    locs = l3.aggregate_locations({"L3": merged_rows})
+    mats = l3_hgv_matrix(locs, args.osm_source)
+    if mats is None:
+        print("  [!] Bez hgv matice — kontrola sjízdnosti přeskočena, "
+              "rozhodne až solver")
+    else:
+        rules = l3.driver_rules()
+        chk = l3.check_l3_feasible(locs, mats[0], mats[1], trucks, driver=rules)
+        if chk["feasible"]:
+            print("  Kontrola sjízdnosti: OK")
+            print(l3.format_routes(chk["routes"], rules["max_drive_h"]))
+        else:
+            print("  [!] Kontrola sjízdnosti: NEVYJDE s kamiony "
+                  f"{fmt_mix(trucks_count)} ({len(locs)} lokací; limity: "
+                  f"denní jízda {rules['max_drive_h']:g} h, pauzy, okno "
+                  f"{l3.L3_CONFIG['window_from']}–{l3.L3_CONFIG['window_to']}"
+                  + (f", max {rules['max_stops']} zastávek/trasa"
+                     if rules.get("max_stops") else "") + ")")
+            # D) zkusit přidat kamion, který večer nikdo nepoužil
+            spare = l3_truck_units(fleet_rows, state.get("remaining", {}))
+            added = []
+            for extra in spare:
+                trial = trucks + added + [extra]
+                chk2 = l3.check_l3_feasible(locs, mats[0], mats[1], trial,
+                                            driver=rules)
+                added.append(extra)
+                if chk2["feasible"]:
+                    chk = chk2
+                    break
+            if chk["feasible"]:
+                for extra in added:
+                    t = extra["type_code"]
+                    trucks_count[t] = trucks_count.get(t, 0) + 1
+                    state["remaining"][t] = max(0, state["remaining"].get(t, 0) - 1)
+                trucks = trucks + added
+                save_real_state(state_path, state)
+                print(f"  → přidán kamion ze zbytku flotily: "
+                      f"{fmt_mix({e['type_code']: 1 for e in added})} "
+                      f"(odečteno ze stavu) — teď sjízdné:")
+                print(l3.format_routes(chk["routes"], rules["max_drive_h"]))
+            else:
+                _l3_unplanned_alert(l3_block, locs, merged, state_dir, date_str,
+                                    reason=("žádná kombinace kamionů nedá "
+                                            "sjízdnou trasu"), out_dir=out_dir)
+
+    overrides = {r["type_code"].strip(): 0 for r in fleet_rows}
+    overrides.update(trucks_count)
+    fleet_file = fb.write_fleet_file(fleet_rows, state_dir / "fleet_L3.csv",
+                                     overrides)
 
     cmd = [PY, "vrp_solver_lines_v6.py",
            "--orders-file", merged.as_posix(),
@@ -792,13 +951,8 @@ def main_l3(args: argparse.Namespace) -> None:
     print(f"  $ {' '.join(cmd[1:])}")
     rc = subprocess.run(cmd, env=env).returncode
     if rc != 0:
-        raise SystemExit(
-            "\n" + "=" * 66 + "\n"
-            "[ALERT] L3 trasa NEVYŠLA — vyřazené objednávky nejsou v ŽÁDNÉM "
-            "plánu!\n"
-            f"        Objednávky: {merged.as_posix()}\n"
-            "        Ruční zásah: vrátit je depům (přeplánovat bez vyřazení),"
-            "\n        nebo upravit výběr v decision.\n" + "=" * 66)
+        _l3_unplanned_alert(l3_block, locs, merged, state_dir, date_str,
+                            reason="solver trasu nenašel", out_dir=out_dir)
 
     lines = lines_from_run(out_dir)
     kg = sum(l["total_kg"] for l in lines)

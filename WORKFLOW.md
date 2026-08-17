@@ -302,19 +302,31 @@ Sekvence dep **CB → MO → HK → PR** nad ostrými daty, řízená decision:
 **Default solveru je od vlny 3 L0** (100 % nosnosti; okna −5/+25 zůstávají).
 „Přesně jako dřív" = `--capacity-multiplier 1.03`.
 
-### L3 — kamion předem (`plan_day.py l3`, od 14. 8. 2026)
+### L3 — kamion předem (`plan_day.py l3`, od 14. 8. 2026; výběr VRP od 16. 8. 2026)
 
 Když deficit malých přeteče 3 % denních kg, jede ráno **kamion 18t**
 a sebere velké **rampové** objednávky napříč depy, aby se zbytek dne
 vešel do malých aut:
 
-1. **Výběr v predikci** (`l3_planner.py`, automaticky v `predict`):
-   kandidáti = rampové **skutečné** objednávky (sloupec `predicted == 0`
-   — dopredikované z losu NIKDY, jejich čísla večer neexistují);
-   cíl kg = `missing_kg + max(10 %, 500 kg)`; greedy podle
-   `kg / (1 + vzdálenost × koef)` (těžké a blízké lokace); binování
-   do kamionů zbylých po P2 (nedělí se lokace mezi auta). Bez zbylého
-   kamionu se L3 nekoná (jen alert). Výběr jde do `decision.l3`.
+1. **Výběr v predikci** (`l3_planner.select_locations_vrp`, automaticky
+   v `predict`): kandidáti = rampové **skutečné** objednávky (sloupec
+   `predicted == 0` — dopredikované z losu NIKDY, jejich čísla večer
+   neexistují), agregované per lokace. Výběr je **VRP s volitelnými
+   zastávkami** v OR-Tools nad **reálnou hgv maticí** (ORS): každá lokace
+   je volitelná s penále `kg × λ` (`kg_value_kc`, 6 Kč/kg), zastávka
+   stojí `stop_cost_kc` (150 Kč), tvrdé podmínky jsou nosnost, **denní
+   limit čisté jízdy** (`driver_max_drive_h`, 9 h — EU), pauzy a okno
+   04:00–20:00, a Σ kg ≤ cíl = `missing_kg + max(10 %, 500 kg)`. Solver
+   tak sám dělá obchod „100 km zajížďky = 2 800 Kč = stojí za to jen pro
+   ≥ 470 kg" a vybírá **jen sjízdné smyčky** — 3 × 1 000 kg v rozích
+   100km čtverce vezme radši než 20 × 70 kg v okruhu 40 km, pokud se ta
+   smyčka vejde do dne. Když sjízdné lokace nedají `missing_kg`, zkusí se
+   λ × 3 a × 10 (`kg_value_escalation`) a vezme se nejlepší; pod
+   `missing_kg` je výběr označený `exhausted`. Kamiony = ty zbylé po P2;
+   bez kamionu se L3 nekoná (jen alert). Do `decision.l3` jde výběr
+   i **odhad per kamion** (km, jízda, span, pauzy) — vidět už odpoledne.
+   Bez ORS padá výběr na záložní greedy (`select_locations`, kg × blízkost,
+   bez času — 16. 8. 2026 tak vybral 611 km / 13 h na jeden kamion).
 2. **Večer** (`real`): objednávky z `decision.l3` se při prepare vyřadí
    (`--exclude-orders-file` — podle ČÍSEL, storno = warning) a zapíšou
    solver-ready do `prepared/{DEPO}/l3_orders_*.csv`; kamiony L3 jsou
@@ -324,16 +336,23 @@ vešel do malých aut:
    python plan_day.py l3
    ```
    sloučí l3_orders všech dep (block `L3`, okna lokací neplatí — pevně
-   **04:00–20:00**), vygeneruje flotilu jen s L3 kamiony a pustí solver
-   s **`--driver-breaks`** (EU zjednodušeně: žádných 4,5 h jízdy bez
-   45 min pauzy — pauzy řeší OR-Tools, routing kudy-smí-kamion řeší
-   ORS `driving-hgv` jako dosud). Výstupy standardně do
-   `data/results/L3/{DATUM}/` vč. **ESO exportu**; když trasa nevyjde,
-   hlasitý ALERT (vyřazené objednávky nejsou v žádném plánu!).
+   **04:00–20:00**) a **nejdřív zkontroluje sjízdnost** (stejný model
+   jako výběr, ale s reálnými objednávkami a všechny povinné — odpoví za
+   ~20 s). Když nevyjde, zkusí přidat kamion, který večer nikdo nepoužil
+   (odečte ho ze stavu); když ani to, skončí ALERTem s přesným seznamem
+   **co komu vrátit** (per depo, čísla objednávek) +
+   `state/l3_unplanned_{DATUM}.json`, prázdnou výstupní složku uklidí.
+   Pak pustí solver s **`--driver-breaks`** (režim řidiče EU: pauzy 45 min
+   v každém úseku do 4,5 h uplynulého času + **denní limit čisté jízdy
+   9 h** jako tvrdá dimenze; routing kudy-smí-kamion řeší ORS
+   `driving-hgv` jako dosud). Výstupy standardně do
+   `data/results/L3/{DATUM}/` vč. **ESO exportu**.
 4. **Řidiči**: `driver_assignment.py` zónu L3 přibere automaticky,
-   když `data/results/L3/{DATUM}/` existuje.
+   když `data/results/L3/{DATUM}/lines_summary.csv` existuje.
 
-Parametry (okno, cíl, koef blízkosti, budget) v `l3_planner.L3_CONFIG`.
+Parametry (okno, cíl, λ, cena zastávky, budget) v `l3_planner.L3_CONFIG`;
+pravidla řidiče (`driver_break_after_h`, `driver_break_min`,
+`driver_max_drive_h`) jen v CONFIG solveru — výběr si je bere odtud.
 
 ---
 
@@ -390,6 +409,8 @@ díky které jsou benchmarky porovnatelné napříč časem.
 | `--capacity-multiplier 1.0` | Jen nosnost (default viz CONFIG). |
 | `--tw-expand-before 0` / `--tw-expand-after 0` | Jen okna (default 5 / 25 min). |
 | `--seed-finalists 1` | Vynutí jen vítěze fáze C ve fázi E = **chování před 11. 8. 2026**. Na srovnávací běhy. Default je `auto` (viz níže). |
+| `--double-runs` | Dvojlinky (porušení L2) — virtuální druhé jízdy malých aut od 10:00; večer zapíná `plan_day` podle decision. Dvojlinky se dělí mezi clustery poměrně, ne jako blok. |
+| `--driver-breaks` | **Režim řidiče EU** (L3 kamiony): 45 min pauza v každém úseku do 4,5 h + **denní limit čisté jízdy 9 h** jako tvrdá dimenze; objednávka, jejíž cesta tam a zpět limit přesáhne, zastaví běh hned (`validate_orders_servable`). Běžné dodávkové linky nemají. |
 
 ### Finalisté fáze E (`seed_finalists`, default `auto` od 11. 8. 2026)
 

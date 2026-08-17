@@ -183,3 +183,67 @@ class TestL3StateAndExcludes:
             {"order_number": "O2", "depot": "HK", "location_code": "b", "kg": 1},
             {"order_number": "O3", "depot": "CB", "location_code": "c", "kg": 1}]}
         assert l3.orders_by_depot(block) == {"CB": ["O1", "O3"], "HK": ["O2"]}
+
+
+class TestL3TrucksAndFallback:
+    """L3 kamiony z flotily, typy z binů, alert při neplánovatelné trase."""
+
+    ROWS = [
+        {"type_code": "TYPE_02", "max_kg": "1350", "cost_per_km": "11",
+         "start_cost_kc": "1000", "available_count": "10"},
+        {"type_code": "TYPE_04", "max_kg": "3200", "cost_per_km": "19.5",
+         "start_cost_kc": "1000", "available_count": "2"},
+        {"type_code": "TYPE_05", "max_kg": "8000", "cost_per_km": "28",
+         "start_cost_kc": "1000", "available_count": "1"},
+        {"type_code": "TYPE_06", "max_kg": "8700", "cost_per_km": "28",
+         "start_cost_kc": "1000", "available_count": "1"},
+    ]
+
+    def test_truck_units_only_trucks_expanded_desc(self):
+        units = plan_day.l3_truck_units(
+            self.ROWS, {"TYPE_02": 5, "TYPE_04": 2, "TYPE_05": 1, "TYPE_06": 1})
+        assert [u["type_code"] for u in units] == ["TYPE_06", "TYPE_05"]
+        assert units[0]["max_kg"] == 8700 and units[0]["cost_per_km"] == 28.0
+        assert units[0]["start_cost"] == 1000.0
+
+    def test_truck_units_zero_when_none_left(self):
+        assert plan_day.l3_truck_units(self.ROWS, {"TYPE_05": 0}) == []
+
+    def test_trucks_by_type_from_bins(self):
+        units = [{"type_code": "TYPE_06"}, {"type_code": "TYPE_05"}]
+        assert plan_day.l3_trucks_by_type_from_bins(units, [[{"x": 1}], []]) == \
+            {"TYPE_06": 1}
+        assert plan_day.l3_trucks_by_type_from_bins(units, [[{"x": 1}], [{"y": 2}]]) == \
+            {"TYPE_06": 1, "TYPE_05": 1}
+
+    def test_unplanned_alert_writes_json_and_cleans_dir(self, tmp_path):
+        block = {"orders": [
+            {"order_number": "O1", "depot": "CB", "location_code": "a", "kg": 100},
+            {"order_number": "O2", "depot": "HK", "location_code": "b", "kg": 200}]}
+        locs = [{"kg": 100}, {"kg": 200}]
+        out_dir = tmp_path / "results" / "L3" / "2026-08-17"
+        out_dir.mkdir(parents=True)
+        state_dir = tmp_path / "state"
+        with pytest.raises(SystemExit) as e:
+            plan_day._l3_unplanned_alert(block, locs, tmp_path / "m.csv",
+                                         state_dir, "2026-08-17",
+                                         reason="test", out_dir=out_dir)
+        msg = str(e.value)
+        assert "NEVYŠLA" in msg and "CB: 1 obj" in msg and "HK: 1 obj" in msg
+        assert "O2" in msg
+        assert not out_dir.exists()                    # prázdná složka pryč
+        j = state_dir / "l3_unplanned_2026-08-17.json"
+        assert j.exists()
+        import json
+        data = json.loads(j.read_text(encoding="utf-8"))
+        assert data["orders_by_depot"]["HK"][0]["order_number"] == "O2"
+
+    def test_unplanned_alert_keeps_nonempty_dir(self, tmp_path):
+        out_dir = tmp_path / "L3"
+        out_dir.mkdir()
+        (out_dir / "něco.txt").write_text("x", encoding="utf-8")
+        with pytest.raises(SystemExit):
+            plan_day._l3_unplanned_alert({"orders": []}, [], tmp_path / "m.csv",
+                                         tmp_path / "s", "2026-08-17",
+                                         reason="t", out_dir=out_dir)
+        assert out_dir.exists()

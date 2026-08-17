@@ -705,3 +705,103 @@ class TestDriverBreaks:
         b = self._solve(breaks_enabled=False)
         assert a[0]["duration_h"] == b[0]["duration_h"]
         assert a[0]["total_km"] == b[0]["total_km"]
+
+    # ── denní limit jízdy (Drive dimenze) + regres indexování pauz ────────
+
+    def _solve_drive(self, times, breaks_enabled=True, max_drive_h=None,
+                     n_vehicles=1):
+        """Model s libovolnou časovou maticí (minuty). Vrací routes nebo []."""
+        from vrp_solver_lines_v6 import solve_cluster
+        n = len(times) - 1
+        orders = []
+        for i in range(n):
+            o = _make_order(lat=50.0 + i * 0.5, lon=14.0, time_from="00:00",
+                            time_to="23:00", weight_kg=100.0, service_sec=60)
+            o["id"] = o["order_number"] = f"O{i}"
+            o["name"] = f"stop{i}"
+            orders.append(o)
+        vehicles = [{"id": f"TYPE_05_{k+1:02d}", "type": "kamion",
+                     "type_code": "TYPE_05", "max_kg": 8000,
+                     "cost_per_km": 28.0, "start_cost": 1000,
+                     "osrm_profile": "driving-hgv", "time_multiplier": 1.0}
+                    for k in range(n_vehicles)]
+        dist = [[t / 1.0 for t in row] for row in times]      # 1 km/min — jedno
+        saved = {k: solver_mod.CONFIG.get(k)
+                 for k in ("_driver_breaks_enabled", "driver_max_drive_h")}
+        solver_mod.CONFIG["_driver_breaks_enabled"] = breaks_enabled
+        if max_drive_h is not None:
+            solver_mod.CONFIG["driver_max_drive_h"] = max_drive_h
+        try:
+            routes, _ = solve_cluster(orders, vehicles, dist,
+                                      [times] * n_vehicles, time_limit_sec=2)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    solver_mod.CONFIG.pop(k, None)
+                else:
+                    solver_mod.CONFIG[k] = v
+        return routes
+
+    def test_drive_over_daily_limit_is_infeasible(self):
+        # sklad -> A 300 min, A -> B 300, B -> sklad 300 = 15 h čisté jízdy;
+        # okna dovolí (00:00–23:00), pauzy by se vešly — ale 15 h > 9 h
+        times = [[0, 300, 600], [300, 0, 300], [600, 300, 0]]
+        assert self._solve_drive(times, breaks_enabled=True, max_drive_h=9.0) == []
+        # bez režimu řidiče trasa existuje (jen okna a strop 23,5 h)
+        assert self._solve_drive(times, breaks_enabled=False)
+
+    def test_drive_under_daily_limit_is_feasible(self):
+        # trojúhelník 150/150/150 = 7,5 h jízdy < 9 h; s pauzami trasa vyjde
+        times = [[0, 150, 150], [150, 0, 150], [150, 150, 0]]
+        routes = self._solve_drive(times, breaks_enabled=True, max_drive_h=9.0)
+        assert routes and len(routes) == 1
+
+    def test_drive_limit_splits_across_trucks(self):
+        # 2 zastávky, každá 4 h od skladu a 8 h od sebe: jeden kamion
+        # 4+8+4 = 16 h jízdy nesmí; dva kamiony po 8 h ano
+        times = [[0, 240, 240], [240, 0, 480], [240, 480, 0]]
+        assert self._solve_drive(times, True, 9.0, n_vehicles=1) == []
+        routes = self._solve_drive(times, True, 9.0, n_vehicles=2)
+        assert len(routes) == 2
+
+    def test_break_transits_indexed_by_routing_index(self):
+        # Regres 1.5: node_visit_transits musí mít délku routing.Size()
+        # (uzly + start/end per vozidlo). Ověřuje se přímo na modelu —
+        # dřív se předával seznam v prostoru uzlů (kratší) → UB v OR-Tools.
+        from ortools.constraint_solver import pywrapcp
+        from vrp_solver_lines_v6 import _add_driver_breaks, build_data_model
+        orders = []
+        for i in range(3):
+            o = _make_order(lat=50.0 + i * 0.1, lon=14.0, service_sec=600)
+            o["id"] = o["order_number"] = f"O{i}"
+            orders.append(o)
+        vehicles = [{"id": f"V{k}", "type": "kamion", "type_code": "TYPE_05",
+                     "max_kg": 8000, "cost_per_km": 28.0, "start_cost": 0,
+                     "osrm_profile": "driving-hgv", "time_multiplier": 1.0}
+                    for k in range(2)]
+        times = [[0, 10, 20, 30], [10, 0, 10, 20], [20, 10, 0, 10], [30, 20, 10, 0]]
+        data = build_data_model(orders, vehicles, times, [times, times])
+        n = len(data["demands"])
+        manager = pywrapcp.RoutingIndexManager(n, 2, 0)
+        routing = pywrapcp.RoutingModel(manager)
+        cb = routing.RegisterTransitCallback(
+            lambda fi, ti: times[manager.IndexToNode(fi)][manager.IndexToNode(ti)])
+        routing.AddDimension(cb, 60, 1440, False, "Time")
+        time_dim = routing.GetDimensionOrDie("Time")
+        captured = {}
+        orig = time_dim.SetBreakIntervalsOfVehicle
+
+        def spy(intervals, v_idx, transits):
+            captured[v_idx] = list(transits)
+            return orig(intervals, v_idx, transits)
+        time_dim.SetBreakIntervalsOfVehicle = spy
+        _add_driver_breaks(routing, manager, time_dim, data)
+        assert set(captured) == {0, 1}
+        for tr in captured.values():
+            assert len(tr) == routing.Size()          # ne len(orders)+1
+            # start/end indexy 0, zákaznické uzly = servis (10 min)
+            for idx in range(routing.Size()):
+                if routing.IsStart(idx) or routing.IsEnd(idx):
+                    assert tr[idx] == 0
+                else:
+                    assert tr[idx] == 10

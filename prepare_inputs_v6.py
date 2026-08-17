@@ -465,9 +465,9 @@ def transform(raw_rows: list[dict], depot_code: str, *,
                  f"chybí/nevalidní KG: sloupec Q={raw['payload_raw']!r}")
             continue
 
-        # Rampa: přísně "0"/"1" — cokoli jiného je vada exportu. Plánování
-        # ji zatím neřídí (L3 čeká na definici), ale vadný příznak dnes =
-        # tichý špatný plán v den, kdy se L3 zapne.
+        # Rampa: přísně "0"/"1" — cokoli jiného je vada exportu. Podle ní
+        # vybírá L3 (kamion předem) — vadný příznak = kamion pošleme tam,
+        # kde nevyloží, nebo naopak přehlédneme lokaci, která by mu pomohla.
         ramp_raw = raw.get("ramp", "").strip()
         if ramp_raw not in ("0", "1"):
             drop(raw, "vadný příznak rampy",
@@ -831,7 +831,7 @@ def main():
     print(f"Celkem kg:  {total_kg:,.1f}")
     print(f"Servis:     {total_service_h:,.1f} h celkem (předpočítáno v ESO9)")
     print(f"S rampou:   {ramp_orders} z {len(orders)} objednávek (sloupec S; "
-          f"zatím jen informativně — L3 čeká na definici)")
+          f"kandidáti pro L3 — kamion předem)")
     print(f"Výstup:     {output_file}")
 
 if __name__ == "__main__":
