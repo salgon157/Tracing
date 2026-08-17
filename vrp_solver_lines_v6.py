@@ -621,7 +621,7 @@ def _route_return_min(route: dict) -> int:
     return time_to_minutes(route["stops"][-1]["arrival"])
 
 
-def pair_double_runs(routes: list) -> list:
+def pair_double_runs(routes: list, vehicles_expanded: list | None = None) -> list:
     """
     Přiřadí druhé jízdy fyzickým autům, nebo spadne.
 
@@ -630,6 +630,14 @@ def pair_double_runs(routes: list) -> list:
     berou od nejdřívějšího výjezdu a dostávají fyzické auto s nejdřívějším
     vyhovujícím návratem (nechává pozdější návraty pozdějším dvojlinkám).
     Po spárování nese route fyzické vehicle_id + příznak double_run.
+
+    Když se žádné vrátivší se auto nehodí, vezme se **nečinné fyzické auto
+    téhož typu z celé flotily** (`vehicles_expanded`) — jelo by to jako svou
+    první a jedinou jízdu (double_run=False). Dřív se hledalo jen mezi auty,
+    která už jela: cluster A vyčerpal svá auta a použil dvojlinku, cluster B
+    měl auta, která celý den stála — a párování spadlo (audit 2.4).
+    Vrátivší se auto má přednost: nečinné auto se šetří dalším depům
+    (budget flotily ubývá po fyzických kusech).
     """
     reload_min = int(CONFIG.get("depot_loading_min", 40))
     virtual = [r for r in routes if is_double_run_vehicle(r["vehicle_id"])]
@@ -641,6 +649,15 @@ def pair_double_runs(routes: list) -> list:
         if not is_double_run_vehicle(r["vehicle_id"]):
             physical_by_type.setdefault(r["type_code"], []).append(r)
 
+    # nečinná fyzická auta (ve flotile, ale bez trasy) per typ
+    used_ids = {r["vehicle_id"] for r in routes
+                if not is_double_run_vehicle(r["vehicle_id"])}
+    idle_by_type: dict[str, list[dict]] = {}
+    for v in (vehicles_expanded or []):
+        if is_virtual_vehicle(v) or v["id"] in used_ids:
+            continue
+        idle_by_type.setdefault(v["type_code"], []).append(v)
+
     paired_ids: set[str] = set()
     failures = []
     for v_route in sorted(virtual, key=_route_departure_min):
@@ -651,27 +668,40 @@ def pair_double_runs(routes: list) -> list:
              and _route_return_min(p) + reload_min <= departure),
             key=_route_return_min,
         )
-        if not candidates:
-            same_type = physical_by_type.get(v_route["type_code"], [])
-            failures.append(
-                f"  - {v_route['vehicle_id']} (typ {v_route['type_code']}, "
-                f"výjezd {departure // 60:02d}:{departure % 60:02d}): "
-                f"žádné fyzické auto s návratem do "
-                f"{(departure - reload_min) // 60:02d}:"
-                f"{(departure - reload_min) % 60:02d}\n"
-                f"    návraty téhož typu: "
-                + (", ".join(
-                    f"{p['vehicle_id']}"
-                    f"{' (obsazeno)' if p['vehicle_id'] in paired_ids else ''}"
-                    f" {_route_return_min(p) // 60:02d}:"
-                    f"{_route_return_min(p) % 60:02d}"
-                    for p in sorted(same_type, key=_route_return_min)) or "žádná"))
+        if candidates:
+            host = candidates[0]
+            paired_ids.add(host["vehicle_id"])
+            v_route["vehicle_id"] = host["vehicle_id"]
+            v_route["driver"] = host.get("driver", "")
+            v_route["double_run"] = True
             continue
-        host = candidates[0]
-        paired_ids.add(host["vehicle_id"])
-        v_route["vehicle_id"] = host["vehicle_id"]
-        v_route["driver"] = host.get("driver", "")
-        v_route["double_run"] = True
+
+        idle = idle_by_type.get(v_route["type_code"], [])
+        if idle:
+            car = idle.pop(0)
+            print(f"  [DVOJLINKY] {v_route['vehicle_id']} (výjezd "
+                  f"{departure // 60:02d}:{departure % 60:02d}): žádný včasný "
+                  f"návrat, jede jako první jízda NEČINNÉHO auta {car['id']}")
+            v_route["vehicle_id"] = car["id"]
+            v_route["driver"] = car.get("driver", "")
+            v_route["double_run"] = False
+            physical_by_type.setdefault(car["type_code"], []).append(v_route)
+            continue
+
+        same_type = physical_by_type.get(v_route["type_code"], [])
+        failures.append(
+            f"  - {v_route['vehicle_id']} (typ {v_route['type_code']}, "
+            f"výjezd {departure // 60:02d}:{departure % 60:02d}): "
+            f"žádné fyzické auto s návratem do "
+            f"{(departure - reload_min) // 60:02d}:"
+            f"{(departure - reload_min) % 60:02d}, nečinná auta typu: žádná\n"
+            f"    návraty téhož typu: "
+            + (", ".join(
+                f"{p['vehicle_id']}"
+                f"{' (obsazeno)' if p['vehicle_id'] in paired_ids else ''}"
+                f" {_route_return_min(p) // 60:02d}:"
+                f"{_route_return_min(p) % 60:02d}"
+                for p in sorted(same_type, key=_route_return_min)) or "žádná"))
 
     if failures:
         abort(
@@ -2121,7 +2151,6 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
         "tw_midpoint": partition_tw_midpoint(orders, n_clusters, seed),
     }
 
-    time_per_cluster = max(20, time_budget_sec // max(n_clusters, 1))
     all_worker_args  = []
     seed_cluster_data = {}
 
@@ -2144,12 +2173,23 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
                 "cluster_vehicles":c_vehicles,
                 "sub_dist":        sub_dist.tolist(),
                 "sub_times":       [st.tolist() for st in sub_times],
-                "time_limit_sec":  time_per_cluster,
                 "config":          dict(CONFIG),
             })
 
+    # Čas na jednu úlohu podle počtu VLN (úlohy / workery), stejně jako
+    # fáze E — ne podle počtu clusterů. Úloh je seedy × clustery (3× víc
+    # než clusterů); dřív se dělilo jen clustery, takže na stroji s dost
+    # jádry fáze C skončila za polovinu svého budgetu (30min běhy trvaly
+    # 24 min, audit 2.3). Na 4 jádrech (3 workery, 6 úloh) = 2 vlny →
+    # každá úloha půl budgetu, wall clock ~budget; na 7+ jádrech 1 vlna.
+    time_per_cluster = phase_c_time_per_task(time_budget_sec,
+                                             len(all_worker_args), n_workers)
+    for a in all_worker_args:
+        a["time_limit_sec"] = time_per_cluster
+    waves = math.ceil(len(all_worker_args) / max(n_workers, 1))
     print(f"  {len(all_worker_args)} cluster-solve úloh paralelně "
-          f"({n_workers} workerů, {time_per_cluster} sec/cluster)...")
+          f"({n_workers} workerů, {time_per_cluster} sec/úloha"
+          + (f", {waves} vlny" if waves > 1 else "") + ")...")
 
     results_by_seed = {sn: {} for sn in seeds_labels}
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -2550,6 +2590,15 @@ def phase_e_time_per_task(time_budget_sec: float, n_tasks: int,
     kratší čas na úlohu, wall clock fáze zůstává ~budget."""
     waves = math.ceil(max(n_tasks, 1) / max(n_workers, 1))
     return max(15, int(time_budget_sec / waves))
+
+
+def phase_c_time_per_task(time_budget_sec: float, n_tasks: int,
+                          n_workers: int) -> int:
+    """Totéž pro fázi C (seedy × clustery), minimum 20 s na úlohu —
+    jeden vzorec pro obě fáze, ať se budget využije celý bez ohledu na
+    počet jader (4 / 7 / 20)."""
+    waves = math.ceil(max(n_tasks, 1) / max(n_workers, 1))
+    return max(20, int(time_budget_sec / waves))
 
 
 def phase_e_intensify(finalists, distances_km, vehicle_time_by_id,
@@ -3711,7 +3760,7 @@ def main():
     # Dvojlinky: přiřadit druhé jízdy fyzickým autům (nebo spadnout) —
     # PŘED invariantem a uložením, ať výstupy nesou reálná vozidla.
     if args.double_runs:
-        all_routes = pair_double_runs(all_routes)
+        all_routes = pair_double_runs(all_routes, vehicles_expanded)
 
     # Pojistka č. 4 (poslední závora): vstup == naplánováno, jinak se
     # neuloží NIC. Pojistka č. 3 je záchranný re-solve ve phase C.

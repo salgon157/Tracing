@@ -981,3 +981,35 @@ class TestRescueBudget:
                              env={**__import__("os").environ, "SKIP_STARTUP_TESTS": "1",
                                   "PYTHONIOENCODING": "utf-8"}).stdout or ""
         assert "--rescue-extra-min" in out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Audit 2.3: fáze C dělí budget počtem VLN (úlohy / workery), ne clusterů
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestPhaseCBudgetWaves:
+    @pytest.mark.parametrize("workers,tasks,expected_frac", [
+        (3, 6, 0.5),        # 4 jádra: 2 vlny → půl budgetu na úlohu
+        (6, 6, 1.0),        # 7 jader: 1 vlna → celý budget
+        (19, 6, 1.0),       # 20 jader: totéž jako 7
+        (6, 9, 0.5),        # 3 clustery × 3 seedy na 7 jádrech: 2 vlny
+        (19, 9, 1.0),
+    ])
+    def test_phase_c_time_uses_waves(self, workers, tasks, expected_frac):
+        from vrp_solver_lines_v6 import phase_c_time_per_task
+        budget = 600
+        assert phase_c_time_per_task(budget, tasks, workers) == int(budget * expected_frac)
+
+    def test_minimum_20s(self):
+        from vrp_solver_lines_v6 import phase_c_time_per_task
+        assert phase_c_time_per_task(30, 6, 1) == 20
+
+    def test_phase_c_and_e_share_wave_logic(self):
+        from vrp_solver_lines_v6 import phase_c_time_per_task, phase_e_time_per_task
+        for w, t in ((3, 6), (6, 6), (19, 12)):
+            assert phase_c_time_per_task(1000, t, w) == phase_e_time_per_task(1000, t, w)
+
+    def test_no_cluster_count_division_left(self):
+        # regres: starý vzorec `time_budget_sec // max(n_clusters, 1)` je pryč
+        src = Path(solver_mod.__file__).read_text(encoding="utf-8")
+        assert "time_budget_sec // max(n_clusters, 1)" not in src

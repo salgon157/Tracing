@@ -262,8 +262,11 @@ python vrp_solver_lines_v6.py --orders-file ... --double-runs
 - **čas**: druhá jízda smí vyjet od `CONFIG double_run_earliest` (10:00)
   a po solve se **páruje na fyzické auto téhož typu**, které se vrátilo
   aspoň `depot_loading_min` (40 min) před jejím výjezdem. Jedno auto
-  = max jedna dvojlinka. **Když párování nejde, běh spadne** s výpisem
-  návratů — žádné tiché překrytí směn.
+  = max jedna dvojlinka. Když se žádné vrátivší se auto nehodí, vezme se
+  **nečinné fyzické auto téhož typu z celé flotily** (jede jako svou první
+  jízdu, ne dvojlinka; od 17. 8. — dřív párování vidělo jen auta, která
+  jela, a spadlo, i když jinde stála). Teprve když ani to → **exit 3**
+  s výpisem návratů — žádné tiché překrytí směn.
 - **výstupy**: druhá jízda nese vehicle_id fyzického auta; v lines_summary
   má sloupec `double_run` = „2. jízda". Max virtuálních jízd:
   `CONFIG double_runs_max` (10).

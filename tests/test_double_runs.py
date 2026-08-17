@@ -354,3 +354,75 @@ class TestUnsolvableReportNamesCulprits:
         assert "Fyzických aut 1" in txt
         assert "málo fyzických aut" in txt.lower()
         assert "NE náklad" in txt
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Audit 2.4: párování vidí i NEČINNÁ fyzická auta z celé flotily
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestPairingUsesIdleVehicles:
+    def _fleet(self, n=3, type_code="TYPE_02"):
+        return [_vehicle(type_code, i) for i in range(1, n + 1)]
+
+    def test_idle_physical_vehicle_used_before_failing(self):
+        # jelo jen TYPE_02_01 (návrat 14:00 — pozdě pro výjezd 12:00);
+        # TYPE_02_02 a _03 stály → dvojlinka jede jako první jízda _02
+        routes = [_route(vehicle_id="TYPE_02_01", ret="14:00"),
+                  _route(vehicle_id="TYPE_02_2R01", departure="12:00")]
+        out = pair_double_runs(routes, self._fleet(3))
+        conv = [r for r in out if r["stops"][0]["arrival"] == "12:00"][0]
+        assert conv["vehicle_id"] == "TYPE_02_02"
+        assert conv.get("double_run") is False           # je to jeho PRVNÍ jízda
+        assert not is_double_run_vehicle(conv["vehicle_id"])
+
+    def test_prefers_returned_vehicle_over_idle(self):
+        routes = [_route(vehicle_id="TYPE_02_01", ret="10:30"),
+                  _route(vehicle_id="TYPE_02_2R01", departure="12:00")]
+        out = pair_double_runs(routes, self._fleet(3))
+        second = [r for r in out if r["stops"][0]["arrival"] == "12:00"][0]
+        assert second["vehicle_id"] == "TYPE_02_01" and second["double_run"] is True
+
+    def test_two_virtuals_get_two_different_idle_cars(self):
+        routes = [_route(vehicle_id="TYPE_02_01", ret="15:00"),
+                  _route(vehicle_id="TYPE_02_2R01", departure="12:00", ret="16:00"),
+                  _route(vehicle_id="TYPE_02_2R02", departure="12:30", ret="16:30")]
+        out = pair_double_runs(routes, self._fleet(3))
+        ids = sorted(r["vehicle_id"] for r in out)
+        assert ids == ["TYPE_02_01", "TYPE_02_02", "TYPE_02_03"]
+
+    def test_idle_of_other_type_not_used(self):
+        routes = [_route(vehicle_id="TYPE_02_01", ret="15:00"),
+                  _route(vehicle_id="TYPE_02_2R01", departure="12:00")]
+        fleet = [_vehicle("TYPE_02", 1), _vehicle("TYPE_01", 1, max_kg=1200)]
+        with pytest.raises(SystemExit) as e:
+            pair_double_runs(routes, fleet)
+        assert "nečinná auta typu: žádná" in str(e.value)
+
+    def test_no_candidate_at_all_exit_3(self):
+        from vrp_solver_lines_v6 import EXIT_INFEASIBLE
+        routes = [_route(vehicle_id="TYPE_02_01", ret="15:00"),
+                  _route(vehicle_id="TYPE_02_2R01", departure="12:00")]
+        with pytest.raises(SystemExit) as e:
+            pair_double_runs(routes, self._fleet(1))
+        assert e.value.code == EXIT_INFEASIBLE
+
+    def test_idle_vehicle_counted_once_in_fleet_usage(self, tmp_path):
+        # integrace s fleet_budget: po přiřazení nečinného auta je spotřeba
+        # = počet unikátních fyzických vozidel (auto se nepočítá dvakrát)
+        import csv
+        import fleet_budget as fb
+        routes = [_route(vehicle_id="TYPE_02_01", ret="14:00"),
+                  _route(vehicle_id="TYPE_02_2R01", departure="12:00")]
+        out = pair_double_runs(routes, self._fleet(3))
+        p = tmp_path / "lines_summary.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["zone", "line_id", "vehicle_id",
+                                              "total_kg", "double_run"])
+            w.writeheader()
+            for i, r in enumerate(out, 1):
+                w.writerow({"zone": "PR", "line_id": f"LINE_{i:02d}",
+                            "vehicle_id": r["vehicle_id"], "total_kg": 100,
+                            "double_run": "2. jízda" if r.get("double_run") else ""})
+        lines = fb.parse_lines_summary(p)
+        assert fb.vehicles_used_by_type(lines) == {"TYPE_02": 2}
+        assert not any(l["double_run"] for l in lines)      # žádná dvojlinka

@@ -96,3 +96,48 @@ class TestScenarioEveningReactsToExitCodes:
     def test_technical_error_no_escalation(self):
         outcome, flags, rc, calls, esc = self._run([1])
         assert outcome == "error" and esc == [] and flags == self.L0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Scénář 3 (audit 2.4 + 2.5): poslední depo, dvojlinky, nečinná auta jinde
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestScenarioDoubleRunWithIdleCarsElsewhere:
+    def test_plan_survives_when_other_cluster_left_cars_idle(self):
+        from vrp_solver_lines_v6 import (assign_vehicles_to_clusters,
+                                         build_double_run_vehicles,
+                                         is_virtual_vehicle, pair_double_runs)
+        physical = [{"id": f"TYPE_02_{k:02d}", "type_code": "TYPE_02", "type": "d",
+                     "max_kg": 1350, "cost_per_km": 11.0, "start_cost": 1000,
+                     "osrm_profile": "driving", "time_multiplier": 1.0,
+                     "driver": ""} for k in range(1, 7)]
+        fleet = physical + build_double_run_vehicles(physical)
+        # dva clustery: A hustý s odpolední prací (dostane dvojlinky), B lehký
+        A = [_order(f"A{i}", "06:00", "13:00", lat=49.0 + i * 0.001) for i in range(20)]
+        B = [_order(f"B{i}", "10:00", "14:00", lat=51.0 + i * 0.001) for i in range(4)]
+        asg = assign_vehicles_to_clusters([A, B], fleet)
+        # 2.5 (dnešní): dvojlinky rozprostřené, každý cluster má fyzická auta
+        assert all(any(not is_virtual_vehicle(v) for v in a) for a in asg)
+
+        # simulace výsledku solveru: A jelo všemi svými fyzickými + jednou
+        # virtuální (výjezd 12:00, ale všechna auta A se vrací až 14:00);
+        # B použilo jediné auto, ostatní auta B stála
+        def rt(vid, dep, ret):
+            return {"vehicle_id": vid, "type_code": "TYPE_02", "driver": "",
+                    "stops": [{"stop": "Sklad", "arrival": dep, "kg": 0},
+                              {"stop": "Z", "id": "x", "arrival": dep, "kg": 100},
+                              {"stop": "Sklad (návrat)", "arrival": ret, "kg": 0}]}
+        phys_A = [v for v in asg[0] if not is_virtual_vehicle(v)]
+        virt_A = [v for v in asg[0] if is_virtual_vehicle(v)]
+        phys_B = [v for v in asg[1] if not is_virtual_vehicle(v)]
+        assert virt_A and len(phys_B) >= 2
+        routes = [rt(v["id"], "06:00", "14:00") for v in phys_A]
+        routes.append(rt(virt_A[0]["id"], "12:00", "16:00"))
+        routes.append(rt(phys_B[0]["id"], "10:00", "13:00"))
+
+        out = pair_double_runs(routes, fleet)             # nesmí spadnout
+        conv = [r for r in out if r["stops"][0]["arrival"] == "12:00"][0]
+        assert conv["vehicle_id"] in {v["id"] for v in phys_B[1:]} or \
+            conv["vehicle_id"] in {v["id"] for v in physical}
+        assert not is_virtual_vehicle({"id": conv["vehicle_id"]})
+        assert conv["double_run"] is False
