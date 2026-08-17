@@ -26,6 +26,10 @@ param(
 $ErrorActionPreference = "Continue"
 $env:PYTHONIOENCODING = "utf-8"
 $env:SKIP_STARTUP_TESTS = "1"
+# konzole PowerShellu 5.1 cte vystup pythonu jako cp852 -> rozsypane ceske znaky;
+# prepnout na UTF-8 (soubory jsou UTF-8 vzdy, tohle je jen zobrazeni)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Set-Location $PSScriptRoot
 
 if (-not (Test-Path "_baseline_4f0f879\vrp_solver_lines_v6.py")) {
