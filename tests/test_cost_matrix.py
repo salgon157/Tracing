@@ -114,8 +114,17 @@ class TestPerProfileKm:
 
 
 class TestConfigAndCli:
-    def test_default_is_legacy(self):
-        assert CONFIG["cost_matrix_mode"] == "legacy"
+    def test_default_is_exact(self):
+        # ZMĚŘENO 18. 8. 2026 (benchmark_cost_matrix, 108 běhů): exact
+        # levnější ve 13/18 případů, o linku míň v 10 a nikde víc,
+        # celkem −1,58 %. Kdyby se default vracel na legacy, musí to být
+        # doložené novým měřením — ne omylem.
+        assert CONFIG["cost_matrix_mode"] == "exact"
+
+    def test_both_modes_supported(self):
+        from pathlib import Path
+        src = Path(S.__file__).read_text(encoding="utf-8")
+        assert 'choices=["legacy", "exact"]' in src
 
     def test_run_log_carries_mode(self):
         from pathlib import Path

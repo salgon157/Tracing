@@ -453,7 +453,7 @@ ho předává; na serveru nechat 0 — běh drží slovo o délce).
 | `--tw-expand-before 0` / `--tw-expand-after 0` | Jen okna (default 5 / 25 min). |
 | `--seed-finalists 1` | Vynutí jen vítěze fáze C ve fázi E = **chování před 11. 8. 2026**. Na srovnávací běhy. Default je `auto` (viz níže). |
 | `--double-runs` | Dvojlinky (porušení L2) — virtuální druhé jízdy malých aut od 10:00; večer zapíná `plan_day` podle decision. Dvojlinky se dělí mezi clustery poměrně, ne jako blok. |
-| `--cost-matrix-mode legacy\|exact` | Nákladová matice (CONFIG `cost_matrix_mode`, default **legacy** — do rozhodnutí benchmarkem). `legacy` = Python callbacky per hrana, sazba `int(cost_per_km)` (19,5 → 19: solver minimalizuje jinou cenu, než vypíše — audit 1.1), km vždy z profilu driving i pro kamion (1.6). `exact` = `RegisterTransitMatrix` per typ/profil s přesnou sazbou (Kč×100), čas i jízda z matic bez Python volání (2.9), **km per profil vozidla** (kamion = hgv km). Přepnutí defaultu až podle `overnight_cost_matrix.ps1` (viz Testy). |
+| `--cost-matrix-mode legacy\|exact` | Nákladová matice (CONFIG `cost_matrix_mode`, default **exact** od 18. 8. 2026 — změřeno, viz Testy). `legacy` = Python callbacky per hrana, sazba `int(cost_per_km)` (19,5 → 19: solver minimalizuje jinou cenu, než vypíše — audit 1.1), km vždy z profilu driving i pro kamion (1.6). `exact` = `RegisterTransitMatrix` per typ/profil s přesnou sazbou (Kč×100), čas i jízda z matic bez Python volání (2.9), **km per profil vozidla** (kamion = hgv km). `legacy` zůstává pro srovnávací běhy. |
 | `--time-slack-max N` | Max čekání na jedné zastávce v minutách (CONFIG `time_slack_max_min`, default 60). Změřeno 17. 8. 2026 (`regression_ab.py`, 3min budget, 4 depa): 120 min zhoršuje skutečnou cenu o 0,4–3,2 % (čekání je v ceně zadarmo → heuristika si staví trasy s prostojem a GLS z nich nevyleze); se 60 = baseline na korunu. Jen na A/B. |
 | `--driver-breaks` | **Režim řidiče EU** (L3 kamiony): 45 min pauza v každém úseku do 4,5 h **uplynulého času** (jízda + vykládka — tak to počítá OR-Tools; vědomě přísnější než EU „4,5 h jízdy", stojí to nejvýš jednu pauzu navíc na dlouhé trase a solver zůstává jednoduchý a rychlý) + **denní limit čisté jízdy 9 h** jako tvrdá dimenze; objednávka, jejíž cesta tam a zpět limit přesáhne, zastaví běh hned (`validate_orders_servable`). Běžné dodávkové linky nemají. |
 
@@ -686,9 +686,17 @@ solver, jiný `--cost-matrix-mode`; rozhoduje o defaultu `cost_matrix_mode`
 .\overnight_cost_matrix.ps1                    # 108 běhů ≈ 10 h; -Budget 3 ≈ 6 h
 # ručně: python benchmark_cost_matrix.py --dates … --depots … --reps 3 --budget 5
 ```
-Report `data/results/_bench_cost_matrix/<stamp>/report.md`. Rychlá sonda
-18. 8. (budget 2, 1 opakování): HK 13. 8. 10 → 9 linek (−1,3 %), CB 13. 8.
-+0,8 % — režim mění optimalizaci, proto rozhoduje až noc se 3 opakováními.
+Report `data/results/_bench_cost_matrix/<stamp>/report.md`.
+
+**Výsledek 18. 8. 2026 (108 běhů, 8,4 h): PASS 18/18 → `exact` je DEFAULT.**
+Exact levnější ve 13/18 případů, dražší ve 2 (nejvýš +0,80 %), shodný ve 3;
+**o linku míň v 10 případech, nikde víc**. Medián −0,91 %, průměr −1,35 %,
+celkem 962 786 → 947 557 Kč (**−15 229 Kč = −1,58 %**) a −1 933 km; čas
+shodný (305 s obě strany). Nejlepší HK 17. 8. −6,54 % (−3 428 Kč),
+nejhorší CB 13. 8. +0,80 %. Malé dny (13. 8., L3) beze změny — kde se
+auto ušetřit nedá, sazba nic nemění. Zisk dělá hlavně **přesná sazba**:
+legacy počítal 19 místo 19,5, tedy podceňoval km středních a velkých aut
+o ~3 % a nasazoval je míň, než se vyplatí.
 
 **Výsledek 17.–18. 8. 2026 (vlny 0–3 vs `4f0f879`, 108 běhů, 8,4 h): PASS 18/18.**
 Mediány shodné v 17/18 případů, jediný rozdíl +1 Kč (HK 07); součet mediánů

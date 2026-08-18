@@ -354,8 +354,15 @@ CONFIG = {
     #   exact  — RegisterTransitMatrix per typ vozidla s PŘESNOU sazbou
     #            (Kč × 100), čas i jízda přes matice (bez Python volání
     #            v horké smyčce), km per profil vozidla (kamion = hgv km)
-    # Default legacy, dokud benchmark_cost_matrix.py nerozhodne.
-    "cost_matrix_mode":              "legacy",
+    # ZMĚŘENO 18. 8. 2026 (benchmark_cost_matrix, 108 běhů, 4 dny × 4 depa
+    # × 3 opakování + dvojlinky + L3): exact levnější ve 13/18 případů,
+    # dražší ve 2 (nejvýš +0,80 %), o linku míň v 10 případech a nikde víc;
+    # medián −0,91 %, průměr −1,35 %, celkem −15 229 Kč (−1,58 %) a
+    # −1 933 km; čas shodný (305 s). Zisk dělá hlavně PŘESNÁ SAZBA — legacy
+    # počítal 19 místo 19,5, tedy podceňoval km středních a velkých aut
+    # o ~3 % a nasazoval je míň, než se vyplatí. Proto default exact.
+    # legacy zůstává pro srovnávací běhy: --cost-matrix-mode legacy.
+    "cost_matrix_mode":              "exact",
 
     # ── Režim řidiče EU (jen s --driver-breaks; L3 kamionové trasy) ───
     # Zjednodušeně, na bezpečné straně:
@@ -1744,7 +1751,7 @@ def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
                   time_limit_sec: int,
                   strategy=routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION,
                   distances_km_list=None):
-    exact = str(CONFIG.get("cost_matrix_mode", "legacy")).lower() == "exact"
+    exact = str(CONFIG.get("cost_matrix_mode", "exact")).lower() == "exact"
     data = build_data_model(orders, vehicles_expanded, distances_km, durations_min_list,
                             distances_km_list=distances_km_list if exact else None)
     n    = len(data["demands"])
@@ -2957,7 +2964,7 @@ def _build_run_record(
             "driver_break_after_h":         CONFIG["driver_break_after_h"],
             "driver_break_min":             CONFIG["driver_break_min"],
             "driver_max_drive_h":           CONFIG["driver_max_drive_h"],
-            "cost_matrix_mode":             CONFIG.get("cost_matrix_mode", "legacy"),
+            "cost_matrix_mode":             CONFIG.get("cost_matrix_mode", "exact"),
         },
 
         "closures": [c["id"] for c in closures],
@@ -3825,7 +3832,7 @@ def main():
     # Režim exact (vlna 4): km per profil vozidla — kamion dostane hgv km,
     # dodávka driving km (legacy: všichni driving km, viz audit 1.6)
     global VEHICLE_DIST_BY_ID
-    if str(CONFIG.get("cost_matrix_mode", "legacy")).lower() == "exact":
+    if str(CONFIG.get("cost_matrix_mode", "exact")).lower() == "exact":
         VEHICLE_DIST_BY_ID = {v["id"]: matrices_by_profile[v["osrm_profile"]][0]
                              for v in vehicles_expanded}
         print(f"  [cost] režim exact: přesná sazba, km per profil "
