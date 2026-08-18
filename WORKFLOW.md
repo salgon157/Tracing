@@ -657,14 +657,17 @@ kopie na TÝCHŽ prepared souborech, vozovém parku, routing instanci a
 budgetu, střídavě (ABAB). Baseline = git worktree `_baseline_<commit>/`,
 skript si ho založí sám.
 
-> ⛔ **`_baseline_*/` je ARCHIV, NESAHAT.** Není součást projektu: je to
-> výpis starého commitu jen pro měření. Needitovat (změna zkreslí
-> výsledky), nespouštět odsud ostrý běh, necommitovat — složka je
-> v `.gitignore` a uvnitř má `_NESAHAT_ARCHIV.md` s vysvětlením.
-> Smazat kdykoli: `git worktree remove _baseline_4f0f879` (nic se
-> neztratí, jde o výpis commitu). Přehled kopií: `git worktree list`.
-> Aktuální archiv je `4f0f879` (před vlnami 0–3); po delším provozu
-> vln 0–4 dává smysl vzít jako baseline `f14a3c5` (exact default).
+> ⛔ **`_baseline_*/` je DOČASNÝ archiv, NESAHAT.** Není součást projektu:
+> je to výpis starého commitu jen pro měření. `overnight_regression.ps1`
+> ho založí na začátku běhu a **na konci sám odstraní** — v projektu po
+> něm nic nezůstane (výsledky jsou v `data/results/_regression/…`).
+> Během běhu: needitovat (změna zkreslí výsledky), nespouštět odsud ostrý
+> běh, necommitovat — složka je v `.gitignore`, uvnitř má
+> `_NESAHAT_ARCHIV.md`, a `pytest.ini` (`norecursedirs`) ji vynechává,
+> takže ani holé `pytest` ji nesbírá. Kdyby po přerušeném běhu zůstala:
+> `git worktree remove --force _baseline_4f0f879; git worktree prune`.
+> Jiná baseline: `-BaselineCommit <hash>` (po delším provozu vln 0–4 dává
+> smysl `f14a3c5`, exact default); `-KeepBaseline` ji po běhu nechá.
 
 ```powershell
 # přes noc (notebook v zásuvce, nic jiného neběží, Docker Desktop + ORS/OSRM zapnuté):
@@ -679,9 +682,22 @@ Měří per běh: linky, **skutečnou cenu** (Σ km × přesná sazba + Σ start
 linky se u obou stran přeceňují hgv km z ORS — stejný metr), km, čas, exit
 kód, hlavičky výstupů. Verdikt PASS jen když per depo-den: linky medián
 B ≤ A, cena medián ≤ +1 %, max ≤ +2 %, žádný běh > nejlepší A +3 %, exit 0
-kde A 0, `run_status.json`, shodné hlavičky, čas ≤ budget + 60 s. Report:
-`data/results/_regression/<stamp>/report.md` (+ `results.jsonl`, log
-`data/results/overnight_<stamp>.log`). Solver s daným seedem je při
+kde A 0, `run_status.json`, shodné hlavičky, čas ≤ budget + 60 s.
+
+**Co po měření zůstane (samopopisné, worktree je k tomu netřeba):**
+`data/results/_regression/<stamp>/` (benchmark: `_bench_cost_matrix/<stamp>/`)
+— `meta.json` (obě strany: složka, **git commit + dirty**, extra argumenty;
+dny, depa, reps, budget, vozový park, ORS zdroj, kritérium, start/konec,
+verdikt; zapisuje se hned na startu, takže přežije i přerušený běh),
+`report.md` (tabulka + verdikt; v hlavičce commity obou stran),
+`results.jsonl` (1 řádek = 1 běh: rc, čas, linky, km, cena vykázaná i
+skutečná), `run_log_A|B.jsonl` (per běh **CONFIG snapshot + git_commit
+solveru**), `A|B/<případ>_r<n>/` (kompletní výstup solveru: `lines_summary`,
+`lines_stops`, `eso_export`, `run_status.json`) + `.log` konzole per běh,
+a log `data/results/overnight_<stamp>.log`. Chceš-li starý solver znovu
+spustit: `git worktree add --detach _baseline_<commit> <commit>` (commit je
+v `meta.json`) — nebo rovnou `overnight_regression.ps1 -BaselineCommit <commit>`.
+Solver s daným seedem je při
 stejném vytížení téměř deterministický (opakování ~0,1 %); rozdíly ~1 %
 vznikají volbou vítězného seedu fáze C — proto medián ze 3 opakování.
 Takhle se 17. 8. chytilo, že slack 120 min zhoršuje plány (viz

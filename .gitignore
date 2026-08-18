@@ -48,7 +48,8 @@ webui/jobs/
 # --- vystupy experimentu (generovane, muzou obsahovat PII z objednavek) ---
 experiments/*/results/
 
-# ARCHIV — NESAHAT: git worktree se starým solverem (strana A regresního
-# A/B, viz regression_ab.py a WORKFLOW 8). Není součást projektu, needituje
+# DOČASNÝ ARCHIV — NESAHAT: git worktree se starým solverem (strana A
+# regresního A/B, viz regression_ab.py a WORKFLOW 8). overnight_regression.ps1
+# ho založí jen pro běh a na konci odstraní. Není součást projektu, needituje
 # se, nespouští se odsud ostrý běh. Popis: _baseline_*/_NESAHAT_ARCHIV.md
 /_baseline_*/

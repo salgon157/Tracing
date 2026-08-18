@@ -55,6 +55,31 @@ TOL_MEDIAN, TOL_MAX, TOL_WORST = 0.01, 0.02, 0.03
 TIME_SLACK_SEC = 60
 
 
+def git_describe(directory: Path) -> dict:
+    """Commit + branch + dirty flag složky (worktree i pracovní kopie). Bez gitu → None."""
+    def _run(*a):
+        r = subprocess.run(["git", *a], capture_output=True, text=True, timeout=5, cwd=directory)
+        return r.stdout.strip() if r.returncode == 0 else None
+    try:
+        commit = _run("rev-parse", "--short", "HEAD")
+        status = _run("status", "--porcelain", "--untracked-files=no")
+        return {"commit": commit,
+                "commit_full": _run("rev-parse", "HEAD"),
+                "branch": _run("rev-parse", "--abbrev-ref", "HEAD"),
+                "dirty": bool(status) if status is not None else None,
+                "subject": _run("log", "-1", "--format=%s")}
+    except Exception:                                     # noqa: BLE001
+        return {"commit": None, "commit_full": None, "branch": None,
+                "dirty": None, "subject": None}
+
+
+def write_meta(out_root: Path, meta: dict) -> Path:
+    """meta.json = co, jak a nad čím běželo — aby výsledky přežily smazání worktree."""
+    path = out_root / "meta.json"
+    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Metriky
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,6 +345,33 @@ def main() -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     results_path = out_root / "results.jsonl"
     env = {**os.environ, "SKIP_STARTUP_TESTS": "1", "PYTHONIOENCODING": "utf-8"}
+    git_sides = {"A": git_describe(baseline), "B": git_describe(candidate)}
+    meta = {
+        "kind": "regression_ab", "harness": Path(__file__).name,
+        "harness_git": git_describe(root),
+        "started": datetime.now().isoformat(timespec="seconds"), "finished": None,
+        "sides": {
+            "A": {"label": args.label_a, "dir": str(baseline), "git": git_sides["A"],
+                  "extra_args": side_args["A"]},
+            "B": {"label": args.label_b, "dir": str(candidate), "git": git_sides["B"],
+                  "extra_args": side_args["B"]},
+        },
+        "dates": args.dates, "depots": args.depots, "reps": args.reps,
+        "budget_min": args.budget, "osm_source": args.osm_source,
+        "fleet_file": str(fleet_file), "extras": bool(args.extras),
+        "extras_date": args.extras_date if args.extras else None,
+        "reprice_hgv": get_matrix_fn is not None, "only": args.only or None,
+        "order": "ABAB per případ (A r1, B r1, A r2, B r2, …)",
+        "criteria": {"lines_median_B_le_A": True, "cost_median_tol": TOL_MEDIAN,
+                     "cost_max_tol": TOL_MAX, "cost_worst_vs_best_A_tol": TOL_WORST,
+                     "time_slack_sec": TIME_SLACK_SEC},
+        "outputs": {"results": "results.jsonl (1 řádek = 1 běh)",
+                    "runs": "A|B/<case>_r<n>/ (lines_summary, lines_stops, run_status.json, …) + .log konzole",
+                    "run_log": "run_log_A|B.jsonl (CONFIG snapshot + git_commit solveru per běh)",
+                    "report": "report.md"},
+        "verdict": None,
+    }
+    write_meta(out_root, meta)
 
     print("=" * 72)
     print(f"REGRESNÍ A/B — A={args.label_a} ({baseline.name} {' '.join(side_args['A'])}) "
@@ -393,8 +445,10 @@ def main() -> None:
         evals.append(evaluate(c["case"], A, B, args.budget))
 
     lines = ["# Regresní A/B — solver", "",
-             f"A={args.label_a}: `{baseline}` {' '.join(side_args['A'])} | "
-             f"B={args.label_b}: `{candidate}` {' '.join(side_args['B'])} | "
+             f"A={args.label_a}: `{baseline}` @{git_sides['A']['commit']}"
+             f"{'+dirty' if git_sides['A']['dirty'] else ''} {' '.join(side_args['A'])} | "
+             f"B={args.label_b}: `{candidate}` @{git_sides['B']['commit']}"
+             f"{'+dirty' if git_sides['B']['dirty'] else ''} {' '.join(side_args['B'])} | "
              f"budget {args.budget:g} min | reps {args.reps} | {datetime.now():%Y-%m-%d %H:%M}",
              f"celkem {done} běhů, {(time.time() - t_all) / 3600:.1f} h", "",
              "| případ | linky A→B (medián) | skutečná cena A→B (medián) | max A→B | čas B | verdikt | důvody |",
@@ -411,6 +465,10 @@ def main() -> None:
               "hlavičky výstupů shodné; čas ≤ budget + 60 s."]
     report = "\n".join(lines)
     (out_root / "report.md").write_text(report, encoding="utf-8")
+    meta["finished"] = datetime.now().isoformat(timespec="seconds")
+    meta["verdict"] = verdict
+    meta["runs_done"] = done
+    write_meta(out_root, meta)
     print("\n" + report)
     print(f"\n→ {out_root / 'report.md'}")
 
