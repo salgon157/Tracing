@@ -654,8 +654,17 @@ nastartování routing instance (ověří ORS vs OSRM).
 
 Před uzavřením větší změny solveru: solver z pinnutého commitu vs pracovní
 kopie na TÝCHŽ prepared souborech, vozovém parku, routing instanci a
-budgetu, střídavě (ABAB). Baseline = git worktree `_baseline_<commit>/`
-(gitignored), skript si ho založí sám.
+budgetu, střídavě (ABAB). Baseline = git worktree `_baseline_<commit>/`,
+skript si ho založí sám.
+
+> ⛔ **`_baseline_*/` je ARCHIV, NESAHAT.** Není součást projektu: je to
+> výpis starého commitu jen pro měření. Needitovat (změna zkreslí
+> výsledky), nespouštět odsud ostrý běh, necommitovat — složka je
+> v `.gitignore` a uvnitř má `_NESAHAT_ARCHIV.md` s vysvětlením.
+> Smazat kdykoli: `git worktree remove _baseline_4f0f879` (nic se
+> neztratí, jde o výpis commitu). Přehled kopií: `git worktree list`.
+> Aktuální archiv je `4f0f879` (před vlnami 0–3); po delším provozu
+> vln 0–4 dává smysl vzít jako baseline `f14a3c5` (exact default).
 
 ```powershell
 # přes noc (notebook v zásuvce, nic jiného neběží, Docker Desktop + ORS/OSRM zapnuté):

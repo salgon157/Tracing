@@ -48,5 +48,7 @@ webui/jobs/
 # --- vystupy experimentu (generovane, muzou obsahovat PII z objednavek) ---
 experiments/*/results/
 
-# git worktree s baseline solverem pro regression_ab.py (viz WORKFLOW 8)
+# ARCHIV — NESAHAT: git worktree se starým solverem (strana A regresního
+# A/B, viz regression_ab.py a WORKFLOW 8). Není součást projektu, needituje
+# se, nespouští se odsud ostrý běh. Popis: _baseline_*/_NESAHAT_ARCHIV.md
 /_baseline_*/
