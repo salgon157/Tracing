@@ -585,40 +585,63 @@ Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 - Ruční volba jiného souboru: `--vehicle-types-file CESTA`.
 - Starý `count_block_{DEPOT}` byl fikce a je odstraněn.
 
-### Přiřazení řidičů (`driver_assignment.py`) — od 13. 8. 2026
+### Přiřazení řidičů (`driver_assignment.py`) — od 13. 8. 2026, nový registr od 19. 8. 2026
 
 Samostatný krok **po naplánování VŠECH dep dne** (do `plan_day` se
 nezapojuje — spouštění řeší vrstva nad námi):
 
 ```powershell
-python driver_assignment.py 2026-08-13              # celý den
-python driver_assignment.py 2026-08-13 --label b5   # testovací běhy
+python driver_assignment.py 2026-08-19              # celý den (+ zóna L3 sama)
+python driver_assignment.py 2026-08-19 --label b5   # testovací běhy
+python driver_assignment.py 2026-08-19 --force      # přes neshodu registru s dnem/parkem
 ```
 
-Vstup: registr aut+řidičů z ESO — **právě jeden** `.xlsx`
-v `data/ridici/aktivni/` (PII → složka je gitignored). Bere se jen
-`Použít vozidlo=Ano`; typ auta se mapuje přes (Typ, Nosnost) na TYPE kód.
+**Vstupy (všechny PII složky gitignored):**
+
+| soubor | co | pravidlo |
+|---|---|---|
+| `data/ridici/aktivni/vehicles-active-YYYYMMDD.csv` | registr **AUTO + ŘIDIČ** z ESO (1 řádek = 1 auto se svým řidičem): `driver` (kód = klíč do historie), `vehicle_type`, **`max_kg`** (nosnost — bez ní nejde TYPE_01 od TYPE_02), `dny_pouzitelnosti`, `dostupnost_od/do`, `km_plan_mes/rok`, `km_aktual_mes/rok`, `driver_quality`, `driver_km_to_depot`, `valid_for_date` | právě jeden soubor; `.xlsx` = starý formát → jasná chyba |
+| `data/static/vehicle_types-YYYYMMDD.csv` | vozový park dne — (`type_name`, `max_kg`) → TYPE kód + `available_count` | týž soubor, se kterým plánoval solver; **žádná natvrdo psaná mapa typů** (19. 8. se TYPE_07 přečísloval na TYPE_06 a nic se nerozbilo) |
+| `data/historie_ridici/driver-address-visits.csv` | historie **řidič × adresa**: `driver_code;id_subj_adr;adress_note;visit_count` | právě jeden pravdivý soubor; `id_subj_adr` = `eso_col7` objednávky (ověřeno 1013/1013), `adress_note` = `location_code` |
+| `data/results/{DEPO}/{DATUM}/` (+ `L3/`) | `lines_summary.csv` + `lines_stops.csv` | zastávka se s historií páruje přes id adresy z `data/prepared/{DEPO}/orders_{DEPO}_{DATUM}.csv`, bez něj přes `location_code` |
+
+**Tvrdé kontroly před během** (neshoda = stop, `--force` přebije a zapíše
+`forced: true` do summary): `valid_for_date` registru = den závozu; **počty
+aut per TYPE použitelných v den závozu (dny + dostupnost) = `available_count`
+ve `vehicle_types`** — jinak solver plánoval s auty, která večer nikdo
+neřídí (nebo naopak). Pozor: TYPE kódy platí jen v rámci jednoho dne
+(přečíslování) — proto se registr z jiného dne nesmí tiše použít.
 
 Jedna **celodenní** přiřazovací úloha (maďarský algoritmus): všechny
 linky všech dep × řidiči — globální optimum, žádná sekvence po depech.
-Řidič jede max jednu linku denně (i když má víc aut); dvojlinka = jedna
-jednotka (obě jízdy týž řidič).
+Řidič jede max jednu linku denně; dvojlinka = jedna jednotka (obě jízdy
+týž řidič).
 
-**HARD**: den v týdnu (`Dny použitelnosti`, lomítko dělí týden/víkend),
-`Dostupnost=Ano`, `Aktivní=Ano`, správný typ auta.
+**HARD**: den v týdnu (`dny_pouzitelnosti`, lomítko dělí týden/víkend),
+`dostupnost_od ≤ den ≤ dostupnost_do` (prázdné `do` = bez konce), správný
+TYPE auta (na linku malého auta nikdy kamion, ani náš).
+**TIER**: **naše auta** (`km_plan_mes = km_plan_rok = 0`, nemají co plnit)
+jedou **až když na linky jejich typu nestačí smluvní** — bonus smluvního
+auta v matici je větší než celý rozsah soft skóre, takže se napřed
+maximalizuje počet linek se smluvními, naše dostanou zbytek (mezi sebou
+pak podle soft skóre). `CONFIG["own_fleet_last"]`.
 **SOFT** (váhy v CONFIG na začátku skriptu):
 
 | kritérium | váha | logika |
 |---|---|---|
-| plnění plánu km | 3.0 | kdo zaostává za poměrnou částí ročního plánu — **BEZ DAT, dokud ESO neplní `Aktual. km`** (do té doby neutrální + warning) |
+| plnění plánu km | 3.0 | kdo zaostává za poměrnou částí plánu (den v roce / v měsíci); **rok váží 0,65, měsíc 0,35** (`plan_year_share`), pořadí zvlášť a zkombinované; jen jedna část s daty → jen ta; bez dat neutrální 0,5 + warning; naše auta 0,5 |
 | dojezd | 1.0 | dlouhé linky vzdáleným řidičům (pořadové párování, žádné konstanty) |
 | kvalita × tightness | 1.0 | Rychlý na linky s napjatými okny; tight zastávka = rezerva do konce okna ≤ 15 min, konec linky váží 1,3× víc než začátek |
-| familiarity | 1.0 | podíl zastávek, které řidič zná — **BEZ DAT, dokud historie závozů nenese řidiče** |
+| familiarity | 1.0 | per zastávka **pořadí řidiče mezi všemi aktivními podle počtu závozů na tu adresu** (kdo tam jezdí nejvíc = 1, kdo nikdy = dole, shodné počty sdílejí pořadí — 5×,4×,4×,0,0,0 → 6 / 4,5 / 4,5 / 2 / 2 / 2 bodů ze 6); průměr přes zastávky linky; adresa bez historie = 0,5 pro všechny |
 
 Výstupy: `data/results/driver_assignment/{DATUM}/driver_plan_{DATUM}.csv`
 (+ `driver_plan_{DEPO}_{DATUM}.csv` vedle plánu každého depa +
-`summary.json` s váhami a warningy). Málo řidičů po hard filtrech →
-ALERT s výpisem nepokrytých linek a exit ≠ 0.
+`summary.json` s váhami, warningy, `own_fleet_used`, `fleet_mismatches`).
+Sloupce: řidič (jméno + kód), auto (kód, název, dopravce), `tier`
+(smluvní/naše), plán a najeté km, skóre + rozpad, `fam_known_stops`
+(kolik zastávek linky řidič zná / celkem). Málo řidičů po hard filtrech →
+ALERT s výpisem nepokrytých linek a exit 2. E2E 17. 8. (53 linek): 77 %
+zastávek jede řidič, který tam už jezdil.
 
 ---
 
@@ -630,6 +653,7 @@ ALERT s výpisem nepokrytých linek a exit ≠ 0.
   soubory na disku zůstávají a do gitu nesmí)
 - `data/static/vehicle_registry.csv` (jména řidičů, SPZ)
 - `data/ridici/` (registr aut+řidičů z ESO — jména, telefony, SPZ)
+- `data/historie_ridici/`, `data/static/vehicles-active*.csv` (řidiči, historie řidič×adresa)
 
 Verzuje se pouze **kód + config bez PII** (`vehicle_types.csv`, `closures.json`).
 Data existují jen lokálně na disku. Repo je **Private**.

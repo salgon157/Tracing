@@ -25,6 +25,7 @@ data/input/
 data/prepared/
 data/static/locations_*.csv
 data/static/vehicle_registry.csv
+data/static/vehicles-active*.csv
 data/ridici/
 
 # --- Predikcni behy (cely strom: input/prepared/results) ---
@@ -34,6 +35,8 @@ data/prediction/
 # --- Historie objednavek (rocni exporty pro vypocet sance zavozu) ---
 # Kdo, kdy a kam se vozilo, vcetne GPS a kilogramu — cistokrevne PII.
 data/historie_objednavky/
+# Historie ridic x adresa (pocet zavozu ridice na adresu zakaznika) — PII.
+data/historie_ridici/
 
 # --- Routovaci data (ORS/OSRM grafy, stahovana / v Docker volume) ---
 routing/

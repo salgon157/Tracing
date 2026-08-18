@@ -5,15 +5,23 @@ driver_assignment.py — celodenní přiřazení řidičů k naplánovaným link
 SAMOSTATNÝ krok PO naplánování všech dep dne (do plan_day se nezapojuje;
 spouštění vyřeší vrstva nad námi):
 
-  python driver_assignment.py 2026-08-13
-  python driver_assignment.py 2026-08-13 --label b5      # testovací běhy
-  python driver_assignment.py 2026-08-13 --depots CB MO  # vědomá podmnožina
+  python driver_assignment.py 2026-08-19
+  python driver_assignment.py 2026-08-19 --label b5      # testovací běhy
+  python driver_assignment.py 2026-08-19 --depots CB MO  # vědomá podmnožina
+  python driver_assignment.py 2026-08-19 --force         # přes neshody registru
 
-Vstupy:
-  data/ridici/aktivni/*.xlsx            registr aut+řidičů z ESO (právě jeden;
-                                        PII — složka je gitignored)
-  data/results/{DEPO}/{DATUM}/          lines_summary.csv + lines_stops.csv
-                                        všech dep dne
+Vstupy (od 19. 8. 2026 — nový export z ESO):
+  data/ridici/aktivni/vehicles-active-*.csv   registr AUTO+ŘIDIČ (právě jeden
+                                              soubor; 1 řádek = 1 auto s jeho
+                                              řidičem; PII — složka gitignored)
+  data/static/vehicle_types-YYYYMMDD.csv      vozový park dne — (type_name,
+                                              max_kg) -> TYPE kód, počty aut
+  data/historie_ridici/*.csv                  historie ŘIDIČ × ADRESA (počet
+                                              závozů; právě jeden soubor; PII)
+  data/results/{DEPO}/{DATUM}/                lines_summary.csv + lines_stops.csv
+                                              všech dep dne (+ zóna L3)
+  data/prepared/{DEPO}/orders_{DEPO}_{DATUM}.csv  (volitelně) order -> id adresy
+                                              (eso_col7 = id_subj_adr historie)
 
 Výstupy:
   data/results/driver_assignment/{DATUM}/driver_plan_{DATUM}.csv  (celý den)
@@ -24,27 +32,36 @@ Model: JEDNA přiřazovací úloha za celý den — všechny linky všech dep ×
 řidiči. Globální optimum najde maďarský algoritmus; CB si tak „nevyžere"
 řidiče, kteří se víc hodí na HK linky.
 
-HARD (zakázaná buňka): den v týdnu nesedí / Dostupnost≠Ano / Aktivní≠Ano /
-řidič nemá auto správného typu. Řidič jede max jednu linku denně (i když
-má víc aut). Dvojlinka (2 linky téhož vozidla) = jedna jednotka.
+HARD (zakázaná buňka): den v týdnu nesedí (dny_pouzitelnosti) / auto není
+k dispozici (dostupnost_od ≤ den závozu ≤ dostupnost_do) / auto není
+správného TYPE. Řidič jede max jednu linku denně. Dvojlinka (2 linky téhož
+vozidla) = jedna jednotka.
+
+TIER (nad soft skóre): NAŠE auta (km_plan_mes = km_plan_rok = 0 — nemají
+co plnit) jedou AŽ KDYŽ na linky daného typu nestačí SMLUVNÍ auta.
+Nikdy se ale nepřekročí typ — na linku malého auta nejede kamion.
 
 SOFT (skóre 0–1 × váha z CONFIG, viz jednotlivé funkce):
-  plneni_planu — kdo zaostává za poměrnou částí ročního plánu km
-                 (BEZ DAT dokud ESO neplní Aktual. km — pak neutrální)
+  plneni_planu — kdo zaostává za poměrnou částí plánu km; roční plán váží
+                 víc než měsíční (plan_year_share), oba se berou v potaz;
+                 bez dat = neutrální
   dojezd       — dlouhé linky vzdáleným řidičům (pořadové párování)
   kvalita_tightness — Rychlý na linky s napjatými okny; tightness na
                  konci linky váží víc než na začátku
-  familiarity  — podíl zastávek, které řidič zná z historie závozů
-                 (BEZ DAT dokud historie nenese sloupec řidiče)
+  familiarity  — POŘADÍ řidiče mezi všemi aktivními podle počtu závozů na
+                 adresu (kdo tam jezdí nejvíc = 1, kdo nikdy = dole; shodné
+                 počty sdílejí pořadí), zprůměrováno přes zastávky linky.
+                 Adresa, kam nejezdil nikdo, je pro všechny neutrální (0,5).
 """
 
 from __future__ import annotations
 
 import argparse
+import calendar
 import csv
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from fleet_budget import DEPOT_ORDER
@@ -55,8 +72,13 @@ CONFIG = {
         "plneni_planu":      3.0,   # priorita: smluvní km se musí plnit
         "dojezd":            1.0,
         "kvalita_tightness": 1.0,
-        "familiarity":       1.0,   # zatím bez dat (historie nemá řidiče)
+        "familiarity":       1.0,
     },
+    # Plnění plánu: kombinace ročního a měsíčního skluzu; rok váží víc.
+    "plan_year_share": 0.65,
+    # Naše auta (plán 0/0) až po smluvních — jako TIER nad soft skóre
+    # (žádné soft skóre nepřebije smluvní auto), ne jako tvrdý zákaz.
+    "own_fleet_last": True,
     # Zastávka je "tight", když rezerva do KONCE původního okna je <= tolik
     # minut (příjezd po konci okna — v toleranci +25 — je tight vždy).
     "tight_slack_min": 15,
@@ -66,34 +88,89 @@ CONFIG = {
     "tight_pos_coef": 0.3,
     # Kvalita řidiče -> "rychlost" 0..1; skóre = 1 - |tightness - rychlost|
     "quality_speed": {"Rychlý": 1.0, "Standart": 0.5, "Pomalý": 0.0},
-    "ridici_dir":   "data/ridici/aktivni",
-    "results_root": "data/results",
-    "history_dir":  "data/historie_objednavky",
+    "ridici_dir":       "data/ridici/aktivni",
+    "registry_pattern": "vehicles-active*.csv",
+    "history_dir":      "data/historie_ridici",
+    "history_pattern":  "*.csv",
+    "results_root":     "data/results",
+    "prepared_root":    "data/prepared",
 }
 
 BIG_COST = 1e9          # zakázaná buňka (hard constraint)
 
-# (Typ vozidla, Nosnost) z ESO registru -> náš TYPE kód (dle vehicle_types)
-TYPE_BY_TYP_NOSNOST = {
-    ("do 3t", 1200):  "TYPE_01",
-    ("do 3t", 1350):  "TYPE_02",
-    ("do 7t", 3000):  "TYPE_03",
-    ("do 7t", 3200):  "TYPE_04",
-    ("do 18t", 8000): "TYPE_05",
-    ("do 18t", 8700): "TYPE_06",
-    ("do 4t", 2000):  "TYPE_07",
-}
-
 DAY_NAMES = ["Po", "Út", "St", "Čt", "Pá", "So", "Ne"]   # weekday() 0..6
+
+REGISTRY_REQUIRED = [
+    "id", "vehicle_code", "vehicle_name", "vehicle_comp", "driver",
+    "driver_name", "vehicle_type", "vehicle_profile", "dny_pouzitelnosti",
+    "dostupnost_od", "dostupnost_do", "km_aktual_mes", "km_aktual_rok",
+    "km_plan_mes", "km_plan_rok", "driver_quality", "driver_km_to_depot",
+    "valid_for_date",
+]
+# Nosnost auta — bez ní nejde poznat TYPE_01 (1 200 kg) od TYPE_02 (1 350 kg);
+# export z ESO ji musí nést pod jedním z těchto názvů.
+CAPACITY_COLS = ("max_kg", "nosnost", "nosnost_kg", "vehicle_max_kg")
+
+HISTORY_REQUIRED = ["driver_code", "id_subj_adr", "adress_note", "visit_count"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Registr aut a řidičů (xlsx z ESO)
+#  Vozový park dne: (type_name, max_kg) -> TYPE kód + počty
+# ═════════════════════════════════════════════════════════════════════════════
+
+def load_type_map(vehicle_types_file: Path | str | None = None) -> dict:
+    """
+    {(type_name, max_kg int): {"type_code", "available_count", "profile"}}
+    z vehicle_types-YYYYMMDD.csv (bez path: jediný soubor v data/static —
+    tentýž, se kterým plánoval solver). Řídí se OBSAHEM souboru, žádná
+    natvrdo psaná tabulka — přečíslování typů (TYPE_07 -> TYPE_06 19. 8.)
+    tak nic nerozbije.
+    """
+    if vehicle_types_file is None:
+        from vrp_solver_lines_v6 import find_vehicle_types_file
+        vehicle_types_file = find_vehicle_types_file()
+    p = Path(vehicle_types_file)
+    out: dict = {}
+    with open(p, encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        need = {"type_code", "type_name", "max_kg", "available_count"}
+        if not need.issubset(set(reader.fieldnames or [])):
+            raise SystemExit(f"[CHYBA] {p} nemá sloupce {sorted(need)}")
+        for row in reader:
+            code = str(row.get("type_code", "")).strip()
+            if not code or code.startswith("#"):
+                continue
+            key = (str(row["type_name"]).strip(), int(float(row["max_kg"])))
+            if key in out:
+                raise SystemExit(f"[CHYBA] {p}: (typ, nosnost) {key} dvakrát — "
+                                 f"nejde jednoznačně mapovat auta na TYPE.")
+            out[key] = {"type_code": code,
+                        "available_count": int(float(row["available_count"])),
+                        "profile": str(row.get("profiles", "")).strip(),
+                        "valid_for_date": str(row.get("valid_for_date", "")).strip()}
+    if not out:
+        raise SystemExit(f"[CHYBA] {p} neobsahuje žádný typ vozidla.")
+    return out
+
+
+def map_type(typ: str, nosnost, type_map: dict) -> str:
+    """(vehicle_type, max_kg) -> TYPE kód podle vozového parku dne."""
+    key = (str(typ).strip(), int(float(nosnost)))
+    if key not in type_map:
+        raise ValueError(
+            f"[CHYBA] Auto s (typ, nosnost) {key} není ve vozovém parku dne. "
+            f"Známé: {sorted(type_map)}. Buď je registr z jiného dne než "
+            f"vehicle_types, nebo ESO poslalo jinou nosnost.")
+    return type_map[key]["type_code"]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Registr aut+řidičů (vehicles-active-*.csv z ESO)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def parse_days(spec: str) -> set[int]:
     """
-    'Dny použitelnosti vozidla' -> množina dní (Po=0 … Ne=6).
+    'dny_pouzitelnosti' -> množina dní (Po=0 … Ne=6).
 
     Lomítko dělí týdenní a víkendovou část, obě se sjednocují:
       'Po-Pá/So-Ne'      -> {0..6}
@@ -123,25 +200,21 @@ def parse_days(spec: str) -> set[int]:
     return days
 
 
-def map_type(typ: str, nosnost) -> str:
-    key = (str(typ).strip(), int(float(nosnost or 0)))
-    if key not in TYPE_BY_TYP_NOSNOST:
-        raise ValueError(
-            f"[CHYBA] Neznámá kombinace typu a nosnosti v registru: {key}. "
-            f"Známé: {sorted(TYPE_BY_TYP_NOSNOST)}")
-    return TYPE_BY_TYP_NOSNOST[key]
-
-
 def find_registry_file(ridici_dir: Path | str | None = None) -> Path:
-    """Právě jeden xlsx v data/ridici/aktivni — víc/míň je chyba (stejná
-    filozofie jako riro aktivni/: program mezi soubory nevybírá)."""
+    """Právě jeden vehicles-active*.csv v data/ridici/aktivni — víc/míň je
+    chyba (stejná filozofie jako riro aktivni/: program mezi soubory
+    nevybírá). Starý .xlsx registr = jasná hláška, ne tichý fallback."""
     d = Path(ridici_dir if ridici_dir is not None else CONFIG["ridici_dir"])
-    files = sorted(d.glob("*.xlsx")) if d.exists() else []
+    files = sorted(d.glob(CONFIG["registry_pattern"])) if d.exists() else []
     if len(files) != 1:
+        legacy = sorted(d.glob("*.xlsx")) if d.exists() else []
+        hint = ("\n        (Nalezen .xlsx — starý formát 'Auta - Řidiči - Eso.xlsx' "
+                "se od 19. 8. 2026 nepoužívá; nahraj export vehicles-active-"
+                "YYYYMMDD.csv z DB.)" if legacy else "")
         raise SystemExit(
-            f"[CHYBA] V {d.as_posix()}/ musí být právě jeden .xlsx s registrem "
-            f"aut a řidičů z ESO (nalezeno {len(files)}).\n"
-            f"        Nahraj export 'Auta - Řidiči - Eso.xlsx' do téhle složky.")
+            f"[CHYBA] V {d.as_posix()}/ musí být právě jeden "
+            f"{CONFIG['registry_pattern']} (registr auto+řidič z ESO); "
+            f"nalezeno {len(files)}.{hint}")
     return files[0]
 
 
@@ -149,60 +222,225 @@ def _num(v) -> float | None:
     if v is None or (isinstance(v, str) and not v.strip()):
         return None
     try:
-        return float(v)
+        return float(str(v).replace(",", "."))
     except (TypeError, ValueError):
         return None
 
 
-def load_registry(path: Path) -> list[dict]:
-    """Použitelné řádky registru (Použít vozidlo=Ano), per VOZIDLO."""
-    import openpyxl
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb.active
-    rows_iter = ws.iter_rows(values_only=True)
-    header = [str(h).strip() if h else "" for h in next(rows_iter)]
-
-    required = ["Číslo vozidla", "Jméno řidiče", "Typ vozidla [23]",
-                "Nosnost vozidla [5]", "Dny použitelnosti vozidla",
-                "Dostupnost vozidla [8]", "Aktivní", "Použít vozidlo",
-                "Km dojezd depo", "Kvalita řidiče"]
-    missing = [c for c in required if c not in header]
-    if missing:
-        raise SystemExit(f"[CHYBA] Registru chybí sloupce: {missing} — "
-                         f"jiný formát exportu z ESO?")
-
-    idx = {h: i for i, h in enumerate(header)}
-
-    def col(row, name, default=None):
-        i = idx.get(name)
-        return row[i] if i is not None and i < len(row) else default
-
-    out = []
-    for row in rows_iter:
-        if not row or not col(row, "Číslo vozidla"):
+def _date(v) -> date | None:
+    s = str(v or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
             continue
-        if str(col(row, "Použít vozidlo", "")).strip() != "Ano":
+    raise ValueError(f"[CHYBA] Nečitelné datum v registru: {s!r}")
+
+
+def load_registry(path: Path, type_map: dict) -> list[dict]:
+    """
+    Řádky registru = AUTO + JEHO ŘIDIČ (1:1). Vrací per řádek:
+      row_id, vehicle_code, vehicle_name, dopravce, driver (kód = klíč do
+      historie), driver_name, vehicle_type, profile, max_kg, type_code,
+      days, avail_from, avail_to, dojezd_km, kvalita, plan_rok, plan_mes,
+      aktual_rok, aktual_mes, own_fleet (plán 0/0), valid_for_date.
+    Chybějící nosnost = tvrdá chyba (bez ní nejde TYPE_01 od TYPE_02).
+    """
+    with open(path, encoding="utf-8-sig") as f:
+        sample = f.read(4096)
+    delim = ";" if sample.count(";") >= sample.count(",") else ","
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f, delimiter=delim)
+        header = [h.strip() for h in (reader.fieldnames or [])]
+        missing = [c for c in REGISTRY_REQUIRED if c not in header]
+        if missing:
+            raise SystemExit(f"[CHYBA] Registru {path.name} chybí sloupce: "
+                             f"{missing} — jiný formát exportu z ESO?")
+        cap_col = next((c for c in CAPACITY_COLS if c in header), None)
+        if cap_col is None:
+            raise SystemExit(
+                f"[CHYBA] Registr {path.name} nenese NOSNOST auta (žádný ze "
+                f"sloupců {list(CAPACITY_COLS)}). Bez ní nejde rozlišit "
+                f"TYPE_01 (1 200 kg) od TYPE_02 (1 350 kg) ani TYPE_03 od "
+                f"TYPE_04 — export z ESO musí sloupec doplnit.")
+        rows = list(reader)
+
+    out, seen_ids, problems = [], set(), []
+    for n, row in enumerate(rows, start=2):
+        row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+        rid = row.get("id", "")
+        if not rid:
             continue
-        out.append({
-            "vehicle_no":   str(col(row, "Číslo vozidla")).strip(),
-            "vehicle_name": str(col(row, "název vozidla") or "").strip(),
-            "driver":       str(col(row, "Jméno řidiče") or "").strip(),
-            "dopravce":     str(col(row, "Název dopravce") or "").strip(),
-            "type_code":    map_type(col(row, "Typ vozidla [23]"),
-                                     col(row, "Nosnost vozidla [5]")),
-            "days":         parse_days(col(row, "Dny použitelnosti vozidla")),
-            "available":    str(col(row, "Dostupnost vozidla [8]", "")).strip() == "Ano",
-            "active":       str(col(row, "Aktivní", "")).strip() == "Ano",
-            "dojezd_km":    _num(col(row, "Km dojezd depo")) or 0.0,
-            "kvalita":      str(col(row, "Kvalita řidiče") or "Standart").strip(),
-            "plan_rok":     _num(col(row, "Plán km rok")),
-            "plan_mes":     _num(col(row, "Plán km měs.")),
-            "aktual_rok":   _num(col(row, "Aktual. km rok")),
-            "aktual_mes":   _num(col(row, "Aktual. km měs.")),
-        })
+        if rid in seen_ids:
+            problems.append(f"řádek {n}: id {rid} dvakrát")
+            continue
+        seen_ids.add(rid)
+        try:
+            driver = row["driver"]
+            if not driver:
+                raise ValueError("prázdný kód řidiče (driver)")
+            cap = _num(row.get(cap_col))
+            if cap is None:
+                raise ValueError(f"prázdná nosnost ({cap_col})")
+            plan_rok, plan_mes = _num(row["km_plan_rok"]), _num(row["km_plan_mes"])
+            own = (plan_rok is not None and plan_mes is not None
+                   and plan_rok == 0 and plan_mes == 0)
+            out.append({
+                "row_id":       rid,
+                "vehicle_code": row["vehicle_code"],
+                "vehicle_name": row["vehicle_name"],
+                "dopravce":     row["vehicle_comp"],
+                "driver":       driver,
+                "driver_name":  row["driver_name"] or driver,
+                "vehicle_type": row["vehicle_type"],
+                "profile":      row["vehicle_profile"],
+                "max_kg":       int(cap),
+                "type_code":    map_type(row["vehicle_type"], cap, type_map),
+                "days":         parse_days(row["dny_pouzitelnosti"]),
+                "avail_from":   _date(row["dostupnost_od"]),
+                "avail_to":     _date(row["dostupnost_do"]),
+                "dojezd_km":    _num(row["driver_km_to_depot"]) or 0.0,
+                "kvalita":      row["driver_quality"] or "Standart",
+                "plan_rok":     plan_rok,
+                "plan_mes":     plan_mes,
+                "aktual_rok":   _num(row["km_aktual_rok"]),
+                "aktual_mes":   _num(row["km_aktual_mes"]),
+                "own_fleet":    own,
+                "valid_for_date": row["valid_for_date"],
+            })
+        except (ValueError, KeyError) as e:
+            problems.append(f"řádek {n} (id {rid}): {e}")
+    if problems:
+        raise SystemExit("[CHYBA] Registr " + path.name + " má vadné řádky:\n  "
+                         + "\n  ".join(problems))
     if not out:
-        raise SystemExit(f"[CHYBA] Registr {path} nemá žádné použitelné řádky "
-                         f"(Použít vozidlo=Ano).")
+        raise SystemExit(f"[CHYBA] Registr {path} nemá žádné řádky.")
+    return out
+
+
+def is_available(row: dict, day: date) -> bool:
+    """dostupnost_od ≤ den závozu ≤ dostupnost_do (prázdné do = bez konce)."""
+    if row.get("avail_from") and day < row["avail_from"]:
+        return False
+    if row.get("avail_to") and day > row["avail_to"]:
+        return False
+    return True
+
+
+def usable_on(row: dict, day: date) -> bool:
+    return day.weekday() in row["days"] and is_available(row, day)
+
+
+def fleet_mismatches(registry: list[dict], type_map: dict, day: date) -> list[dict]:
+    """
+    Kontrola: počet aut v registru použitelných v den závozu per TYPE
+    == available_count ve vehicle_types (s tím plánoval solver). Neshoda
+    v obou směrech je vada exportu — míň aut = linky bez řidiče, víc aut =
+    solver plánoval s menší flotilou, než máme.
+    """
+    have: dict[str, int] = {}
+    for r in registry:
+        if usable_on(r, day):
+            have[r["type_code"]] = have.get(r["type_code"], 0) + 1
+    planned = {v["type_code"]: v["available_count"] for v in type_map.values()}
+    out = []
+    for code in sorted(set(have) | set(planned)):
+        h, p = have.get(code, 0), planned.get(code, 0)
+        if h != p:
+            out.append({"type_code": code, "planned": p, "registry": h})
+    return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Historie řidič × adresa (počet závozů)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def find_history_file(history_dir: Path | str | None = None) -> Path | None:
+    """Právě jeden csv v data/historie_ridici; žádný = familiarity BEZ DAT
+    (varování), víc = chyba (která je pravdivá?)."""
+    d = Path(history_dir if history_dir is not None else CONFIG["history_dir"])
+    files = sorted(d.glob(CONFIG["history_pattern"])) if d.exists() else []
+    if not files:
+        return None
+    if len(files) > 1:
+        raise SystemExit(f"[CHYBA] V {d.as_posix()}/ je víc souborů historie "
+                         f"({len(files)}) — má tam být právě jeden pravdivý.")
+    return files[0]
+
+
+def load_history(path: Path) -> dict:
+    """
+    {"id:<id_subj_adr>": {driver_code: visits}, "note:<adress_note lower>":
+    {...}} — obě adresní identity, protože lines_stops nese jen location_code
+    (= adress_note) a id adresy (eso_col7 = id_subj_adr) se dohledává
+    z prepared souboru, když existuje. Plus "_stats".
+    """
+    with open(path, encoding="utf-8-sig") as f:
+        sample = f.read(2048)
+    delim = ";" if sample.count(";") >= sample.count(",") else ","
+    fam: dict[str, dict[str, int]] = {}
+    drivers, addrs, rows = set(), set(), 0
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f, delimiter=delim)
+        header = [h.strip() for h in (reader.fieldnames or [])]
+        missing = [c for c in HISTORY_REQUIRED if c not in header]
+        if missing:
+            raise SystemExit(f"[CHYBA] Historii {path.name} chybí sloupce {missing}")
+        for row in reader:
+            row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+            drv, aid, note = row["driver_code"], row["id_subj_adr"], row["adress_note"].lower()
+            cnt = _num(row["visit_count"])
+            if not drv or cnt is None or (not aid and not note):
+                continue
+            rows += 1
+            drivers.add(drv)
+            for key in ((f"id:{aid}",) if aid else ()) + ((f"note:{note}",) if note else ()):
+                addrs.add(key)
+                d = fam.setdefault(key, {})
+                d[drv] = d.get(drv, 0) + int(cnt)
+    fam["_stats"] = {"rows": rows, "drivers": len(drivers),
+                     "addresses": sum(1 for k in addrs if k.startswith("id:")) or len(addrs),
+                     "file": path.name}
+    return fam
+
+
+def load_familiarity(history_dir: Path | str | None = None,
+                     history_file: Path | str | None = None) -> dict | None:
+    p = Path(history_file) if history_file else find_history_file(history_dir)
+    return load_history(p) if p else None
+
+
+def familiarity_ranks(fam: dict, keys: set[str], drivers: list[str]) -> dict:
+    """
+    Pro každou adresu (klíč) POŘADÍ každého aktivního řidiče podle počtu
+    závozů, 0..1 (percentile_ranks — shodné počty sdílejí pořadí, kdo nikdy
+    nejel je dole; když tam nejel nikdo, všichni 0,5).
+    Příklad 6 řidičů 5×,4×,4×,0,0,0 -> 1.0, 0.7, 0.7, 0.2, 0.2, 0.2
+    (= body 6, 4.5, 4.5, 2, 2, 2 v měřítku 1..6).
+    """
+    out: dict[str, dict[str, float]] = {}
+    for key in keys:
+        visits = fam.get(key, {})
+        vals = [float(visits.get(d, 0)) for d in drivers]
+        ranks = percentile_ranks(vals)
+        out[key] = dict(zip(drivers, ranks))
+    return out
+
+
+def load_order_addresses(prepared_root: Path | str, depot: str, day: str) -> dict[str, str]:
+    """{order_number -> eso_col7 (= id_subj_adr)} z prepared souboru dne;
+    prázdné, když soubor není (pak se familiarity párují přes location_code)."""
+    p = Path(prepared_root) / depot / f"orders_{depot}_{day}.csv"
+    if not p.exists():
+        return {}
+    out = {}
+    with open(p, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            on, aid = str(row.get("order_number", "")).strip(), str(row.get("eso_col7", "")).strip()
+            if on and aid:
+                out[on] = aid
     return out
 
 
@@ -218,28 +456,34 @@ def _time_to_min(hhmm: str) -> int | None:
         return None
 
 
-def load_depot_lines(results_dir: Path, depot: str) -> list[dict]:
+def load_depot_lines(results_dir: Path, depot: str,
+                     order_addr: dict[str, str] | None = None) -> list[dict]:
     """Linky depa vč. zastávek. Dvojlinky (společné vehicle_id) sloučené
-    do jedné jednotky — jeden řidič jede obě jízdy."""
+    do jedné jednotky — jeden řidič jede obě jízdy. Každá zastávka nese
+    klíč adresy pro familiarity: 'id:<eso_col7>' když je znám, jinak
+    'note:<location_code>'."""
     summary = results_dir / "lines_summary.csv"
     stops_f = results_dir / "lines_stops.csv"
     for f in (summary, stops_f):
         if not f.exists():
             raise SystemExit(f"[CHYBA] Chybí {f} — depo {depot} nemá "
                              f"kompletní výsledky.")
+    order_addr = order_addr or {}
 
     stops_by_line: dict[str, list[dict]] = {}
     with open(stops_f, encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
-            if not str(row.get("order_id", "")).strip():
+            oid = str(row.get("order_id", "")).strip()
+            if not oid:
                 continue        # sklad (start/návrat)
             win = str(row.get("window", ""))
             end = _time_to_min(win.split("–")[-1]) if "–" in win else None
             arr = _time_to_min(str(row.get("arrival", "")))
+            loc = str(row.get("location_code", "")).strip().lower()
+            key = f"id:{order_addr[oid]}" if oid in order_addr else f"note:{loc}"
             stops_by_line.setdefault(row["line_id"], []).append({
-                "location_code": str(row.get("location_code", "")).strip(),
-                "arrival_min":   arr,
-                "window_end_min": end,
+                "location_code": loc, "addr_key": key,
+                "arrival_min":   arr, "window_end_min": end,
             })
 
     by_vehicle: dict[str, dict] = {}
@@ -254,14 +498,14 @@ def load_depot_lines(results_dir: Path, depot: str) -> list[dict]:
                 "vehicle_id": vehicle_id,
                 "type_code": vehicle_id.rsplit("_", 1)[0],
                 "line_ids": [], "km": 0.0, "tightness_raw": 0.0,
-                "stops_total": 0, "locations": set(),
+                "stops_total": 0, "stop_keys": [],
             })
             unit["line_ids"].append(line_id)
             unit["km"] += float(row.get("total_km", 0) or 0)
             stops = stops_by_line.get(line_id, [])
             unit["tightness_raw"] += line_tightness(stops)
             unit["stops_total"] += len(stops)
-            unit["locations"].update(s["location_code"] for s in stops)
+            unit["stop_keys"].extend(s["addr_key"] for s in stops)
     return list(by_vehicle.values())
 
 
@@ -303,40 +547,69 @@ def percentile_ranks(values: list[float]) -> list[float]:
             for x in values]
 
 
-def plan_deficit(row: dict, day_of_year: int) -> float | None:
-    """Relativní skluz vůči poměrné části ročního plánu; None = bez dat.
-    (Až ESO začne plnit Aktual./Plán měs., přimíchá se tady.)"""
-    if not row["plan_rok"] or row["aktual_rok"] is None:
+def plan_deficit(row: dict, day_of_year: int, days_in_year: int = 365) -> float | None:
+    """Relativní skluz vůči poměrné části ROČNÍHO plánu; None = bez dat
+    (žádný plán / neznámé najeté km)."""
+    if not row.get("plan_rok") or row.get("aktual_rok") is None:
         return None
-    expected = row["plan_rok"] * day_of_year / 365.0
+    expected = row["plan_rok"] * day_of_year / days_in_year
     return (expected - row["aktual_rok"]) / row["plan_rok"]
 
 
-def load_familiarity(history_dir: Path | str | None = None) -> dict | None:
-    """{location_code -> set(řidičů)} z historie závozů — AŽ historie
-    ponese sloupec řidiče (dnes nenese -> None = kritérium bez dat)."""
-    d = Path(history_dir if history_dir is not None else CONFIG["history_dir"])
-    files = sorted(d.glob("*.xlsx")) if d.exists() else []
-    if not files:
+def plan_deficit_month(row: dict, day_of_month: int, days_in_month: int) -> float | None:
+    """Totéž vůči MĚSÍČNÍMU plánu; None = bez dat."""
+    if not row.get("plan_mes") or row.get("aktual_mes") is None:
         return None
-    import openpyxl
-    ws = openpyxl.load_workbook(files[-1], read_only=True, data_only=True).active
-    header = [str(h).strip() if h else "" for h in next(ws.iter_rows(values_only=True))]
-    driver_cols = [h for h in header if "idi" in h.lower()]   # Řidič/ridic…
-    if not driver_cols:
-        return None
-    zk, dr = header.index("Zkratka"), header.index(driver_cols[0])
-    fam: dict[str, set] = {}
-    for f in files:
-        ws = openpyxl.load_workbook(f, read_only=True, data_only=True).active
-        rows = ws.iter_rows(values_only=True)
-        next(rows)
-        for r in rows:
-            loc = str(r[zk] or "").strip().lower()
-            drv = str(r[dr] or "").strip()
-            if loc and drv:
-                fam.setdefault(loc, set()).add(drv)
-    return fam or None
+    expected = row["plan_mes"] * day_of_month / days_in_month
+    return (expected - row["aktual_mes"]) / row["plan_mes"]
+
+
+def _rank_map(rows: list[dict], values: list[float | None]) -> dict[int, float | None]:
+    """id(row) -> pořadí mezi řádky S DATY (None zůstane None)."""
+    with_data = [(r, v) for r, v in zip(rows, values) if v is not None]
+    ranks = percentile_ranks([v for _, v in with_data])
+    out = {id(r): None for r in rows}
+    for (r, _), rk in zip(with_data, ranks):
+        out[id(r)] = rk
+    return out
+
+
+def plan_scores(rows: list[dict], day: date, year_share: float | None = None) -> tuple[dict, list[str]]:
+    """
+    id(row) -> skóre plnění 0..1: rok a měsíc zvlášť seřazené (kdo zaostává
+    víc = výš), zkombinované year_share : (1 - year_share). Jen jedna část
+    s daty -> jen ta; nic -> 0.5. Naše auta (plán 0/0) = 0.5 (o jejich
+    pořadí rozhoduje TIER, ne plnění).
+    """
+    ys = CONFIG["plan_year_share"] if year_share is None else year_share
+    contracted = [r for r in rows if not r.get("own_fleet")]
+    doy, dim = day.timetuple().tm_yday, calendar.monthrange(day.year, day.month)[1]
+    diy = 366 if calendar.isleap(day.year) else 365
+    ry = _rank_map(contracted, [plan_deficit(r, doy, diy) for r in contracted])
+    rm = _rank_map(contracted, [plan_deficit_month(r, day.day, dim) for r in contracted])
+    scores, warns = {}, []
+    n_year = sum(1 for v in ry.values() if v is not None)
+    n_month = sum(1 for v in rm.values() if v is not None)
+    for r in rows:
+        if r.get("own_fleet"):
+            scores[id(r)] = 0.5
+            continue
+        y, m = ry.get(id(r)), rm.get(id(r))
+        if y is not None and m is not None:
+            scores[id(r)] = ys * y + (1 - ys) * m
+        elif y is not None:
+            scores[id(r)] = y
+        elif m is not None:
+            scores[id(r)] = m
+        else:
+            scores[id(r)] = 0.5
+    if contracted and n_year == 0 and n_month == 0:
+        warns.append("[!] Plnění plánu BEZ DAT — registr nenese km_plan/km_aktual; "
+                     "kritérium je neutrální (0.5).")
+    elif contracted and (n_year < len(contracted) or n_month < len(contracted)):
+        warns.append(f"[!] Plnění plánu: data rok {n_year}/{len(contracted)}, "
+                     f"měsíc {n_month}/{len(contracted)} smluvních aut; ostatní neutrální.")
+    return scores, warns
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -345,15 +618,21 @@ def load_familiarity(history_dir: Path | str | None = None) -> dict | None:
 
 def build_assignment(units: list[dict], registry: list[dict], target_date: str,
                      familiarity: dict | None = None,
-                     weights: dict | None = None) -> dict:
+                     weights: dict | None = None,
+                     own_fleet_last: bool | None = None) -> dict:
     """
     Celodenní matice jednotky × ŘIDIČI; buňka = nejlepší řidičovo auto
     správného typu. Vrací {"assigned": [...], "uncovered": [...],
-    "warnings": [...]}.
+    "warnings": [...], "weights": {...}}.
+
+    TIER: smluvní auto má v buňce bonus větší než celý rozsah soft skóre,
+    takže maďarský algoritmus napřed maximalizuje počet linek se smluvními
+    auty a naše auta (plán 0/0) dostanou jen zbytek — ale jen ve svém typu.
     """
     W = dict(CONFIG["weights"]) if weights is None else dict(weights)
-    dt = datetime.strptime(target_date, "%Y-%m-%d")
-    weekday, doy = dt.weekday(), dt.timetuple().tm_yday
+    tier_on = CONFIG["own_fleet_last"] if own_fleet_last is None else own_fleet_last
+    day = datetime.strptime(target_date, "%Y-%m-%d").date()
+    weekday = day.weekday()
     warnings: list[str] = []
 
     units = sorted(units, key=lambda u: (u["depot"], u["vehicle_id"]))
@@ -368,48 +647,53 @@ def build_assignment(units: list[dict], registry: list[dict], target_date: str,
     all_rows = [r for rs in rows_by_driver.values() for r in rs]
     dojezd_rank = dict(zip(map(id, all_rows),
                            percentile_ranks([r["dojezd_km"] for r in all_rows])))
-    deficits = [plan_deficit(r, doy) for r in all_rows]
-    with_data = [d for d in deficits if d is not None]
-    if not with_data:
-        warnings.append("[!] Plnění plánu BEZ DAT — ESO zatím neplní "
-                        "Aktual. km; kritérium je neutrální (0.5).")
-        deficit_rank = {id(r): 0.5 for r in all_rows}
-    else:
-        ranks = percentile_ranks(with_data)
-        it = iter(ranks)
-        deficit_rank = {id(r): (next(it) if d is not None else 0.5)
-                        for r, d in zip(all_rows, deficits)}
+    plan_score, plan_warns = plan_scores(all_rows, day)
+    warnings.extend(plan_warns)
+
     if familiarity is None:
-        warnings.append("[!] Familiarity BEZ DAT — historie závozů nenese "
-                        "řidiče; kritérium je neutrální (0.5).")
+        warnings.append("[!] Familiarity BEZ DAT — chybí historie řidič×adresa "
+                        f"({CONFIG['history_dir']}); kritérium je neutrální (0.5).")
+        fam_rank: dict = {}
+    else:
+        keys = {k for u in units for k in u.get("stop_keys", [])}
+        fam_rank = familiarity_ranks(familiarity, keys, drivers)
     speed = CONFIG["quality_speed"]
+    tier_bonus = sum(W.values()) + 1.0 if tier_on else 0.0
+    n_own = sum(1 for r in all_rows if r.get("own_fleet"))
+    if n_own and tier_on:
+        warnings.append(f"[i] Naše auta (plán 0/0): {n_own} — jedou až když na "
+                        f"linky jejich typu nestačí smluvní.")
 
     def cell(u_idx: int, driver: str) -> tuple[float, dict] | None:
-        """Nejlepší (skóre, auto) řidiče pro jednotku; None = hard zákaz."""
+        """Nejlepší (skóre + tier, info) řidiče pro jednotku; None = hard zákaz."""
         u = units[u_idx]
         best = None
         for r in rows_by_driver[driver]:
             if (r["type_code"] != u["type_code"] or weekday not in r["days"]
-                    or not r["available"] or not r["active"]):
+                    or not is_available(r, day)):
                 continue
-            s_plan = deficit_rank[id(r)]
+            s_plan = plan_score[id(r)]
             s_doj = 1.0 - abs(km_rank[u_idx] - dojezd_rank[id(r)])
             s_qual = 1.0 - abs(t_rank[u_idx]
                                - speed.get(r["kvalita"], 0.5))
-            if familiarity is None or not u["locations"]:
-                s_fam = 0.5
+            keys = u.get("stop_keys", [])
+            if familiarity is None or not keys:
+                s_fam, known = 0.5, 0
             else:
-                known = sum(1 for loc in u["locations"]
-                            if driver in familiarity.get(loc, ()))
-                s_fam = known / len(u["locations"])
+                s_fam = sum(fam_rank[k].get(driver, 0.5) for k in keys) / len(keys)
+                known = sum(1 for k in keys
+                            if familiarity.get(k, {}).get(driver, 0) > 0)
             score = (W["plneni_planu"] * s_plan + W["dojezd"] * s_doj
                      + W["kvalita_tightness"] * s_qual
                      + W["familiarity"] * s_fam)
-            entry = (score, {"row": r,
+            total = score + (0.0 if r.get("own_fleet") else tier_bonus)
+            entry = (total, {"row": r, "score": score,
                              "breakdown": {"plneni": round(s_plan, 3),
                                            "dojezd": round(s_doj, 3),
                                            "kvalita": round(s_qual, 3),
-                                           "familiarity": round(s_fam, 3)}})
+                                           "familiarity": round(s_fam, 3),
+                                           "fam_known": known,
+                                           "tier": "naše" if r.get("own_fleet") else "smluvní"}})
             if best is None or entry[0] > best[0]:
                 best = entry
         return best
@@ -425,7 +709,10 @@ def build_assignment(units: list[dict], registry: list[dict], target_date: str,
 
     from scipy.optimize import linear_sum_assignment
     import numpy as np
-    row_ind, col_ind = linear_sum_assignment(np.array(cost))
+    if units and drivers:
+        row_ind, col_ind = linear_sum_assignment(np.array(cost))
+    else:
+        row_ind, col_ind = [], []
 
     assigned, uncovered = [], []
     matched = {ui: di for ui, di in zip(row_ind, col_ind)
@@ -435,14 +722,18 @@ def build_assignment(units: list[dict], registry: list[dict], target_date: str,
             uncovered.append(u)
             continue
         di = matched[ui]
-        score, info = cells[(ui, di)]
+        _total, info = cells[(ui, di)]
         assigned.append({"unit": u, "driver": drivers[di],
-                         "vehicle": info["row"], "score": round(score, 3),
+                         "vehicle": info["row"], "score": round(info["score"], 3),
                          "breakdown": info["breakdown"]})
     if uncovered:
         warnings.append(f"[ALERT] {len(uncovered)} linek BEZ řidiče — po "
                         f"tvrdých filtrech (den, dostupnost, typ) nezbyl "
                         f"nikdo. Ruční zásah nutný.")
+    n_own_used = sum(1 for a in assigned if a["vehicle"].get("own_fleet"))
+    if n_own_used:
+        warnings.append(f"[i] Nasazeno {n_own_used} našich aut (smluvní daného "
+                        f"typu nestačila).")
     return {"assigned": assigned, "uncovered": uncovered,
             "warnings": warnings, "weights": W}
 
@@ -452,10 +743,15 @@ def build_assignment(units: list[dict], registry: list[dict], target_date: str,
 # ═════════════════════════════════════════════════════════════════════════════
 
 CSV_HEADER = ["depot", "line_id", "vehicle_id", "type_code", "km",
-              "tightness", "driver", "vehicle_no", "vehicle_name",
-              "dopravce", "kvalita", "dojezd_km", "score",
-              "s_plneni", "s_dojezd", "s_kvalita", "s_familiarity",
-              "dvojlinka"]
+              "tightness", "driver", "driver_code", "vehicle_code",
+              "vehicle_name", "dopravce", "tier", "kvalita", "dojezd_km",
+              "plan_rok", "aktual_rok", "plan_mes", "aktual_mes",
+              "score", "s_plneni", "s_dojezd", "s_kvalita", "s_familiarity",
+              "fam_known_stops", "dvojlinka"]
+
+
+def _fmt_num(v) -> str:
+    return "" if v is None else (str(int(v)) if float(v).is_integer() else str(v))
 
 
 def result_rows(result: dict) -> list[dict]:
@@ -470,24 +766,31 @@ def result_rows(result: dict) -> list[dict]:
                 "vehicle_id": u["vehicle_id"], "type_code": u["type_code"],
                 "km": round(u["km"], 1),
                 "tightness": round(u["tightness_raw"], 2),
-                "driver": a["driver"], "vehicle_no": v["vehicle_no"],
-                "vehicle_name": v["vehicle_name"], "dopravce": v["dopravce"],
-                "kvalita": v["kvalita"], "dojezd_km": v["dojezd_km"],
+                "driver": v.get("driver_name") or a["driver"],
+                "driver_code": a["driver"],
+                "vehicle_code": v.get("vehicle_code", ""),
+                "vehicle_name": v.get("vehicle_name", ""),
+                "dopravce": v.get("dopravce", ""),
+                "tier": b.get("tier", ""),
+                "kvalita": v.get("kvalita", ""), "dojezd_km": v.get("dojezd_km", ""),
+                "plan_rok": _fmt_num(v.get("plan_rok")),
+                "aktual_rok": _fmt_num(v.get("aktual_rok")),
+                "plan_mes": _fmt_num(v.get("plan_mes")),
+                "aktual_mes": _fmt_num(v.get("aktual_mes")),
                 "score": a["score"], "s_plneni": b["plneni"],
                 "s_dojezd": b["dojezd"], "s_kvalita": b["kvalita"],
                 "s_familiarity": b["familiarity"],
+                "fam_known_stops": f"{b.get('fam_known', 0)}/{u.get('stops_total', len(u.get('stop_keys', [])))}",
                 "dvojlinka": "ano" if len(u["line_ids"]) > 1 else "",
             })
     for u in result["uncovered"]:
         for line_id in u["line_ids"]:
-            rows.append({"depot": u["depot"], "line_id": line_id,
+            rows.append({**{k: "" for k in CSV_HEADER},
+                         "depot": u["depot"], "line_id": line_id,
                          "vehicle_id": u["vehicle_id"],
                          "type_code": u["type_code"], "km": round(u["km"], 1),
                          "tightness": round(u["tightness_raw"], 2),
-                         "driver": "!!! NEPŘIŘAZENO !!!", "vehicle_no": "",
-                         "vehicle_name": "", "dopravce": "", "kvalita": "",
-                         "dojezd_km": "", "score": "", "s_plneni": "",
-                         "s_dojezd": "", "s_kvalita": "", "s_familiarity": "",
+                         "driver": "!!! NEPŘIŘAZENO !!!",
                          "dvojlinka": "ano" if len(u["line_ids"]) > 1 else ""})
     return rows
 
@@ -505,12 +808,14 @@ def format_table(rows: list[dict]) -> str:
     for depot in sorted({r["depot"] for r in rows}):
         out.append(f"\n{depot}:")
         out.append(f"  {'linka':<8} {'typ':<8} {'km':>7} {'tight':>6}  "
-                   f"{'řidič':<24} {'auto':<6} {'kvalita':<9} {'skóre':>6}")
+                   f"{'řidič':<24} {'auto':<6} {'tier':<8} {'kvalita':<9} "
+                   f"{'skóre':>6} {'zná':>6}")
         for r in [x for x in rows if x["depot"] == depot]:
             out.append(f"  {r['line_id']:<8} {r['type_code']:<8} "
                        f"{r['km']:>7} {r['tightness']:>6}  "
-                       f"{r['driver']:<24} {r['vehicle_no']:<6} "
-                       f"{r['kvalita']:<9} {r['score']!s:>6}"
+                       f"{r['driver']:<24} {r['vehicle_code']:<6} "
+                       f"{r['tier']:<8} {r['kvalita']:<9} {r['score']!s:>6} "
+                       f"{r['fam_known_stops']:>6}"
                        + ("  [dvojlinka]" if r["dvojlinka"] else ""))
     return "\n".join(out)
 
@@ -532,8 +837,15 @@ def main() -> None:
                     help="Přípona výsledkových složek (testovací běhy)")
     ap.add_argument("--results-root", default=CONFIG["results_root"])
     ap.add_argument("--ridici-file", default="",
-                    help="Explicitní cesta k registru (default: jediný xlsx "
-                         f"v {CONFIG['ridici_dir']}/)")
+                    help="Explicitní cesta k registru (default: jediný "
+                         f"{CONFIG['registry_pattern']} v {CONFIG['ridici_dir']}/)")
+    ap.add_argument("--history-file", default="",
+                    help="Explicitní historie řidič×adresa (default: jediný csv "
+                         f"v {CONFIG['history_dir']}/)")
+    ap.add_argument("--vehicle-types-file", default="",
+                    help="Vozový park dne (default: jediný v data/static)")
+    ap.add_argument("--force", action="store_true",
+                    help="Pokračovat i při neshodě registru s dnem/vozovým parkem")
     args = ap.parse_args()
 
     depots = [d.upper() for d in args.depots] if args.depots else list(DEPOT_ORDER)
@@ -542,18 +854,44 @@ def main() -> None:
         raise SystemExit(f"[CHYBA] Neznámá depa: {unknown}")
     suffix = f"_{args.label}" if args.label else ""
     root = Path(args.results_root)
+    day = datetime.strptime(args.date, "%Y-%m-%d").date()
 
+    type_map = load_type_map(args.vehicle_types_file or None)
     registry_path = (Path(args.ridici_file) if args.ridici_file
                      else find_registry_file())
-    registry = load_registry(registry_path)
+    registry = load_registry(registry_path, type_map)
 
     print("=" * 66)
-    print(f"PŘIŘAZENÍ ŘIDIČŮ — {args.date} "
-          f"({DAY_NAMES[datetime.strptime(args.date, '%Y-%m-%d').weekday()]})"
+    print(f"PŘIŘAZENÍ ŘIDIČŮ — {args.date} ({DAY_NAMES[day.weekday()]})"
           + (f" | label {args.label}" if args.label else ""))
-    print(f"Registr: {registry_path.name} — {len(registry)} aut, "
-          f"{len({r['driver'] for r in registry})} řidičů")
+    print(f"Registr: {registry_path.name} — {len(registry)} aut+řidičů "
+          f"({sum(1 for r in registry if r['own_fleet'])} našich, "
+          f"{sum(1 for r in registry if usable_on(r, day))} použitelných "
+          f"{args.date})")
     print("=" * 66)
+
+    # ── kontroly registru vs den / vozový park (tvrdé, --force přebije) ──
+    problems: list[str] = []
+    vfd = {r["valid_for_date"] for r in registry}
+    if vfd != {args.date}:
+        problems.append(f"registr má valid_for_date {sorted(vfd)}, plánuje se {args.date}")
+    vt_dates = {v["valid_for_date"] for v in type_map.values()} - {""}
+    if vt_dates and vt_dates != {args.date}:
+        print(f"  [!] vehicle_types má valid_for_date {sorted(vt_dates)}, "
+              f"plánuje se {args.date}")
+    mism = fleet_mismatches(registry, type_map, day)
+    if mism:
+        problems.append("počty aut per typ NESEDÍ (vehicle_types available_count "
+                        "vs registr použitelný v den závozu): "
+                        + ", ".join(f"{m['type_code']} plán {m['planned']} / "
+                                    f"registr {m['registry']}" for m in mism))
+    if problems:
+        msg = "\n  - ".join(["[CHYBA] Registr aut+řidičů nesedí:"] + problems)
+        if args.force:
+            print(msg + "\n  --force: pokračuji.")
+        else:
+            raise SystemExit(msg + "\n  Oprav exporty (registr i vehicle_types "
+                             "musí být z téhož dne), nebo vědomě --force.")
 
     missing = [d for d in depots
                if not (root / d / f"{args.date}{suffix}" / "lines_summary.csv").exists()]
@@ -565,22 +903,32 @@ def main() -> None:
             f"doplánuj, nebo vědomě: --depots "
             + " ".join(d for d in depots if d not in missing))
 
+    prepared_root = Path(CONFIG["prepared_root"])
     units = []
     for depot in depots:
-        units.extend(load_depot_lines(root / depot / f"{args.date}{suffix}", depot))
+        units.extend(load_depot_lines(root / depot / f"{args.date}{suffix}", depot,
+                                      load_order_addresses(prepared_root, depot, args.date)))
 
     # L3 kamionová trasa (plan_day l3) — když existuje, řidiče dostane taky
     l3_dir = root / "L3" / f"{args.date}{suffix}"
     if (l3_dir / "lines_summary.csv").exists():
-        units.extend(load_depot_lines(l3_dir, "L3"))
+        units.extend(load_depot_lines(l3_dir, "L3",
+                                      load_order_addresses(prepared_root, "L3", args.date)))
         depots = depots + ["L3"]
         print("[L3] Kamionové linky přibrány (zóna L3)")
 
+    n_id = sum(1 for u in units for k in u["stop_keys"] if k.startswith("id:"))
+    n_all = sum(len(u["stop_keys"]) for u in units)
     print(f"Linek: {sum(len(u['line_ids']) for u in units)} "
           f"({len(units)} jednotek po sloučení dvojlinek) "
-          f"za depa {', '.join(depots)}")
+          f"za depa {', '.join(depots)}; zastávek {n_all}, z toho podle id "
+          f"adresy {n_id}, podle location_code {n_all - n_id}")
 
-    familiarity = load_familiarity()
+    familiarity = load_familiarity(history_file=args.history_file or None)
+    if familiarity is not None:
+        st = familiarity["_stats"]
+        print(f"Historie: {st['file']} — {st['rows']} řádků, {st['drivers']} "
+              f"řidičů, {st['addresses']} adres")
     result = build_assignment(units, registry, args.date,
                               familiarity=familiarity)
 
@@ -601,13 +949,18 @@ def main() -> None:
     (out_dir / "summary.json").write_text(json.dumps({
         "date": args.date, "label": args.label, "depots": depots,
         "registry_file": registry_path.name,
+        "history_file": familiarity["_stats"]["file"] if familiarity else None,
+        "vehicle_types_file": Path(args.vehicle_types_file).name if args.vehicle_types_file else None,
         "lines": sum(len(u["line_ids"]) for u in units),
         "units": len(units), "assigned": len(result["assigned"]),
+        "own_fleet_used": sum(1 for a in result["assigned"] if a["vehicle"].get("own_fleet")),
         "uncovered": [{"depot": u["depot"], "lines": u["line_ids"],
                        "type": u["type_code"]} for u in result["uncovered"]],
+        "fleet_mismatches": mism, "forced": bool(args.force),
         "weights": result["weights"], "warnings": result["warnings"],
         "params": {k: CONFIG[k] for k in
-                   ("tight_slack_min", "tight_pos_coef", "quality_speed")},
+                   ("tight_slack_min", "tight_pos_coef", "quality_speed",
+                    "plan_year_share", "own_fleet_last")},
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
