@@ -676,3 +676,11 @@ stejném vytížení téměř deterministický (opakování ~0,1 %); rozdíly ~1
 vznikají volbou vítězného seedu fáze C — proto medián ze 3 opakování.
 Takhle se 17. 8. chytilo, že slack 120 min zhoršuje plány (viz
 `--time-slack-max`).
+
+**Výsledek 17.–18. 8. 2026 (vlny 0–3 vs `4f0f879`, 108 běhů, 8,4 h): PASS 18/18.**
+Mediány shodné v 17/18 případů, jediný rozdíl +1 Kč (HK 07); součet mediánů
+960 695 → 960 696 Kč (+0,0001 %); linky 18/18 shodné; 0 pádů; po jednotlivých
+párech 48 shodných / 5 horší B / 1 horší A (jednotky až stovky Kč, šum volby
+seedu, obousměrný). Čas B +22 % (250 → 305 s z budgetu 300 + 60) — záměr 2.3
+(fáze C využívá celý budget). Šum uvnitř strany: medián 0,000 %, max 0,47 %.
+Závěr: opravy vln 0–3 plány nemění.
