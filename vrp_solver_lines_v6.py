@@ -347,6 +347,16 @@ CONFIG = {
     # Reprodukovatelnost
     "random_seed":                   42,
 
+    # ── Nákladová matice (audit 1.1 + 2.9 + 1.6; vlna 4) ────────────────
+    #   legacy — Python callbacky per hrana, sazba int(cost_per_km) (19,5 →
+    #            19; solver tak minimalizuje jinou cenu, než vypíše), km
+    #            vždy z profilu `driving` (i pro kamiony)
+    #   exact  — RegisterTransitMatrix per typ vozidla s PŘESNOU sazbou
+    #            (Kč × 100), čas i jízda přes matice (bez Python volání
+    #            v horké smyčce), km per profil vozidla (kamion = hgv km)
+    # Default legacy, dokud benchmark_cost_matrix.py nerozhodne.
+    "cost_matrix_mode":              "legacy",
+
     # ── Režim řidiče EU (jen s --driver-breaks; L3 kamionové trasy) ───
     # Zjednodušeně, na bezpečné straně:
     #   • pauza: v žádném úseku trasy delším než driver_break_after_h
@@ -1557,13 +1567,37 @@ def extract_submatrix(full_dist: np.ndarray, cluster_vehicle_times: list,
     return sub_dist, sub_times
 
 
+def extract_submatrix_list(full_mats: list, cluster_order_indices: list) -> list:
+    """Per-vozidlo submatice (km i čas) pro cluster — numpy fancy indexing,
+    bez Python dvojité smyčky."""
+    idx = np.array([0] + [i + 1 for i in cluster_order_indices])
+    return [np.asarray(m, dtype=float)[np.ix_(idx, idx)] for m in full_mats]
+
+
+# Per-vozidlo km matice (režim exact) — plní main(), čtou fáze C/D/E a
+# záchrana; None = legacy (jedna km matice z profilu driving pro všechny).
+VEHICLE_DIST_BY_ID: dict | None = None
+
+
+def cluster_dist_list(c_vehicles: list, c_ix: list, vehicle_dist_by_id: dict | None):
+    """Per-vozidlo km submatice clusteru, nebo None (legacy: jedna km matice
+    pro všechny)."""
+    if not vehicle_dist_by_id:
+        return None
+    return extract_submatrix_list([vehicle_dist_by_id[v["id"]] for v in c_vehicles], c_ix)
+
+
 # ============================================================
 #  DATA MODEL + SOLVER (algoritmus beze změny od v2)
 # ============================================================
 
-def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list):
+def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list,
+                     distances_km_list=None):
     """
     durations_min_list: list[np.ndarray] — jedna časová matice na vozidlo.
+    distances_km_list:  volitelně list[np.ndarray] — km matice per vozidlo
+                        (profil vozidla; režim exact). Bez ní jedna matice
+                        pro všechny (legacy).
     """
     depot_open  = time_to_minutes(DEPOT["open"])
     depot_close = time_to_minutes(DEPOT["close"])
@@ -1583,6 +1617,17 @@ def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list
             neginf=UNREACHABLE_TIME_MIN,
         )
     dist_int = dist_arr.astype(int).tolist()
+
+    # Per-vozidlo km matice (exact): stejná sanitizace, ×100
+    dist_int_list = None
+    if distances_km_list is not None:
+        dist_int_list = []
+        for dm in distances_km_list:
+            a = np.array(dm, dtype=float) * 100
+            if not np.all(np.isfinite(a)):
+                a = np.nan_to_num(a, nan=UNREACHABLE_TIME_MIN,
+                                  posinf=UNREACHABLE_TIME_MIN, neginf=UNREACHABLE_TIME_MIN)
+            dist_int_list.append(a.astype(int).tolist())
 
     # Speed factor: solver vidí kratší cestovní časy (auta jedou ~3 % rychleji)
     speed_factor = float(CONFIG.get("travel_time_speed_factor", 1.0))
@@ -1626,6 +1671,7 @@ def build_data_model(orders, vehicles_expanded, distances_km, durations_min_list
 
     return {
         "dist_int":            dist_int,
+        "dist_int_list":       dist_int_list,
         "time_int_list":       time_int_list,
         "time_windows":        tw,
         "demands":             demands,
@@ -1696,39 +1742,72 @@ def _add_drive_limit(routing, manager, data) -> None:
 
 def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
                   time_limit_sec: int,
-                  strategy=routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION):
-    data = build_data_model(orders, vehicles_expanded, distances_km, durations_min_list)
+                  strategy=routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION,
+                  distances_km_list=None):
+    exact = str(CONFIG.get("cost_matrix_mode", "legacy")).lower() == "exact"
+    data = build_data_model(orders, vehicles_expanded, distances_km, durations_min_list,
+                            distances_km_list=distances_km_list if exact else None)
     n    = len(data["demands"])
 
     manager = pywrapcp.RoutingIndexManager(n, data["num_vehicles"], data["depot"])
     routing = pywrapcp.RoutingModel(manager)
 
-    for v_idx in range(data["num_vehicles"]):
-        cb_idx = routing.RegisterTransitCallback(
-            lambda fi, ti, vi=v_idx: (
-                data["dist_int"][manager.IndexToNode(fi)][manager.IndexToNode(ti)]
-                * int(data["costs_per_km"][vi])
+    if exact:
+        # ── EXACT (vlna 4): matice místo Python callbacků, přesná sazba,
+        #    km per profil vozidla. Cena hrany = round(km × Kč/km × 100).
+        #    Stejná matice se registruje jen jednou (cache per typ+profil).
+        cost_cache: dict[tuple, int] = {}
+        for v_idx, v in enumerate(vehicles_expanded):
+            dl = data["dist_int_list"][v_idx] if data.get("dist_int_list") else data["dist_int"]
+            key = (v.get("osrm_profile", "driving") if data.get("dist_int_list") else "shared",
+                   round(float(v["cost_per_km"]), 4))
+            if key not in cost_cache:
+                cpk = float(v["cost_per_km"])
+                mat = [[int(round(d * cpk)) for d in row] for row in dl]   # d = km×100
+                cost_cache[key] = routing.RegisterTransitMatrix(mat)
+            routing.SetArcCostEvaluatorOfVehicle(cost_cache[key], v_idx)
+            routing.SetFixedCostOfVehicle(data["start_costs"][v_idx], v_idx)
+        demand_cb_idx = routing.RegisterUnaryTransitVector(list(data["demands"]))
+    else:
+        for v_idx in range(data["num_vehicles"]):
+            cb_idx = routing.RegisterTransitCallback(
+                lambda fi, ti, vi=v_idx: (
+                    data["dist_int"][manager.IndexToNode(fi)][manager.IndexToNode(ti)]
+                    * int(data["costs_per_km"][vi])
+                )
             )
-        )
-        routing.SetArcCostEvaluatorOfVehicle(cb_idx, v_idx)
-        routing.SetFixedCostOfVehicle(data["start_costs"][v_idx], v_idx)
+            routing.SetArcCostEvaluatorOfVehicle(cb_idx, v_idx)
+            routing.SetFixedCostOfVehicle(data["start_costs"][v_idx], v_idx)
 
-    demand_cb_idx = routing.RegisterUnaryTransitCallback(
-        lambda fi: data["demands"][manager.IndexToNode(fi)]
-    )
+        demand_cb_idx = routing.RegisterUnaryTransitCallback(
+            lambda fi: data["demands"][manager.IndexToNode(fi)]
+        )
     routing.AddDimensionWithVehicleCapacity(demand_cb_idx, 0, data["capacities"],
                                              True, "Capacity")
 
     # Per-vehicle čas: každé vozidlo má vlastní matici (jiný OSRM profil + time_multiplier)
     time_cb_indices = []
-    for v_idx in range(data["num_vehicles"]):
-        cb_idx = routing.RegisterTransitCallback(
-            lambda fi, ti, vi=v_idx: (
-                data["time_int_list"][vi][manager.IndexToNode(fi)][manager.IndexToNode(ti)]
-                + data["service_times"][manager.IndexToNode(fi)]
+    if exact:
+        svc = data["service_times"]
+        time_cache: dict[tuple, int] = {}
+        for v_idx in range(data["num_vehicles"]):
+            tl = data["time_int_list"][v_idx]
+            vv = vehicles_expanded[v_idx]
+            key = (vv.get("osrm_profile", "driving"),
+                   round(float(vv.get("time_multiplier", 1.0)), 4))
+            if key not in time_cache:
+                mat = [[tl[i][j] + svc[i] for j in range(n)] for i in range(n)]
+                time_cache[key] = routing.RegisterTransitMatrix(mat)
+            time_cb_indices.append(time_cache[key])
+    else:
+        for v_idx in range(data["num_vehicles"]):
+            cb_idx = routing.RegisterTransitCallback(
+                lambda fi, ti, vi=v_idx: (
+                    data["time_int_list"][vi][manager.IndexToNode(fi)][manager.IndexToNode(ti)]
+                    + data["service_times"][manager.IndexToNode(fi)]
+                )
             )
-        )
-        time_cb_indices.append(cb_idx)
+            time_cb_indices.append(cb_idx)
     routing.AddDimensionWithVehicleTransitAndCapacity(
         time_cb_indices, int(CONFIG.get("time_slack_max_min", 60)),
         [data["max_dur_min"]] * data["num_vehicles"],
@@ -1776,22 +1855,31 @@ def solve_cluster(orders, vehicles_expanded, distances_km, durations_min_list,
     solution = routing.SolveWithParameters(params)
     if not solution:
         return [], 0
+    # objektiv solveru v Kč (diagnostika / testy: v legacy se liší od
+    # vykázané ceny o osekání sazby, v exact sedí na setinu)
+    CONFIG["_last_objective_kc"] = solution.ObjectiveValue() / data["cost_scale"]
 
     routes, total_cost = _extract_routes(manager, routing, solution, time_dim,
                                           vehicles_expanded, orders,
                                           np.array(distances_km),
-                                          time_matrices=durations_min_list)
+                                          time_matrices=durations_min_list,
+                                          distances_km_list=(distances_km_list
+                                                             if exact else None))
     return routes, total_cost
 
 
 def _extract_routes(manager, routing, solution, time_dim,
                     vehicles_expanded, orders, distances_km,
-                    time_matrices=None):
+                    time_matrices=None, distances_km_list=None):
     routes        = []
     total_cost_kc = 0
+    shared_dist   = distances_km
 
     for v_idx in range(len(vehicles_expanded)):
         v     = vehicles_expanded[v_idx]
+        # km per profil vozidla (exact / 1.6), jinak společná matice
+        distances_km = (np.asarray(distances_km_list[v_idx])
+                        if distances_km_list is not None else shared_dist)
         index = routing.Start(v_idx)
         if routing.IsEnd(solution.Value(routing.NextVar(index))):
             continue
@@ -1887,16 +1975,19 @@ def _worker_solve_cluster(args: dict) -> dict:
     cluster_vehicles = args["cluster_vehicles"]
     sub_dist         = np.array(args["sub_dist"])
     sub_times        = [np.array(st) for st in args["sub_times"]]
+    sub_dists        = ([np.array(sd) for sd in args["sub_dists"]]
+                        if args.get("sub_dists") is not None else None)
     time_limit       = args["time_limit_sec"]
     strategy         = args.get("strategy")
 
     if strategy is None:
         routes, cost = solve_cluster(
-            cluster_orders, cluster_vehicles, sub_dist, sub_times, time_limit)
+            cluster_orders, cluster_vehicles, sub_dist, sub_times, time_limit,
+            distances_km_list=sub_dists)
     else:
         routes, cost = solve_cluster(
             cluster_orders, cluster_vehicles, sub_dist, sub_times, time_limit,
-            strategy=strategy)
+            strategy=strategy, distances_km_list=sub_dists)
     return {
         "seed_name":   args["seed_name"],
         "cluster_idx": args["cluster_idx"],
@@ -1944,6 +2035,7 @@ def _rescue_unsolved_parallel(unsolved: list[int], seed_name: str, clusters,
         c_orders, c_ix, c_vehicles = clusters[ci], c_indices[ci], vehicle_asgn[ci]
         cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
         sub_dist, sub_times = extract_submatrix(distances_km, cluster_v_times, c_ix)
+        sub_dists = cluster_dist_list(c_vehicles, c_ix, VEHICLE_DIST_BY_ID)
         for strat in RESCUE_STRATEGIES:
             tasks.append({
                 "seed_name":        seed_name,
@@ -1952,6 +2044,8 @@ def _rescue_unsolved_parallel(unsolved: list[int], seed_name: str, clusters,
                 "cluster_vehicles": c_vehicles,
                 "sub_dist":         sub_dist.tolist(),
                 "sub_times":        [st.tolist() for st in sub_times],
+                "sub_dists":        ([sd.tolist() for sd in sub_dists]
+                                     if sub_dists is not None else None),
                 "time_limit_sec":   int(rescue_time),
                 "strategy":         int(strat),
                 "config":           dict(CONFIG),
@@ -2169,6 +2263,7 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
                 zip(clusters, cluster_indices, vehicle_assignments)):
             cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
             sub_dist, sub_times = extract_submatrix(distances_km, cluster_v_times, c_indices)
+            sub_dists = cluster_dist_list(c_vehicles, c_indices, VEHICLE_DIST_BY_ID)
             all_worker_args.append({
                 "seed_name":       seed_name,
                 "cluster_idx":     c_idx,
@@ -2176,6 +2271,8 @@ def phase_c_best_seed(orders, vehicles_expanded, distances_km, vehicle_time_by_i
                 "cluster_vehicles":c_vehicles,
                 "sub_dist":        sub_dist.tolist(),
                 "sub_times":       [st.tolist() for st in sub_times],
+                "sub_dists":       ([sd.tolist() for sd in sub_dists]
+                                    if sub_dists is not None else None),
                 "config":          dict(CONFIG),
             })
 
@@ -2442,6 +2539,7 @@ def _lns_iteration(state, distances_km, vehicle_time_by_id, destroy_size,
         cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
         sub_dist, sub_times = extract_submatrix(
             distances_km, cluster_v_times, new_indices[c_idx])
+        sub_dists = cluster_dist_list(c_vehicles, new_indices[c_idx], VEHICLE_DIST_BY_ID)
         worker_args.append({
             "seed_name":       "lns",
             "cluster_idx":     c_idx,
@@ -2449,6 +2547,8 @@ def _lns_iteration(state, distances_km, vehicle_time_by_id, destroy_size,
             "cluster_vehicles":c_vehicles,
             "sub_dist":        sub_dist.tolist(),
             "sub_times":       [st.tolist() for st in sub_times],
+            "sub_dists":       ([sd.tolist() for sd in sub_dists]
+                                if sub_dists is not None else None),
             "time_limit_sec":  time_limit_sec,
             "config":          dict(CONFIG),
         })
@@ -2644,6 +2744,7 @@ def phase_e_intensify(finalists, distances_km, vehicle_time_by_id,
     for f_idx, c_idx, c_orders, c_indices, c_vehicles in task_specs:
         cluster_v_times = [vehicle_time_by_id[v["id"]] for v in c_vehicles]
         sub_dist, sub_times = extract_submatrix(distances_km, cluster_v_times, c_indices)
+        sub_dists = cluster_dist_list(c_vehicles, c_indices, VEHICLE_DIST_BY_ID)
         worker_args.append({
             "seed_name":       f"F{f_idx}",     # finalista se veze v seed_name
             "cluster_idx":     c_idx,
@@ -2651,6 +2752,8 @@ def phase_e_intensify(finalists, distances_km, vehicle_time_by_id,
             "cluster_vehicles":c_vehicles,
             "sub_dist":        sub_dist.tolist(),
             "sub_times":       [st.tolist() for st in sub_times],
+            "sub_dists":       ([sd.tolist() for sd in sub_dists]
+                                if sub_dists is not None else None),
             "time_limit_sec":  time_per_task,
             "config":          dict(CONFIG),
         })
@@ -2854,6 +2957,7 @@ def _build_run_record(
             "driver_break_after_h":         CONFIG["driver_break_after_h"],
             "driver_break_min":             CONFIG["driver_break_min"],
             "driver_max_drive_h":           CONFIG["driver_max_drive_h"],
+            "cost_matrix_mode":             CONFIG.get("cost_matrix_mode", "legacy"),
         },
 
         "closures": [c["id"] for c in closures],
@@ -3328,6 +3432,10 @@ def parse_args():
                              "fyzická auta (návrat + nakládka), jinak běh "
                              "spadne. Zapíná plan_day podle decision.")
 
+    parser.add_argument("--cost-matrix-mode", choices=["legacy", "exact"], default=None,
+                        help="Nákladová matice: legacy (default; Python callbacky, "
+                             "sazba int, km z driving) nebo exact (matice per typ, "
+                             "přesná sazba, km per profil vozidla). Viz CONFIG.")
     parser.add_argument("--rescue-extra-min", type=float, default=0.0,
                         help="Když se cluster nevyřeší ani záchranou v budgetu, "
                              "zkusit ještě N minut NAD budget (default 0 = ne; "
@@ -3527,6 +3635,10 @@ def main():
         print(f"[BUDGET] Override: {args.budget_min:g} min "
               f"({CONFIG['total_time_budget_sec']} s)")
 
+    if args.cost_matrix_mode:
+        CONFIG["cost_matrix_mode"] = args.cost_matrix_mode
+        print(f"[COST] Nákladová matice: {args.cost_matrix_mode}")
+
     # ── --driver-breaks: povinné pauzy řidiče (L3 kamionové trasy) ────────
     if args.driver_breaks:
         CONFIG["_driver_breaks_enabled"] = True
@@ -3709,6 +3821,17 @@ def main():
         t_mat = dur_buffered * v["time_multiplier"]
         np.fill_diagonal(t_mat, 0)
         vehicle_time_by_id[v["id"]] = t_mat
+
+    # Režim exact (vlna 4): km per profil vozidla — kamion dostane hgv km,
+    # dodávka driving km (legacy: všichni driving km, viz audit 1.6)
+    global VEHICLE_DIST_BY_ID
+    if str(CONFIG.get("cost_matrix_mode", "legacy")).lower() == "exact":
+        VEHICLE_DIST_BY_ID = {v["id"]: matrices_by_profile[v["osrm_profile"]][0]
+                             for v in vehicles_expanded}
+        print(f"  [cost] režim exact: přesná sazba, km per profil "
+              f"({', '.join(sorted(matrices_by_profile))})")
+    else:
+        VEHICLE_DIST_BY_ID = None
 
     # Pojistka č. 2: každá objednávka musí být dosažitelná ze skladu
     # alespoň v jedné vozidlové matici (kontrola sentinelů po sanitizaci).
