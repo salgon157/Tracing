@@ -595,3 +595,69 @@ class TestLoadDepotLines:
             "order_number,location_code,eso_col7\nO1,damartie,44088\nO2,x,\n", encoding="utf-8")
         assert da.load_order_addresses(tmp_path / "prep", "CB", "2026-08-19") == {"O1": "44088"}
         assert da.load_order_addresses(tmp_path / "prep", "MO", "2026-08-19") == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Registr s vlastním type_code (export od 20. 8. 2026) — křížová kontrola
+# ─────────────────────────────────────────────────────────────────────────────
+
+REG_HEADER_TC = REG_HEADER + ";type_code"
+
+
+def _reg_line_tc(i, driver, code, **kw):
+    return _reg_line(i, driver, **kw) + f";{code}"
+
+
+class TestRegistryTypeCodeColumn:
+    def test_type_code_from_export_used_when_consistent(self, tmp_path):
+        tm = load_type_map(_vt_file(tmp_path))
+        rows = load_registry(_reg_file(tmp_path, [
+            _reg_line_tc(1, "A", "TYPE_02"),
+            _reg_line_tc(2, "T", "TYPE_05", typ="do 18t", kg=8000),
+        ], header=REG_HEADER_TC), tm)
+        assert [r["type_code"] for r in rows] == ["TYPE_02", "TYPE_05"]
+        assert rows[1]["max_kg"] == 8000
+
+    def test_inconsistent_code_is_fatal_when_strict(self, tmp_path):
+        # registr (jiný den) čísluje 18t jako TYPE_04; vozový park dne má TYPE_04 = 7t/3200
+        tm = load_type_map(_vt_file(tmp_path))
+        p = _reg_file(tmp_path, [_reg_line_tc(1, "T", "TYPE_04", typ="do 18t", kg=8000)],
+                      header=REG_HEADER_TC)
+        with pytest.raises(SystemExit, match="TYPE_04"):
+            load_registry(p, tm, strict_types=True)
+
+    def test_inconsistent_code_tolerated_with_force(self, tmp_path, capsys):
+        tm = load_type_map(_vt_file(tmp_path))
+        p = _reg_file(tmp_path, [_reg_line_tc(1, "T", "TYPE_04", typ="do 18t", kg=8000)],
+                      header=REG_HEADER_TC)
+        rows = load_registry(p, tm, strict_types=False)
+        assert rows[0]["type_code"] == "TYPE_04"          # kód z registru, tak jak je
+        assert "--force" in capsys.readouterr().out
+
+    def test_unknown_code_is_fatal(self, tmp_path):
+        tm = load_type_map(_vt_file(tmp_path))
+        p = _reg_file(tmp_path, [_reg_line_tc(1, "A", "TYPE_99")], header=REG_HEADER_TC)
+        with pytest.raises(SystemExit, match="TYPE_99"):
+            load_registry(p, tm)
+
+    def test_only_type_code_without_capacity(self, tmp_path):
+        tm = load_type_map(_vt_file(tmp_path))
+        header = REG_HEADER.rsplit(";", 1)[0] + ";type_code"        # bez max_kg
+        line = _reg_line(1, "A").rsplit(";", 1)[0] + ";TYPE_01"
+        rows = load_registry(_reg_file(tmp_path, [line], header=header), tm)
+        assert rows[0]["type_code"] == "TYPE_01" and rows[0]["max_kg"] == 1200   # kg doplněno z parku
+
+    def test_neither_code_nor_capacity_is_fatal(self, tmp_path):
+        tm = load_type_map(_vt_file(tmp_path))
+        header = REG_HEADER.rsplit(";", 1)[0]
+        line = _reg_line(1, "A").rsplit(";", 1)[0]
+        with pytest.raises(SystemExit, match="TYPE kód"):
+            load_registry(_reg_file(tmp_path, [line], header=header), tm)
+
+    def test_fleet_consistency_uses_export_codes(self, tmp_path):
+        tm = load_type_map(_vt_file(tmp_path, [("TYPE_02", "do 3t", 1350, 1),
+                                               ("TYPE_05", "do 18t", 8000, 1)]))
+        reg = load_registry(_reg_file(tmp_path, [
+            _reg_line_tc(1, "A", "TYPE_02"),
+            _reg_line_tc(2, "T", "TYPE_05", typ="do 18t", kg=8000)], header=REG_HEADER_TC), tm)
+        assert fleet_mismatches(reg, tm, WED) == []

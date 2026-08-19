@@ -13,9 +13,13 @@ spouštění vyřeší vrstva nad námi):
 Vstupy (od 19. 8. 2026 — nový export z ESO):
   data/ridici/aktivni/vehicles-active-*.csv   registr AUTO+ŘIDIČ (právě jeden
                                               soubor; 1 řádek = 1 auto s jeho
-                                              řidičem; PII — složka gitignored)
-  data/static/vehicle_types-YYYYMMDD.csv      vozový park dne — (type_name,
-                                              max_kg) -> TYPE kód, počty aut
+                                              řidičem, vč. max_kg a type_code;
+                                              PII — složka gitignored)
+  data/static/vehicle_types-YYYYMMDD.csv      vozový park dne — kontrola, že
+                                              type_code + max_kg registru sedí
+                                              (tentýž den, táž DB), počty aut;
+                                              bez type_code v registru se kód
+                                              odvodí z (type_name, max_kg)
   data/historie_ridici/*.csv                  historie ŘIDIČ × ADRESA (počet
                                               závozů; právě jeden soubor; PII)
   data/results/{DEPO}/{DATUM}/                lines_summary.csv + lines_stops.csv
@@ -107,8 +111,10 @@ REGISTRY_REQUIRED = [
     "km_plan_mes", "km_plan_rok", "driver_quality", "driver_km_to_depot",
     "valid_for_date",
 ]
-# Nosnost auta — bez ní nejde poznat TYPE_01 (1 200 kg) od TYPE_02 (1 350 kg);
-# export z ESO ji musí nést pod jedním z těchto názvů.
+# TYPE kód auta přímo z exportu (táž DB generuje i vehicle_types → stejné
+# číslování téhož dne). Když chybí, odvodí se z (vehicle_type, nosnost).
+TYPE_CODE_COLS = ("type_code", "vehicle_type_code")
+# Nosnost auta — bez ní nejde poznat TYPE_01 (1 200 kg) od TYPE_02 (1 350 kg).
 CAPACITY_COLS = ("max_kg", "nosnost", "nosnost_kg", "vehicle_max_kg")
 
 HISTORY_REQUIRED = ["driver_code", "id_subj_adr", "adress_note", "visit_count"]
@@ -151,6 +157,12 @@ def load_type_map(vehicle_types_file: Path | str | None = None) -> dict:
     if not out:
         raise SystemExit(f"[CHYBA] {p} neobsahuje žádný typ vozidla.")
     return out
+
+
+def type_map_by_code(type_map: dict) -> dict:
+    """{type_code: {"type_name", "max_kg", "available_count", ...}}"""
+    return {v["type_code"]: {"type_name": k[0], "max_kg": k[1], **v}
+            for k, v in type_map.items()}
 
 
 def map_type(typ: str, nosnost, type_map: dict) -> str:
@@ -239,14 +251,19 @@ def _date(v) -> date | None:
     raise ValueError(f"[CHYBA] Nečitelné datum v registru: {s!r}")
 
 
-def load_registry(path: Path, type_map: dict) -> list[dict]:
+def load_registry(path: Path, type_map: dict, strict_types: bool = True) -> list[dict]:
     """
     Řádky registru = AUTO + JEHO ŘIDIČ (1:1). Vrací per řádek:
       row_id, vehicle_code, vehicle_name, dopravce, driver (kód = klíč do
       historie), driver_name, vehicle_type, profile, max_kg, type_code,
       days, avail_from, avail_to, dojezd_km, kvalita, plan_rok, plan_mes,
       aktual_rok, aktual_mes, own_fleet (plán 0/0), valid_for_date.
-    Chybějící nosnost = tvrdá chyba (bez ní nejde TYPE_01 od TYPE_02).
+
+    TYPE kód: sloupec type_code z exportu (autoritativní — táž DB čísluje
+    i vehicle_types), zkontrolovaný proti vozovému parku dne (kód existuje,
+    nosnost i typ sedí). Bez sloupce se odvodí z (vehicle_type, max_kg).
+    Neshoda = registr a vehicle_types nejsou z téhož dne: strict → tvrdá
+    chyba, jinak (--force) varování a kód z registru se použije tak, jak je.
     """
     with open(path, encoding="utf-8-sig") as f:
         sample = f.read(4096)
@@ -259,15 +276,18 @@ def load_registry(path: Path, type_map: dict) -> list[dict]:
             raise SystemExit(f"[CHYBA] Registru {path.name} chybí sloupce: "
                              f"{missing} — jiný formát exportu z ESO?")
         cap_col = next((c for c in CAPACITY_COLS if c in header), None)
-        if cap_col is None:
+        code_col = next((c for c in TYPE_CODE_COLS if c in header), None)
+        if cap_col is None and code_col is None:
             raise SystemExit(
-                f"[CHYBA] Registr {path.name} nenese NOSNOST auta (žádný ze "
-                f"sloupců {list(CAPACITY_COLS)}). Bez ní nejde rozlišit "
-                f"TYPE_01 (1 200 kg) od TYPE_02 (1 350 kg) ani TYPE_03 od "
-                f"TYPE_04 — export z ESO musí sloupec doplnit.")
+                f"[CHYBA] Registr {path.name} nenese ani TYPE kód "
+                f"({list(TYPE_CODE_COLS)}) ani NOSNOST auta "
+                f"({list(CAPACITY_COLS)}). Bez toho nejde rozlišit TYPE_01 "
+                f"(1 200 kg) od TYPE_02 (1 350 kg) — export z ESO musí "
+                f"sloupec doplnit.")
         rows = list(reader)
 
-    out, seen_ids, problems = [], set(), []
+    by_code = type_map_by_code(type_map)
+    out, seen_ids, problems, type_issues = [], set(), [], []
     for n, row in enumerate(rows, start=2):
         row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
         rid = row.get("id", "")
@@ -281,9 +301,28 @@ def load_registry(path: Path, type_map: dict) -> list[dict]:
             driver = row["driver"]
             if not driver:
                 raise ValueError("prázdný kód řidiče (driver)")
-            cap = _num(row.get(cap_col))
-            if cap is None:
-                raise ValueError(f"prázdná nosnost ({cap_col})")
+            cap = _num(row.get(cap_col)) if cap_col else None
+            code = row.get(code_col, "") if code_col else ""
+            if code:
+                # export nese kód -> ověřit proti vozovému parku dne
+                vt = by_code.get(code)
+                if vt is None:
+                    type_issues.append(f"id {rid}: type_code {code} není ve "
+                                       f"vehicle_types (známé {sorted(by_code)})")
+                elif cap is not None and int(cap) != vt["max_kg"]:
+                    type_issues.append(f"id {rid}: {code} má v registru "
+                                       f"{int(cap)} kg, ve vehicle_types "
+                                       f"{vt['max_kg']} kg")
+                elif row["vehicle_type"] and vt["type_name"] != row["vehicle_type"]:
+                    type_issues.append(f"id {rid}: {code} je v registru "
+                                       f"'{row['vehicle_type']}', ve vehicle_types "
+                                       f"'{vt['type_name']}'")
+                if cap is None and vt is not None:
+                    cap = vt["max_kg"]
+            else:
+                if cap is None:
+                    raise ValueError(f"prázdná nosnost ({cap_col}) a žádný type_code")
+                code = map_type(row["vehicle_type"], cap, type_map)
             plan_rok, plan_mes = _num(row["km_plan_rok"]), _num(row["km_plan_mes"])
             own = (plan_rok is not None and plan_mes is not None
                    and plan_rok == 0 and plan_mes == 0)
@@ -296,8 +335,8 @@ def load_registry(path: Path, type_map: dict) -> list[dict]:
                 "driver_name":  row["driver_name"] or driver,
                 "vehicle_type": row["vehicle_type"],
                 "profile":      row["vehicle_profile"],
-                "max_kg":       int(cap),
-                "type_code":    map_type(row["vehicle_type"], cap, type_map),
+                "max_kg":       int(cap) if cap is not None else None,
+                "type_code":    code,
                 "days":         parse_days(row["dny_pouzitelnosti"]),
                 "avail_from":   _date(row["dostupnost_od"]),
                 "avail_to":     _date(row["dostupnost_do"]),
@@ -315,6 +354,14 @@ def load_registry(path: Path, type_map: dict) -> list[dict]:
     if problems:
         raise SystemExit("[CHYBA] Registr " + path.name + " má vadné řádky:\n  "
                          + "\n  ".join(problems))
+    if type_issues:
+        msg = (f"[CHYBA] TYPE kódy registru {path.name} nesedí na vozový park dne "
+               f"(registr a vehicle_types musí být z téhož dne — kódy se mezi dny "
+               f"přečíslovávají):\n  " + "\n  ".join(type_issues[:12])
+               + (f"\n  … a dalších {len(type_issues) - 12}" if len(type_issues) > 12 else ""))
+        if strict_types:
+            raise SystemExit(msg + "\n  Nahraj vehicle_types téhož dne, nebo vědomě --force.")
+        print(msg + "\n  --force: pokračuji s kódy z registru.")
     if not out:
         raise SystemExit(f"[CHYBA] Registr {path} nemá žádné řádky.")
     return out
@@ -859,7 +906,7 @@ def main() -> None:
     type_map = load_type_map(args.vehicle_types_file or None)
     registry_path = (Path(args.ridici_file) if args.ridici_file
                      else find_registry_file())
-    registry = load_registry(registry_path, type_map)
+    registry = load_registry(registry_path, type_map, strict_types=not args.force)
 
     print("=" * 66)
     print(f"PŘIŘAZENÍ ŘIDIČŮ — {args.date} ({DAY_NAMES[day.weekday()]})"
