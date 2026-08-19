@@ -136,7 +136,9 @@ def select_run(runs: list[dict], stamp: str | None = None,
 
 def load_type_profiles(path: Path | None = VEHICLE_TYPES) -> dict[str, str]:
     """
-    type_name -> 'mala' | 'velka' (podle sloupce profiles ve vozovém parku).
+    type_name -> 'mala' | 'velka'. Primárně podle sloupce `profiles` ve
+    vozovém parku; když sloupec chybí (export od 20. 8. 2026 ho nenese),
+    podle nosnosti jako fleet_budget (max_kg <= SMALL_MAX_KG = malé).
 
     Bez cesty se vezme nejnovější vehicle_types-YYYYMMDD.csv. Chybějící
     soubor není fatální — porovnání pak jen neagreguje malá/velká.
@@ -153,10 +155,20 @@ def load_type_profiles(path: Path | None = VEHICLE_TYPES) -> dict[str, str]:
     with open(path, encoding="utf-8-sig") as f:
         for row in csv.DictReader(f, delimiter=";"):
             name = str(row.get("type_name", "")).strip()
-            prof = str(row.get("profiles", "")).strip().lower()
+            prof = str(row.get("profiles", "") or "").strip().lower()
             if not name:
                 continue
-            profiles[name] = "mala" if "mal" in prof else "velka"
+            if prof:
+                small = "mal" in prof
+            else:
+                from fleet_budget import SMALL_MAX_KG
+                try:
+                    small = float(row.get("max_kg", "") or "inf") <= SMALL_MAX_KG
+                except ValueError:
+                    small = False
+            # víc typů se stejným type_name (do 3t: 1 200 i 1 350 kg) — stačí,
+            # když je některý z nich malý, jinak by "do 3t" bylo velké
+            profiles[name] = "mala" if (small or profiles.get(name) == "mala") else "velka"
     return profiles
 
 

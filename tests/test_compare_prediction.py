@@ -241,3 +241,30 @@ class TestLabelledOutputDirs:
         # ostré porovnávací běhy (2026-08-03_s-buffery) stamp nemají
         assert cp.rec_date(self._rec("2026-08-03_s-buffery")) == "2026-08-03"
         assert cp.rec_stamp(self._rec("2026-08-03_s-buffery")) is None
+
+
+class TestTypeProfilesWithoutProfilesColumn:
+    """Export vehicle_types od 20. 8. 2026 nenese sloupec profiles → malá/velká
+    podle nosnosti (jako fleet_budget)."""
+
+    def test_fallback_by_max_kg(self, tmp_path):
+        from compare_prediction import load_type_profiles
+        p = tmp_path / "vehicle_types-20260820.csv"
+        p.write_text(
+            "type_code;type_name;max_kg;cost_per_km;available_count;valid_for_date\n"
+            "TYPE_01;do 3t;1200;11;2;2026-08-20\n"
+            "TYPE_02;do 3t;1350;11;49;2026-08-20\n"
+            "TYPE_03;do 7t;3200;19.5;2;2026-08-20\n"
+            "TYPE_04;do 18t;8000;28;1;2026-08-20\n"
+            "TYPE_05;do 4t;2000;17.5;1;2026-08-20\n", encoding="utf-8")
+        assert load_type_profiles(p) == {"do 3t": "mala", "do 7t": "velka",
+                                         "do 18t": "velka", "do 4t": "velka"}
+
+    def test_profiles_column_still_wins_when_present(self, tmp_path):
+        from compare_prediction import load_type_profiles
+        p = tmp_path / "vehicle_types-20260819.csv"
+        p.write_text(
+            "type_code;type_name;max_kg;cost_per_km;available_count;profiles;valid_for_date\n"
+            "TYPE_02;do 3t;1350;11;49;Malé auto;2026-08-19\n"
+            "TYPE_06;do 4t;2000;17.5;1;Malé auto;2026-08-19\n", encoding="utf-8")
+        assert load_type_profiles(p) == {"do 3t": "mala", "do 4t": "mala"}
