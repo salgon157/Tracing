@@ -4,20 +4,42 @@
     {
       "name": "Closure Map Editor",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["closure_map_editor.py"],
+      "runtimeArgs": [
+        "closure_map_editor.py"
+      ],
       "port": 8765
     },
     {
       "name": "OSRM Router",
       "runtimeExecutable": "docker",
-      "runtimeArgs": ["start", "-a", "osrm-server"],
+      "runtimeArgs": [
+        "start",
+        "-a",
+        "osrm-server"
+      ],
       "port": 5000
     },
     {
       "name": "ORS HGV",
       "runtimeExecutable": "docker",
-      "runtimeArgs": ["start", "-a", "ors-hgv"],
+      "runtimeArgs": [
+        "start",
+        "-a",
+        "ors-hgv"
+      ],
       "port": 8080
+    },
+    {
+      "name": "viz-results",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8766",
+        "--directory",
+        "data/results"
+      ],
+      "port": 8766
     }
   ]
 }

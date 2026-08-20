@@ -273,6 +273,73 @@ function makeNumberIcon(num, color, isDepot) {
   });
 }
 
+function renderOverview() {
+  currentLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  currentLayers = [];
+  currentMarkers = [];
+
+  const totKm = ROUTES.reduce((a, r) => a + r.total_km, 0);
+  const totKg = ROUTES.reduce((a, r) => a + r.total_kg, 0);
+  const totKc = ROUTES.reduce((a, r) => a + r.total_cost_kc, 0);
+  document.getElementById('route-badge').textContent = 'VŠECHNY LINKY';
+  document.getElementById('route-badge').style.borderColor = '#e94560';
+  document.getElementById('route-meta').innerHTML =
+    `<b>${ROUTES.length}</b> linek &nbsp;|&nbsp; <b>${totKm.toFixed(1)}</b> km &nbsp;|&nbsp; ` +
+    `<b>${totKg.toFixed(0)}</b> kg &nbsp;|&nbsp; <b>${Math.round(totKc).toLocaleString('cs-CZ')}</b> Kč`;
+  document.getElementById('route-counter').textContent = `1 / ${PAGES}`;
+
+  const allBounds = [];
+  let depotDrawn = false;
+  ROUTES.forEach((r, ri) => {
+    const validStops = r.stops.filter(s => s.lat != null && s.lon != null);
+    if (validStops.length === 0) return;
+    const latlngs = r.geometry ? r.geometry : validStops.map(s => [s.lat, s.lon]);
+    const poly = L.polyline(latlngs, { color: r.color, weight: 3, opacity: 0.75 }).addTo(map);
+    poly.bindTooltip(`${r.line_id} — ${r.total_km.toFixed(0)} km, ${r.total_kg.toFixed(0)} kg`, { sticky: true });
+    poly.on('click', () => { currentIdx = ri + 1; renderPage(currentIdx); });
+    currentLayers.push(poly);
+    latlngs.forEach(pt => allBounds.push(pt));
+
+    r.stops.forEach((s, i) => {
+      if (s.lat == null || s.lon == null) return;
+      const isDepot = i === 0 || i === r.stops.length - 1;
+      if (isDepot) {
+        if (depotDrawn) return;
+        depotDrawn = true;
+        const dm = L.marker([s.lat, s.lon], { icon: makeNumberIcon('●', '#e94560', true), zIndexOffset: 1000 }).addTo(map);
+        dm.bindPopup('<div class="popup-title">Hlavní sklad</div>');
+        currentLayers.push(dm);
+        return;
+      }
+      // zastávka = lehce zvýrazněná tečka v barvě linky
+      const m = L.circleMarker([s.lat, s.lon], {
+        radius: 4.5, color: 'white', weight: 1.5,
+        fillColor: r.color, fillOpacity: 1
+      }).addTo(map);
+      m.bindPopup(
+        `<div class="popup-title">${s.place}</div>` +
+        `<div class="popup-row">${r.line_id} · ${s.arrival}` +
+        (s.window ? ` <span style="color:#7f8fc7">[${s.window}]</span>` : '') + `</div>` +
+        (s.kg > 0 ? `<div class="popup-row">${s.kg.toFixed(0)} kg</div>` : ''));
+      currentLayers.push(m);
+    });
+  });
+  try { map.fitBounds(L.latLngBounds(allBounds), { padding: [30, 30] }); } catch(e) {}
+
+  // Sidebar = seznam linek; klik (v mapě i v seznamu) otevře detail linky
+  document.getElementById('sidebar').innerHTML = ROUTES.map((r, ri) => {
+    const nStops = r.stops.filter(s => s.lat != null && s.order_id).length;
+    return `<div class="stop-item" onclick="currentIdx=${ri + 1};renderPage(currentIdx)">
+      <div class="stop-row-top">
+        <span class="stop-number" style="background:${r.color}">${ri + 1}</span>
+        <span class="stop-name"><b>${r.line_id}</b> &nbsp;${r.vehicle_type}</span>
+        <span class="stop-arrival">${r.total_km.toFixed(0)} km</span>
+      </div>
+      <div class="stop-details">${nStops} zastávek · ${r.total_kg.toFixed(0)} kg · ${Math.round(r.total_cost_kc).toLocaleString('cs-CZ')} Kč</div>
+    </div>`;
+  }).join('');
+}
+
 function renderRoute(idx) {
   currentLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   currentLayers = [];
@@ -290,7 +357,7 @@ function renderRoute(idx) {
     `<b>${r.duration_h.toFixed(1)}</b> h &nbsp;|&nbsp; ` +
     `<b>${r.total_kg.toFixed(0)}</b> kg &nbsp;|&nbsp; ` +
     `<b>${Math.round(r.total_cost_kc).toLocaleString('cs-CZ')}</b> Kč`;
-  document.getElementById('route-counter').textContent = `${idx + 1} / ${ROUTES.length}`;
+  document.getElementById('route-counter').textContent = `${idx + 2} / ${PAGES}`;
 
   // Collect valid GPS stops
   const validStops = r.stops.filter(s => s.lat != null && s.lon != null);
@@ -372,8 +439,10 @@ function focusStop(routeIdx, stopIdx) {
   }
 }
 
-function goNext() { currentIdx = (currentIdx + 1) % ROUTES.length; renderRoute(currentIdx); }
-function goPrev() { currentIdx = (currentIdx - 1 + ROUTES.length) % ROUTES.length; renderRoute(currentIdx); }
+const PAGES = ROUTES.length + 1;   // stránka 0 = všechny linky dohromady
+function renderPage(idx) { if (idx === 0) renderOverview(); else renderRoute(idx - 1); }
+function goNext() { currentIdx = (currentIdx + 1) % PAGES; renderPage(currentIdx); }
+function goPrev() { currentIdx = (currentIdx - 1 + PAGES) % PAGES; renderPage(currentIdx); }
 
 document.getElementById('next-btn').onclick = goNext;
 document.getElementById('prev-btn').onclick = goPrev;
@@ -382,7 +451,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft')  goPrev();
 });
 
-renderRoute(0);
+renderPage(0);
 
 // ── Uzavírky — permanentní vrstva ──────────────────────────────
 function renderClosures() {
