@@ -371,6 +371,39 @@ Parametry (okno, cíl, λ, cena zastávky, budget) v `l3_planner.L3_CONFIG`;
 pravidla řidiče (`driver_break_after_h`, `driver_break_min`,
 `driver_max_drive_h`) jen v CONFIG solveru — výběr si je bere odtud.
 
+### Nouzový plán: PRAHA nevyšla (`merge_rescue.py`, od 20. 8. 2026)
+
+Poslední příčka žebříku, spouští se **RUČNĚ** po večeru, kdy PR skončila
+exit 3 i po eskalaci L1+L2 (a po L3):
+
+```powershell
+python merge_rescue.py 2026-08-20              # ptá se před každým krokem
+python merge_rescue.py 2026-08-20 --budget 5   # budget PR na jedno kolo
+```
+
+Princip: velké auto Praze přímo nepomůže (hgv nedojede do center — PR
+padla, i když velká auta v poolu měla). Umí ale **uvolnit malá auta
+jinde**: dvě linky malých aut na CB/MO/HK se spojí do jednoho volného
+NE-malého auta ze `state.json` → **+2 malá auta pro PRAHU** (všechna auta
+startují ze Štoků, žádné přejíždění). Trasa se **přeuspořádá** (jednoautový
+re-solve), ne A-pak-B.
+
+Pravidla sloučené linky: táž zóna, max **30 zastávek** (nouzová výjimka
+z 20), kg ≤ nosnost velkého (bez násobiče), hgv dostupnost všech zastávek,
+hgv časy, pauza 45 min po 4,5 h, max 9 h jízdy, návrat do 23:30, porušení
+oken max **±60 min** na zastávku. Páry seřazené: nejmíň porušených oken →
+minut → jízdy (0 porušení vyhrává samo; změřeno na 4 dnech: skoro nikdy
+neexistuje, ±60 mělo řešení 3 ze 4 dnů, nejtěžší den nic).
+
+Průběh: nejlepší pár + **přesný výpis porušených oken** → člověk
+**Povolí** (`a` / `d` další návrh / `n` konec) → přeplánuje se PRAHA
+s uvolněnými auty (krátký budget) → nevyšla? nabídne se další pár (dokud
+jsou volná velká auta) → vyšla? hotovo. **NIC se nepřepisuje**: PR plán
+jde do `data/results/PR/{DATE}_rescue/`, report „co změnit — zatím ručně
+v ESO" do `data/results/plan_day/{DATE}/merge_rescue_{DATE}.md` (+ .json).
+Přiřazení řidičů sloučenou linku nezná — zohlednit ručně. Exit kódy jako
+solver (0 vyšlo / 3 nezvládneme / 2 data / 1 technická).
+
 ---
 
 ## 2. Routing instance (Docker) — current vs stable
