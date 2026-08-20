@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -150,6 +151,34 @@ def print_uninflated_cost(out_dir: Path, lines_count: int, delta: int,
     print(f"{prefix} nenavýšená cena aut = {cost:,.0f} − ({delta} × "
           f"{lines_count} linek) = {real_cost:,.0f} Kč")
     return real_cost
+
+
+def prepared_fingerprint(path: Path | str) -> dict:
+    """Otisk prepared souboru (sha1 + počet datových řádků).
+
+    Pojistka proti tichému přepsání vstupu uprostřed běhu: 20. 8. 2026 na
+    serveru externí job přepsal data/prediction/prepared/ mezi P1 a P2
+    neodfiltrovanou verzí (bez losu a koeficientu) — P1 CB počítalo se 113
+    objednávkami, všechno další se 122, a nikdo si toho nevšiml.
+    """
+    data = Path(path).read_bytes()
+    return {"sha1": hashlib.sha1(data).hexdigest(),
+            "rows": max(0, data.count(b"\n") - 1)}
+
+
+def guard_prepared_unchanged(path: Path | str, expected: dict, what: str) -> None:
+    """Tvrdý stop, když se prepared soubor od prepare změnil (bez --force —
+    přepsání vstupu uprostřed běhu není nikdy legitimní)."""
+    actual = prepared_fingerprint(path)
+    if actual["sha1"] == expected["sha1"]:
+        return
+    raise SystemExit(
+        f"[CHYBA] {Path(path).as_posix()} se ZMĚNIL od prepare "
+        f"({expected['rows']} → {actual['rows']} datových řádků) — {what} by "
+        f"počítalo s JINÝMI objednávkami než ostatní běhy.\n"
+        f"        Něco přepisuje prepared soubory uprostřed běhu (jediný "
+        f"autor má být prepare_inputs_v6). Najdi a zastav ten proces "
+        f"a spusť plánování znovu.")
 
 
 def build_solver_cmd(depot: str, date_str: str, out_dir: Path,
@@ -342,6 +371,10 @@ def main_predict(args: argparse.Namespace) -> None:
         run_cmd([PY, "prepare_inputs_v6.py", depot,
                  "--data-root", PREDICTION_ROOT.as_posix(), "--prediction"],
                 env, f"prepare {depot}")
+    prepared_fp = {
+        d: prepared_fingerprint(
+            PREDICTION_ROOT / "prepared" / d / f"orders_{d}_{date_str}.csv")
+        for d in depots}
 
     # ── P1: každé depo samostatně s CELÝM skladem ────────────────────────
     # Žádné nafukování počtů: přetečení se pozná samo (jeden kamion,
@@ -353,6 +386,9 @@ def main_predict(args: argparse.Namespace) -> None:
     p1_by_depot: dict[str, list[dict]] = {}
     for i, depot in enumerate(depots, 1):
         print(f"\n  [{i}/{len(depots)}] P1 {depot}")
+        guard_prepared_unchanged(
+            PREDICTION_ROOT / "prepared" / depot / f"orders_{depot}_{date_str}.csv",
+            prepared_fp[depot], f"P1 {depot}")
         out_dir = PREDICTION_ROOT / "results" / depot / f"{date_str}_{stamp}_P1"
         elapsed = run_cmd(build_solver_cmd(depot, date_str, out_dir, p1_fleet,
                                            args.budget, args.osm_source,
@@ -408,6 +444,9 @@ def main_predict(args: argparse.Namespace) -> None:
         print(f"\n  [{i + 1}/{len(depots)}] P2 {depot}"
               f"   velká k dispozici: {fmt_mix(large_caps)}"
               + (f"   (chráněno pro {', '.join(protected)})" if protected else ""))
+        guard_prepared_unchanged(
+            PREDICTION_ROOT / "prepared" / depot / f"orders_{depot}_{date_str}.csv",
+            prepared_fp[depot], f"P2 {depot}")
         p2_fleet = fb.write_fleet_file(fleet_rows,
                                        session / f"fleet_P2_{depot}.csv", caps,
                                        start_cost_delta=esc["delta"])
@@ -775,6 +814,8 @@ def main_real(args: argparse.Namespace) -> None:
                                  encoding="utf-8")
             prep_cmd += ["--exclude-orders-file", excl_path.as_posix()]
         run_cmd(prep_cmd, env, f"prepare {depot}")
+        orders_path = REAL_ROOT / "prepared" / depot / f"orders_{depot}_{date_str}.csv"
+        orders_fp = prepared_fingerprint(orders_path)
 
         fleet_file = fb.write_fleet_file(fleet_rows,
                                          state_dir / f"fleet_{depot}.csv",
@@ -785,6 +826,9 @@ def main_real(args: argparse.Namespace) -> None:
 
         def _run_once(fl: dict) -> int:
             nonlocal solve_min
+            # i mezi eskalačními pokusy musí být vstup TENTÝŽ soubor
+            guard_prepared_unchanged(orders_path, orders_fp,
+                                     f"{depot} ({_flags_label(fl)})")
             cmd = build_real_solver_cmd(depot, date_str, fleet_file, fl, args)
             print(f"\n  solver ({_flags_label(fl)}):")
             print(f"  $ {' '.join(cmd[1:])}")

@@ -386,3 +386,52 @@ class TestDecisionStateIdentity:
         plan_day.guard_state_identity(state, d, "vehicle_types-20260817.csv",
                                       force=False, what="real")
         assert "nenese identitu" in capsys.readouterr().out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Pojistka: prepared soubor se nesmí změnit mezi prepare a solver běhy
+#  (server 20. 8. 2026: externí job přepsal prepared mezi P1 a P2 raw verzí
+#  bez losu — P1 CB 113 objednávek, P2 CB 122)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPreparedGuard:
+    CSV1 = "order_number,location_code\nO1,adr a\nO2,adr b\n"
+
+    def test_fingerprint_counts_data_rows(self, tmp_path):
+        f = tmp_path / "orders.csv"
+        f.write_text(self.CSV1, encoding="utf-8")
+        fp = plan_day.prepared_fingerprint(f)
+        assert fp["rows"] == 2 and len(fp["sha1"]) == 40
+
+    def test_fingerprint_changes_with_content(self, tmp_path):
+        f = tmp_path / "orders.csv"
+        f.write_text(self.CSV1, encoding="utf-8")
+        fp1 = plan_day.prepared_fingerprint(f)
+        f.write_text(self.CSV1 + "O3,adr c\n", encoding="utf-8")
+        assert plan_day.prepared_fingerprint(f)["sha1"] != fp1["sha1"]
+
+    def test_guard_passes_when_unchanged(self, tmp_path):
+        f = tmp_path / "orders.csv"
+        f.write_text(self.CSV1, encoding="utf-8")
+        fp = plan_day.prepared_fingerprint(f)
+        plan_day.guard_prepared_unchanged(f, fp, "P2 CB")     # nesmí vyhodit
+
+    def test_guard_stops_on_rewrite_and_names_counts(self, tmp_path):
+        # scénář ze serveru: po prepare (2 řádky) někdo přepsal raw verzí (3)
+        f = tmp_path / "orders.csv"
+        f.write_text(self.CSV1, encoding="utf-8")
+        fp = plan_day.prepared_fingerprint(f)
+        f.write_text(self.CSV1 + "O3,adr c\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as e:
+            plan_day.guard_prepared_unchanged(f, fp, "P2 CB")
+        msg = str(e.value)
+        assert "2 → 3" in msg and "P2 CB" in msg and "ZMĚNIL" in msg
+
+    def test_guard_stops_even_on_same_rowcount_different_content(self, tmp_path):
+        # stejný počet řádků, jiný obsah (např. jiné kg) -> taky stop
+        f = tmp_path / "orders.csv"
+        f.write_text(self.CSV1, encoding="utf-8")
+        fp = plan_day.prepared_fingerprint(f)
+        f.write_text(self.CSV1.replace("adr b", "adr x"), encoding="utf-8")
+        with pytest.raises(SystemExit):
+            plan_day.guard_prepared_unchanged(f, fp, "P1 CB")

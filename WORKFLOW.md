@@ -212,6 +212,15 @@ python plan_day.py predict --budget 5    # budget na jeden běh (default 5 min)
 ```
 
 Odpovídá na otázky „kam dát velká auta" a „jaká porušení večer povolit".
+
+> **Pojistka konzistence vstupu (od 20. 8. 2026):** po prepare si plan_day
+> uloží otisk (sha1 + počet řádků) každého prepared souboru a **před každým
+> solver během** (P1, P2; večer i mezi eskalačními pokusy) ověří, že se
+> soubor nezměnil. Neshoda = tvrdý stop s výpisem počtů řádků. Důvod:
+> 20. 8. na serveru externí job přepsal `data/prediction/prepared/` mezi
+> P1 a P2 neodfiltrovanou verzí (bez losu a koeficientu) — P1 CB počítalo
+> se 113 objednávkami, zbytek dne se 122, a nikdo si toho nevšiml.
+> Jediný legitimní autor prepared souborů je `prepare_inputs_v6`.
 Vše běží na **L0** (100 % nosnosti, okna −5/+25); solver se nemění — flotila
 se omezuje generovanými `vehicle_types` soubory:
 
