@@ -554,12 +554,16 @@ def main():
         print(f"[OSM] zdroj: {_source} | OSRM={args.osrm_url}")
 
     if args.result_dir:
-        result_dir = Path(args.result_dir)
+        # Cesta podle staré struktury (data/ uvnitř repa) → dnešní kořen.
+        result_dir = paths.resolve_legacy(args.result_dir)
+        if result_dir != Path(args.result_dir):
+            print(f"  [!] '{args.result_dir}' neexistuje; beru {result_dir}")
     else:
         result_dir = find_latest_result_dir()
         if result_dir is None:
-            print("[CHYBA] Nenalezena žádná výsledková složka v data/results/")
-            print("  Zadej cestu: python visualize_routes.py data/results/CB/2026-04-10/")
+            print(f"[CHYBA] Nenalezena žádná výsledková složka v {paths.RESULTS_ROOT}")
+            print("  Zadej cestu: python visualize_routes.py "
+                  "../data/results/CB/2026-04-10/")
             return
 
     stops_csv   = result_dir / "lines_stops.csv"

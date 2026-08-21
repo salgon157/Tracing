@@ -26,13 +26,28 @@ python -m pytest tests webui/tests -q --ignore tests/test_ors_hgv_integration.py
 
 # 4) denní běh jednoho depa
 python prepare_inputs_v6.py CB
-python vrp_solver_lines_v6.py --orders-file data/prepared/CB/orders_CB_2026-07-23.csv
+python vrp_solver_lines_v6.py --orders-file ../data/prepared/CB/orders_CB_2026-07-23.csv
 
 # 5) webové rozhraní (volitelné) → http://127.0.0.1:8777
 python -m uvicorn webui.app.main:app --host 127.0.0.1 --port 8777
 ```
 
-**Všechny příkazy se spouští z kořene repa** (skripty používají relativní cesty).
+**Všechny příkazy se spouští z kořene repa** (`Tracing_Main/vrp_benchmark`).
+
+### Struktura na disku — kód a data odděleně
+
+```
+Tracing_Main/
+├── vrp_benchmark/   ← KÓD, verzovaný gitem (odsud se spouští příkazy)
+├── data/            ← VŠECHNA data: vstupy, výstupy, historie, osobní údaje
+│                      — NIKDY v gitu, NIKDY na internet
+└── UI/              ← webové rozhraní nad výstupy (mimo tento projekt)
+```
+
+Data leží **vedle repa**, ne v něm — repo se klonuje na server, takže se do
+něj nesmí dostat nic zákaznického. Kde data jsou, řeší jediné místo:
+[`paths.py`](paths.py) (default `../data`, přepíše env proměnná
+`VRP_DATA_ROOT`). Cesty se odvozují od umístění skriptů, ne od `cwd`.
 
 ---
 
@@ -40,17 +55,17 @@ python -m uvicorn webui.app.main:app --host 127.0.0.1 --port 8777
 
 ```
 RiRo CSV (z ESO9)          prepare_inputs_v6.py        vrp_solver_lines_v6.py
-data/input/{DEPO}/aktivni/  ───────────────────►  data/prepared/  ──────────►  data/results/{DEPO}/{datum}/
+../data/input/{DEPO}/aktivni/  ───────────────────►  ../data/prepared/  ──────────►  ../data/results/{DEPO}/{datum}/
                             validace, GPS, SEC       OR-Tools + OSRM/ORS        CSV, XLSX, zone_summary.json
 ```
 
-1. **RiRo soubor** (export z firemního ESO9) padne do `data/input/{DEPO}/aktivni/` —
+1. **RiRo soubor** (export z firemního ESO9) padne do `../data/input/{DEPO}/aktivni/` —
    právě jeden. Nese GPS i předpočítaný čas zastávky, je to **jediný zdroj pravdy**.
 2. **`prepare_inputs_v6.py`** ho zvaliduje a přeloží na solver-ready CSV.
    Přísný režim: jakýkoli vadný řádek → vypíše který a proč a **skončí chybou**.
 3. **`vrp_solver_lines_v6.py`** spočítá matice vzdáleností (OSRM pro dodávky,
    ORS pro kamiony), naplánuje trasy (OR-Tools, fáze A/C/E) a zapíše výstupy
-   + řádek do `data/results/run_log.jsonl`.
+   + řádek do `../data/results/run_log.jsonl`.
 4. **`visualize_routes.py`** volitelně vykreslí HTML mapu.
 
 **Depa CB/HK/MO/PR nejsou sklady** — všechna auta vyjíždějí ze Štok. Jsou to
@@ -66,13 +81,13 @@ proto se plánují odděleně.
 | **`vrp_solver_lines_v6.py`** | Jádro. VRP solver (OR-Tools), matice přes OSRM/ORS, cenový model, výstupy + run log. Ostatní ho importují. |
 | **`prepare_inputs_v6.py`** | RiRo (19 sloupců od 13. 8. 2026) → solver-ready CSV. Validace GPS, oken, payloadu i příznaku rampy; adresa/PSČ/země/ID jako průchozí sloupce; bilance vyřazených do `prepare_stats_*.json`. |
 | **`visualize_routes.py`** | HTML mapa tras (Leaflet) z výsledkové složky. |
-| **`predict_day.py`** | Tenký wrapper: predikční běh nad `data/prediction/` (prepare+solve+mapy pro všechna depa). Odděleno od ostrého provozu. |
-| **`order_history.py`** | Šance závozu z historie objednávek (`data/historie_objednavky/*.xlsx`): stejný den v týdnu, roční okno, pauzy, svátky. Predikce podle ní losuje, které dopredikované objednávky do plánu půjdou. |
+| **`predict_day.py`** | Tenký wrapper: predikční běh nad `../data/prediction/` (prepare+solve+mapy pro všechna depa). Odděleno od ostrého provozu. |
+| **`order_history.py`** | Šance závozu z historie objednávek (`../data/historie_objednavky/*.xlsx`): stejný den v týdnu, roční okno, pauzy, svátky. Predikce podle ní losuje, které dopredikované objednávky do plánu půjdou. |
 | **`plan_day.py`** | Predikcí řízené plánování dne. `predict`: P1 (přání dep) → rezervace + zdražení výjezdu (#2) → P2 (sekvenční generálka) → rozhodnutí vč. výběru L3 → `decision_{DATUM}.json`. `real`: večerní sekvence dep s živým budgetem, eskalací a vyřazením L3 objednávek. `l3`: trasa kamionu po posledním depu (kontrola sjízdnosti → případně kamion navíc → solver s režimem řidiče EU: pauzy + 9 h jízdy; když nevyjde, seznam co komu vrátit). |
 | **`_baseline_*/`** | ⛔ **DOČASNÝ archiv — NESAHAT.** git worktree se starým solverem (strana A regresního A/B); `overnight_regression.ps1` ho založí jen pro běh a na konci sám odstraní. Mimo projekt, gitignored, `pytest.ini` ho vynechává. Viz `_NESAHAT_ARCHIV.md` uvnitř. |
 | **`l3_planner.py`** | Logika L3 pod plan_day: výběr rampových skutečných objednávek jako VRP s volitelnými zastávkami nad hgv maticí (penále kg×λ, cena zastávky, denní jízda 9 h, pauzy, okno; jen sjízdné smyčky), záložní greedy bez matice, kontrola sjízdnosti večer, sloučení l3_orders pro solver. |
 | **`fleet_budget.py`** | Logika pod plan_day: malá/velká auta, rezervace žebříčkem kg, budget s ubíráním, caps (rezervace + volný pool), rozhodnutí o levelu (deficit → kg → L0/L1+L2/L3 alert). |
-| **`driver_assignment.py`** | Přiřazení konkrétních řidičů k naplánovaným linkám — celodenní optimum (maďarský alg.) nad registrem auto+řidič z ESO (`data/ridici/aktivni/vehicles-active-*.csv`, TYPE podle `vehicle_types` dne) a historií řidič×adresa (`data/historie_ridici/`). Hard: dny, dostupnost od/do, typ auta; tier: naše auta (plán 0/0) až po smluvních; soft s váhami: plnění plánu km (rok > měsíc), dojezd, kvalita×tightness, familiarity (pořadí podle počtu závozů). Kontrola počtů aut vs vozový park dne. Samostatný krok po naplánování všech dep. |
+| **`driver_assignment.py`** | Přiřazení konkrétních řidičů k naplánovaným linkám — celodenní optimum (maďarský alg.) nad registrem auto+řidič z ESO (`../data/ridici/aktivni/vehicles-active-*.csv`, TYPE podle `vehicle_types` dne) a historií řidič×adresa (`../data/historie_ridici/`). Hard: dny, dostupnost od/do, typ auta; tier: naše auta (plán 0/0) až po smluvních; soft s váhami: plnění plánu km (rok > měsíc), dojezd, kvalita×tightness, familiarity (pořadí podle počtu závozů). Kontrola počtů aut vs vozový park dne. Samostatný krok po naplánování všech dep. |
 | **`merge_rescue.py`** | Nouzový plán, když PRAHA večer nevyjde (exit 3): spojí dvě linky malých aut na CB/MO/HK do volného velkého auta (±60 min okna, 30 zastávek, hgv, přeuspořádání) → +2 malá auta pro PR → přeplánuje PR. Ručně spouštěný, každý krok schvaluje člověk; nic nepřepisuje — report „co změnit v ESO" + PR plán do `PR/{DATE}_rescue/`. |
 | **`compare_prediction.py`** | Porovná predikci s realitou (Δ = predikce − realita), zapíše `comparison.jsonl`. Jediný vlastník porovnávacích vzorců. `--pred-phase P1\|P2` vybere fázi `plan_day predict`. |
 | **`osm_routing.py`** | Definice routing instancí (`current` / `stable`) a jejich URL. Jediné místo, kde jsou porty. |
@@ -122,34 +137,41 @@ Data samotná (`C:\osrm*`) nejsou v gitu — jsou to ~2 GB grafy, staví se skri
 
 ## Struktura dat
 
+Celý strom leží **mimo repo**, v `Tracing_Main/data/` (z kořene repa `../data`).
+Nic z něj se neverzuje.
+
 ```
-data/
-├── input/{DEPO}/aktivni/     RiRo soubory (právě jeden per depo)   [NEverzováno]
-├── prepared/{DEPO}/          solver-ready CSV + prepare_stats      [NEverzováno]
-├── results/{DEPO}/{datum}/   plány, mapy, run_log.jsonl            [NEverzováno]
-├── prediction/               tentýž strom pro predikce             [NEverzováno]
-└── static/                   vehicle_types-YYYYMMDD.csv, closures.json  [verzováno]
+../data/
+├── input/{DEPO}/aktivni/     RiRo soubory (právě jeden per depo)
+├── prepared/{DEPO}/          solver-ready CSV + prepare_stats
+├── results/{DEPO}/{datum}/   plány, mapy, run_log.jsonl
+├── prediction/               tentýž strom pro predikce
+├── static/                   vehicle_types-YYYYMMDD.csv, closures.json
+├── ridici/aktivni/           registr auto+řidič z ESO9
+└── historie_objednavky/, historie_ridici/
 ```
 
-`data/prediction/` je **paralelní vesmír** k ostrému provozu — predikce nikdy
+`../data/prediction/` je **paralelní vesmír** k ostrému provozu — predikce nikdy
 nezapíše do produkčních výsledků ani do ostré historie.
 
 ---
 
 ## Osobní údaje (GDPR) — DŮLEŽITÉ
 
-**Do gitu nesmí osobní údaje.** Blokuje je `.gitignore`:
+**Do gitu nesmí osobní údaje.** Od 21. 8. 2026 to řeší struktura, ne výčet
+výjimek: data leží **vedle repa**, takže do něj nemají jak spadnout — a repo
+se klonuje na server.
 
-- `data/input/`, `data/prepared/`, `data/prediction/`, `data/results/` —
-  jména, adresy, GPS a váhy zákazníků
-- `data/static/locations_*.csv` — adresy zákazníků (pipeline je už nepoužívá,
-  soubory na disku zůstávají)
-- `data/static/vehicle_registry.csv` — jména řidičů a SPZ
-- `data/ridici/` — registr aut+řidičů z ESO (jména, telefony, SPZ)
-- `webui/jobs/`, `experiments/*/results/` — runtime logy a výstupy
+- `.gitignore` má `/data/` jako pojistku (kdyby složka `data` uvnitř repa
+  lokálně vznikla); dál `webui/jobs/`, `experiments/*/results/`.
+- `tests/test_no_data_in_git.py` při každém běhu testů ověří, že v repu není
+  žádná cesta z `data/` ani soubor s názvem typu `riro-*`, `orders_*`,
+  `locations_*`, `vehicle_registry*`, `vehicles-active*`, `historie_*`.
+- `vehicle_types-YYYYMMDD.csv` a `closures.json` se **taky neverzují** — jsou
+  to provozní data, mění se denně (starší verze jsou v git historii).
+- Repo je **Private**.
 
-Verzuje se **jen kód a config bez PII** (`vehicle_types-YYYYMMDD.csv`, `closures.json`).
-Repo je **Private**.
+Podrobnosti a postup nasazení: [WORKFLOW.md](WORKFLOW.md), sekce 7 a 7b.
 
 ---
 

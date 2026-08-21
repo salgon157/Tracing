@@ -5,6 +5,12 @@ Praktický návod na denní běh. Depot kódy: **CB** (České Budějovice),
 
 > Všechny příkazy se spouští z kořene projektu:
 > `C:\VSCode_MyCode\Tracing_ALL\Tracing_MAIN\vrp_benchmark`
+>
+> **Data leží VEDLE repa** (`Tracing_Main/data`), proto se v příkazech píše
+> `../data/...`. Kde přesně data jsou, řeší `paths.py` — default `../data`,
+> jiné umístění nastaví env proměnná `VRP_DATA_ROOT`. Kdo omylem zadá starou
+> cestu (`data/...`), dostane od solveru i vizualizace upozornění a běh
+> pokračuje na správném souboru.
 
 ---
 
@@ -12,21 +18,21 @@ Praktický návod na denní běh. Depot kódy: **CB** (České Budějovice),
 
 ```powershell
 # 1) Vlož PRÁVĚ JEDEN RiRo soubor do aktivni/ složky depa:
-#    data/input/CB/aktivni/riro-YYYYMMDD-CB.csv
+#    ../data/input/CB/aktivni/riro-YYYYMMDD-CB.csv
 
 # 2) Priprav objednavky (RiRo -> orders CSV + validace)
 python prepare_inputs_v6.py CB
-#    -> data/prepared/CB/orders_CB_YYYY-MM-DD.csv
-#    -> data/prepared/CB/prepare_stats_CB_YYYY-MM-DD.json  (bilance zpracování)
+#    -> ../data/prepared/CB/orders_CB_YYYY-MM-DD.csv
+#    -> ../data/prepared/CB/prepare_stats_CB_YYYY-MM-DD.json  (bilance zpracování)
 
 # 3) Spust solver
-python vrp_solver_lines_v6.py --orders-file data/prepared/CB/orders_CB_YYYY-MM-DD.csv
-#    -> data/results/CB/YYYY-MM-DD/  (lines_summary.csv, lines_stops.csv,
+python vrp_solver_lines_v6.py --orders-file ../data/prepared/CB/orders_CB_YYYY-MM-DD.csv
+#    -> ../data/results/CB/YYYY-MM-DD/  (lines_summary.csv, lines_stops.csv,
 #                                     lines_plan.xlsx, zone_summary.json,
 #                                     eso_export_CB_YYYY-MM-DD.csv)
 
 # 4) Vizualizace (HTML mapa)
-python visualize_routes.py data/results/CB/YYYY-MM-DD/ --open
+python visualize_routes.py ../data/results/CB/YYYY-MM-DD/ --open
 ```
 
 Pro ostatní depa vyměň `CB` → `HK` / `MO` / `PR`.
@@ -40,16 +46,16 @@ if ($?) {
     Write-Host "`n=== $d ===" -ForegroundColor Cyan
     python prepare_inputs_v6.py $d
     if (-not $?) { Write-Host "prepare $d selhalo - preskakuji"; continue }
-    python vrp_solver_lines_v6.py --orders-file "data/prepared/$d/orders_${d}_2026-07-31.csv" --budget-min 5
+    python vrp_solver_lines_v6.py --orders-file "../data/prepared/$d/orders_${d}_2026-07-31.csv" --budget-min 5
   }
   Remove-Item Env:\SKIP_STARTUP_TESTS
 }
 
 **Pravidla vstupu:**
-- V `data/input/{DEPOT}/aktivni/` musí být **právě jeden** CSV. Víc/míň → chyba.
+- V `../data/input/{DEPOT}/aktivni/` musí být **právě jeden** CSV. Víc/míň → chyba.
 - Datum se bere z názvu souboru (`riro-YYYYMMDD-...`), depo z CLI argumentu.
 - Výstupní složka se **auto-detekuje** z názvu orders souboru
-  (`orders_CB_2026-04-29.csv` → `data/results/CB/2026-04-29/`).
+  (`orders_CB_2026-04-29.csv` → `../data/results/CB/2026-04-29/`).
 
 ### Formát RiRo (od 13. 8. 2026)
 
@@ -82,10 +88,10 @@ počtu sloupců):
   i do výstupů solveru (`lines_stops.csv`, sloupec `Rampa` v XLSX);
   `prepare_stats` hlásí `ramp_orders`.
 - Proti starému formátu **zanikly**: telefon, e-mail a textová poznámka o rampě.
-- `data/static/locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
+- `../data/static/locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
   (`build_static_data.py` a `convert_to_riro.py` jsou legacy, jen se nemažou.)
 - **Starší formáty** (30/31/32 sloupců, do 12. 8. 2026) jsou odmítnuty jasnou
-  chybou. Archiv: `data/input/{DEPOT}/archiv_stary_format/`.
+  chybou. Archiv: `../data/input/{DEPOT}/archiv_stary_format/`.
 - Historické `orders_*.csv` z dubna/července **nejde spustit** — nemají `service_sec`.
   Výsledky benchmarků z nich už máme; nová data jedou jen na předpočítaném čase.
 
@@ -152,7 +158,7 @@ Přidává ho `predict_day.py`, ručně ho nepotřebuješ. Mění tři věci:
    `suma(dnes) / suma(minule)` (viz níže)
 
 **Šance = zavezené dny / způsobilé dny stejného dne v týdnu** (počítá
-`order_history.py` z `data/historie_objednavky/*.xlsx`, sloupce `Datum`
+`order_history.py` z `../data/historie_objednavky/*.xlsx`, sloupce `Datum`
 a `Zkratka` = location_code):
 
 | pravidlo | jak to funguje |
@@ -201,7 +207,7 @@ predikce vedle sebe a porovnat je. `--input-date` vezme
 `riro-YYYYMMDD-*.csv` ze složky depa místo jediného souboru z `aktivni/` —
 ta zůstane netknutá pro běžný běh.
 
-Roční exporty do `data/historie_objednavky/` dodáváš ručně; složka je
+Roční exporty do `../data/historie_objednavky/` dodáváš ručně; složka je
 v `.gitignore` (GDPR). Načtení obou souborů trvá ~17 s na depo.
 
 ### Predikcí řízené plánování dne (`plan_day.py`) — příprava na server
@@ -217,7 +223,7 @@ Odpovídá na otázky „kam dát velká auta" a „jaká porušení večer povo
 > uloží otisk (sha1 + počet řádků) každého prepared souboru a **před každým
 > solver během** (P1, P2; večer i mezi eskalačními pokusy) ověří, že se
 > soubor nezměnil. Neshoda = tvrdý stop s výpisem počtů řádků. Důvod:
-> 20. 8. na serveru externí job přepsal `data/prediction/prepared/` mezi
+> 20. 8. na serveru externí job přepsal `../data/prediction/prepared/` mezi
 > P1 a P2 neodfiltrovanou verzí (bez losu a koeficientu) — P1 CB počítalo
 > se 113 objednávkami, zbytek dne se 122, a nikdo si toho nevšiml.
 > Jediný legitimní autor prepared souborů je `prepare_inputs_v6`.
@@ -248,7 +254,7 @@ večerní real (nese ji decision); pod každým během se vypisuje
 **nenavýšená cena** (`cena − delta × počet linek`) — ceny v souborech
 jsou navýšené, skutečné jsou v tomhle výpisu.
 
-Výstup: `data/prediction/results/decision_{DATUM}.json` (level, rezervace,
+Výstup: `../data/prediction/results/decision_{DATUM}.json` (level, rezervace,
 start_cost blok, l3 blok, čísla deficitu — večerní běh z něj čte), plné
 solver výstupy v `results/{DEPO}/{DATUM}_{HHMM}_P1|_P2/`, generované
 flotily v `results/plan_day/{DATUM}_{HHMM}/`. Parametry (rezerva, práh
@@ -313,7 +319,7 @@ Sekvence dep **CB → MO → HK → PR** nad ostrými daty, řízená decision:
   depa jsou definitivní. Vadná data (exit 2) ani technická chyba (exit 1)
   **neeskalují** — ALERT s důvodem z `run_status.json`, data se opraví
   a depo se spustí znovu (od 17. 8.)
-- **stav** (`data/results/plan_day/{DATUM}/state.json`): zbytek flotily,
+- **stav** (`../data/results/plan_day/{DATUM}/state.json`): zbytek flotily,
   hotová depa, aktuální level — druhé spuštění naváže a hotová depa
   přeskočí; běh po částech (každé depo po své uzávěrce) je tedy přirozený.
   Stav nese **identitu decision** (`decision_id` = otisk obsahu,
@@ -322,7 +328,7 @@ Sekvence dep **CB → MO → HK → PR** nad ostrými daty, řízená decision:
   `vehicle_types-*.csv`, `real` i `l3` **zastaví** s vysvětlením — vědomě
   pokračovat jde přes `--force` (od 17. 8.; starší state bez identity jen
   varuje)
-- výstupy do standardních složek `data/results/{DEPO}/{DATUM}/` (ESO
+- výstupy do standardních složek `../data/results/{DEPO}/{DATUM}/` (ESO
   export, mapy, run log) — `--label` přesměruje pro testovací běhy
 
 **Default solveru je od vlny 3 L0** (100 % nosnosti; okna −5/+25 zůstávají).
@@ -372,9 +378,9 @@ vešel do malých aut:
    v každém úseku do 4,5 h uplynulého času + **denní limit čisté jízdy
    9 h** jako tvrdá dimenze; routing kudy-smí-kamion řeší ORS
    `driving-hgv` jako dosud). Výstupy standardně do
-   `data/results/L3/{DATUM}/` vč. **ESO exportu**.
+   `../data/results/L3/{DATUM}/` vč. **ESO exportu**.
 4. **Řidiči**: `driver_assignment.py` zónu L3 přibere automaticky,
-   když `data/results/L3/{DATUM}/lines_summary.csv` existuje.
+   když `../data/results/L3/{DATUM}/lines_summary.csv` existuje.
 
 Parametry (okno, cíl, λ, cena zastávky, budget) v `l3_planner.L3_CONFIG`;
 pravidla řidiče (`driver_break_after_h`, `driver_break_min`,
@@ -408,8 +414,8 @@ Průběh: nejlepší pár + **přesný výpis porušených oken** → člověk
 **Povolí** (`a` / `d` další návrh / `n` konec) → přeplánuje se PRAHA
 s uvolněnými auty (krátký budget) → nevyšla? nabídne se další pár (dokud
 jsou volná velká auta) → vyšla? hotovo. **NIC se nepřepisuje**: PR plán
-jde do `data/results/PR/{DATE}_rescue/`, report „co změnit — zatím ručně
-v ESO" do `data/results/plan_day/{DATE}/merge_rescue_{DATE}.md` (+ .json).
+jde do `../data/results/PR/{DATE}_rescue/`, report „co změnit — zatím ručně
+v ESO" do `../data/results/plan_day/{DATE}/merge_rescue_{DATE}.md` (+ .json).
 Přiřazení řidičů sloučenou linku nezná — zohlednit ručně. Exit kódy jako
 solver (0 vyšlo / 3 nezvládneme / 2 data / 1 technická).
 
@@ -543,7 +549,7 @@ Přepínače výše je přepíšou jen pro jeden běh, config zůstává. Granul
 přepínač přebije `--no-buffers`, takže jde i „tvrdý režim, ale nech +10 min":
 
 ```bash
-python vrp_solver_lines_v6.py --orders-file data/prepared/CB/orders_CB_2026-07-28.csv --no-buffers --tw-expand-after 10
+python vrp_solver_lines_v6.py --orders-file ../data/prepared/CB/orders_CB_2026-07-28.csv --no-buffers --tw-expand-after 10
 ```
 
 Kolik to stojí, se liší den od dne — na CB 28. 7. (oba běhy 3 min budget)
@@ -553,16 +559,16 @@ i `vrp_solver_lines_all_depots_v6.py`.
 
 **Příklad — reprodukce staršího výsledku na zamrzlé mapě:**
 ```powershell
-python vrp_solver_lines_v6.py --osm-source stable --orders-file data/prepared/PR/orders_PR_2026-04-29.csv
+python vrp_solver_lines_v6.py --osm-source stable --orders-file ../data/prepared/PR/orders_PR_2026-04-29.csv
 ```
 
 **Příklad — porovnání 5 vs 30 min (bez přepsání):**
 ```powershell
-python vrp_solver_lines_v6.py --budget-min 5  --output-dir data/results/CB/2026-04-29_b5  --orders-file data/prepared/CB/orders_CB_2026-04-29.csv
-python vrp_solver_lines_v6.py --budget-min 30 --output-dir data/results/CB/2026-04-29_b30 --orders-file data/prepared/CB/orders_CB_2026-04-29.csv
+python vrp_solver_lines_v6.py --budget-min 5  --output-dir ../data/results/CB/2026-04-29_b5  --orders-file ../data/prepared/CB/orders_CB_2026-04-29.csv
+python vrp_solver_lines_v6.py --budget-min 30 --output-dir ../data/results/CB/2026-04-29_b30 --orders-file ../data/prepared/CB/orders_CB_2026-04-29.csv
 ```
 Solver na konci **automaticky porovná** s předchozím během stejné zóny+data
-(z `data/results/run_log.jsonl`) — vypíše rozdíl ceny, linek, km, hodin.
+(z `../data/results/run_log.jsonl`) — vypíše rozdíl ceny, linek, km, hodin.
 
 ---
 
@@ -583,7 +589,7 @@ Přepínače: `--depots CB,MO,HK,PR`, `--budget-ratios 0.35,0.25,0.40`,
 python closure_map_editor.py     # klikací mapa v prohlížeci -> zapisuje closures.json
 python manage_closures.py        # CLI sprava
 ```
-Aktivní uzavírky (`data/static/closures.json`) solver i vizualizér berou
+Aktivní uzavírky (`../data/static/closures.json`) solver i vizualizér berou
 automaticky — **podle dne závozu** (z názvu orders souboru / složky
 výsledků), ne podle dneška: plán se počítá den předem, takže uzavírka
 začínající zítra už v něm je a dnes končící už ne (od 17. 8.). Když ORS
@@ -597,11 +603,11 @@ verzován**.
 
 ## 6. Vozový park a náklady vozidel
 
-**V `data/static/` smí být PRÁVĚ JEDEN `vehicle_types-*.csv`** — ten se
+**V `../data/static/` smí být PRÁVĚ JEDEN `vehicle_types-*.csv`** — ten se
 použije. Program **sám nevybírá**: víc souborů je vada, kterou nahlásí
 a zastaví se. Který soubor tam bude, řeší vrstva nad ním; plánovat podle
 souboru, o kterém nikdo nerozhodl, je horší než se zastavit.
-Co už neplatí, přesuň do `data/static/vehicle_types_archiv/`.
+Co už neplatí, přesuň do `../data/static/vehicle_types_archiv/`.
 
 Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 
@@ -622,7 +628,7 @@ Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 > **Pozor na Excel.** `cost_per_km` má hodnoty jako `17.4` — české locale je
 > zobrazí jako 17. duben. Prohlížet soubor můžeš, ale **neukládej ho z Excelu**;
 > uložením se to zobrazení zapíše natvrdo. Uprav ho v textovém editoru, nebo
-> exportuj z ESO9 znovu. `git diff` na `data/static/` ukáže, jestli se změnil.
+> exportuj z ESO9 znovu. `git diff` na `../data/static/` ukáže, jestli se změnil.
 - Který soubor běh použil, je vidět v konzoli (`Vozový park: …`) a v run logu.
 - Ruční volba jiného souboru: `--vehicle-types-file CESTA`.
 - Starý `count_block_{DEPOT}` byl fikce a je odstraněn.
@@ -642,10 +648,10 @@ python driver_assignment.py 2026-08-19 --force      # přes neshodu registru s d
 
 | soubor | co | pravidlo |
 |---|---|---|
-| `data/ridici/aktivni/vehicles-active-YYYYMMDD.csv` | registr **AUTO + ŘIDIČ** z ESO (1 řádek = 1 auto se svým řidičem): `driver` (kód = klíč do historie), `vehicle_type`, **`max_kg`** + **`type_code`** (TYPE kód z téže DB, která generuje `vehicle_types`; bez `type_code` se odvodí z (typ, nosnost) — bez obojího chyba), `dny_pouzitelnosti`, `dostupnost_od/do`, `km_plan_mes/rok`, `km_aktual_mes/rok`, `driver_quality`, `driver_km_to_depot`, `valid_for_date` | právě jeden soubor; `.xlsx` = starý formát → jasná chyba |
-| `data/static/vehicle_types-YYYYMMDD.csv` | vozový park dne — křížová kontrola `type_code` + `max_kg` + typ registru, `available_count` pro kontrolu počtů | týž soubor, se kterým plánoval solver; **žádná natvrdo psaná mapa typů** — kódy se mezi dny přečíslovávají (19. 8. TYPE_07→TYPE_06, 20. 8. znovu), proto registr a park musí být z téhož dne; neshoda = stop (`--force` = kódy z registru tak, jak jsou) |
-| `data/historie_ridici/driver-address-visits.csv` | historie **řidič × adresa**: `driver_code;id_subj_adr;adress_note;visit_count` | právě jeden pravdivý soubor; `id_subj_adr` = `eso_col7` objednávky (ověřeno 1013/1013), `adress_note` = `location_code` |
-| `data/results/{DEPO}/{DATUM}/` (+ `L3/`) | `lines_summary.csv` + `lines_stops.csv` | zastávka se s historií páruje přes id adresy z `data/prepared/{DEPO}/orders_{DEPO}_{DATUM}.csv`, bez něj přes `location_code` |
+| `../data/ridici/aktivni/vehicles-active-YYYYMMDD.csv` | registr **AUTO + ŘIDIČ** z ESO (1 řádek = 1 auto se svým řidičem): `driver` (kód = klíč do historie), `vehicle_type`, **`max_kg`** + **`type_code`** (TYPE kód z téže DB, která generuje `vehicle_types`; bez `type_code` se odvodí z (typ, nosnost) — bez obojího chyba), `dny_pouzitelnosti`, `dostupnost_od/do`, `km_plan_mes/rok`, `km_aktual_mes/rok`, `driver_quality`, `driver_km_to_depot`, `valid_for_date` | právě jeden soubor; `.xlsx` = starý formát → jasná chyba |
+| `../data/static/vehicle_types-YYYYMMDD.csv` | vozový park dne — křížová kontrola `type_code` + `max_kg` + typ registru, `available_count` pro kontrolu počtů | týž soubor, se kterým plánoval solver; **žádná natvrdo psaná mapa typů** — kódy se mezi dny přečíslovávají (19. 8. TYPE_07→TYPE_06, 20. 8. znovu), proto registr a park musí být z téhož dne; neshoda = stop (`--force` = kódy z registru tak, jak jsou) |
+| `../data/historie_ridici/driver-address-visits.csv` | historie **řidič × adresa**: `driver_code;id_subj_adr;adress_note;visit_count` | právě jeden pravdivý soubor; `id_subj_adr` = `eso_col7` objednávky (ověřeno 1013/1013), `adress_note` = `location_code` |
+| `../data/results/{DEPO}/{DATUM}/` (+ `L3/`) | `lines_summary.csv` + `lines_stops.csv` | zastávka se s historií páruje přes id adresy z `../data/prepared/{DEPO}/orders_{DEPO}_{DATUM}.csv`, bez něj přes `location_code` |
 
 **Tvrdé kontroly před během** (neshoda = stop, `--force` přebije a zapíše
 `forced: true` do summary): `valid_for_date` registru = den závozu; **počty
@@ -676,7 +682,7 @@ pak podle soft skóre). `CONFIG["own_fleet_last"]`.
 | kvalita × tightness | 1.0 | Rychlý na linky s napjatými okny; tight zastávka = rezerva do konce okna ≤ 15 min, konec linky váží 1,3× víc než začátek |
 | familiarity | 1.0 | per zastávka **pořadí řidiče mezi všemi aktivními podle počtu závozů na tu adresu** (kdo tam jezdí nejvíc = 1, kdo nikdy = dole, shodné počty sdílejí pořadí — 5×,4×,4×,0,0,0 → 6 / 4,5 / 4,5 / 2 / 2 / 2 bodů ze 6); průměr přes zastávky linky; adresa bez historie = 0,5 pro všechny |
 
-Výstupy: `data/results/driver_assignment/{DATUM}/driver_plan_{DATUM}.csv`
+Výstupy: `../data/results/driver_assignment/{DATUM}/driver_plan_{DATUM}.csv`
 (+ `driver_plan_{DEPO}_{DATUM}.csv` vedle plánu každého depa +
 `summary.json` s váhami, warningy, `own_fleet_used`, `fleet_mismatches`).
 Sloupce: řidič (jméno + kód), auto (kód, název, dopravce), `tier`
@@ -689,19 +695,105 @@ zastávek jede řidič, který tam už jezdil.
 
 ## 7. Git a osobní údaje (GDPR) — DŮLEŽITÉ
 
-**Do gitu NIKDY nejdou osobní údaje.** Blokuje je `.gitignore`:
-- `data/input/`, `data/prepared/`, `data/prediction/` (jména, adresy, GPS, váhy zákazníků)
-- `data/static/locations_*.csv` (adresy zákazníků — pipeline je už nepoužívá, ale
-  soubory na disku zůstávají a do gitu nesmí)
-- `data/static/vehicle_registry.csv` (jména řidičů, SPZ)
-- `data/ridici/` (registr aut+řidičů z ESO — jména, telefony, SPZ)
-- `data/historie_ridici/`, `data/static/vehicles-active*.csv` (řidiči, historie řidič×adresa)
+**Do gitu NIKDY nejdou osobní údaje.** Od 21. 8. 2026 to řeší struktura, ne
+výčet výjimek: **data leží mimo repo**, takže do něj nemají jak spadnout.
 
-Verzuje se pouze **kód + config bez PII** (`vehicle_types.csv`, `closures.json`).
-Data existují jen lokálně na disku. Repo je **Private**.
+```
+Tracing_Main/
+├── vrp_benchmark/   ← KÓD (git repo) — jediné, co se verzuje a klonuje
+├── data/            ← všechna data: objednávky, adresy, GPS, jména řidičů,
+│                      SPZ, historie závozů, výstupy běhů → NIKDY do gitu
+└── UI/              ← webové rozhraní nad výstupy (mimo tento projekt)
+```
+
+- `.gitignore` má `/data/` jako pojistku (kdyby složka `data` uvnitř repa
+  lokálně vznikla).
+- `tests/test_no_data_in_git.py` hlídá při každém běhu testů, že v repu není
+  žádná cesta z `data/` ani soubor s názvem typu `riro-*`, `orders_*`,
+  `locations_*`, `vehicle_registry*`, `vehicles-active*`, `historie_*`.
+- **`closures.json` a `vehicle_types-*.csv` se od 21. 8. 2026 taky
+  neverzují** — jsou to provozní data, mění se denně a chodí z ESO9.
+  Žijí v `../data/static/`. Starší verze jsou dohledatelné v git historii.
+- Repo je **Private**.
 
 Commitujeme **při milnících** (dokončená feature / opravený bug / funkční stav),
 ne po každé drobnosti.
+
+### Úklid staré historie (jednorázově, jen lokální repo)
+
+V lokální historii je osiřelý commit `dfe2518` ("Baseline: funkcni stav
+projektu") se 44 soubory zákaznických dat. **Na GitHubu není** — drží ho jen
+lokální tag `baseline`; žádný skript ho nepoužívá (A/B worktree jede
+z commitu `4f0f879`). Odstranění:
+
+```powershell
+# 1) záloha (POZOR: bundle ta data obsahuje — ulož mimo repo a nikam neposílej)
+git bundle create ..\..\vrp_benchmark_zaloha.bundle --all
+
+# 2) uvolnit a smazat
+git tag -d baseline
+git reflog expire --expire=now --all
+git gc --prune=now
+
+# 3) ověřit — obojí musí být prázdné / selhat
+git log --all --pretty=format: --name-only | Select-String '^data/'
+git cat-file -t dfe2518
+```
+
+---
+
+## 7b. Nasazení na server (přes git)
+
+Server dostává **jen kód**, přes git — už nikdy zip nebo kopírovaná složka.
+Data zůstávají na serveru v `Tracing_Main/data/` a nikdy nejdou přes repo.
+
+**Jednorázově** (na serveru):
+
+```powershell
+# 1) struktura
+mkdir C:\...\Tracing_Main ; cd C:\...\Tracing_Main
+
+# 2) kód (read-only deploy key nebo token; repo je Private)
+git clone https://github.com/salgon157/Tracing.git vrp_benchmark
+
+# 3) data vedle repa — nikdy do vrp_benchmark\data
+mkdir data ; mkdir UI
+
+# 4) závislosti
+cd vrp_benchmark ; pip install -r requirements.txt
+```
+
+**Nová verze** (kdykoli potom):
+
+```powershell
+cd C:\...\Tracing_Main\vrp_benchmark
+git fetch --tags
+git checkout v1.0.0        # konkrétní otagovaná verze, ne "main"
+python -m pytest tests -q --ignore tests/test_ors_hgv_integration.py
+```
+
+Checkout **nesahá na data** — leží o úroveň výš, mimo pracovní strom repa.
+Vrácení na předchozí verzi = `git checkout <starší tag>`.
+
+**Co ze systému čte vnější svět** (formáty se nemění, jen se posunulo
+umístění o úroveň výš):
+
+| co | kde |
+|---|---|
+| naplánované linky | `../data/results/{DEPO}/{DATUM}/` — `lines_summary.csv`, `lines_stops.csv`, `lines_plan.xlsx`, `eso_export_*.csv` (cp1250, středníky) |
+| strojový stav běhu | `run_status.json` ve výstupní složce + exit kód 0/1/2/3 |
+| připravené objednávky | `../data/prepared/{DEPO}/orders_{DEPO}_{DATUM}.csv` |
+| rozhodnutí a stav dne | `../data/prediction/results/decision_{DATUM}.json`, `../data/results/plan_day/{DATUM}/state.json` |
+| log všech běhů | `../data/results/run_log.jsonl`, `../data/prediction/results/run_log.jsonl` |
+
+Dvě věci, které se **do** systému nesmí zapisovat zvenčí:
+1. **Nic nesmí přepisovat `prepared/` během běhu.** Jediný autor je
+   `prepare_inputs_v6.py`. Pojistka `guard_prepared_unchanged` v `plan_day.py`
+   běh okamžitě zastaví (vzniklo po incidentu 20. 8. 2026, viz sekce 5b).
+2. **Cesty v run logu jsou nově absolutní.** Kdo si dřív skládal
+   `data/results/...` relativně, musí brát hodnotu z logu, nebo si složit
+   cestu od `Tracing_Main/data/`. Stará cesta předaná solveru nebo
+   vizualizaci se ještě přechodně přesměruje s upozorněním.
 
 ---
 
@@ -726,7 +818,7 @@ skript si ho založí sám.
 > ⛔ **`_baseline_*/` je DOČASNÝ archiv, NESAHAT.** Není součást projektu:
 > je to výpis starého commitu jen pro měření. `overnight_regression.ps1`
 > ho založí na začátku běhu a **na konci sám odstraní** — v projektu po
-> něm nic nezůstane (výsledky jsou v `data/results/_regression/…`).
+> něm nic nezůstane (výsledky jsou v `../data/results/_regression/…`).
 > Během běhu: needitovat (změna zkreslí výsledky), nespouštět odsud ostrý
 > běh, necommitovat — složka je v `.gitignore`, uvnitř má
 > `_NESAHAT_ARCHIV.md`, a `pytest.ini` (`norecursedirs`) ji vynechává,
@@ -751,7 +843,7 @@ B ≤ A, cena medián ≤ +1 %, max ≤ +2 %, žádný běh > nejlepší A +3 %,
 kde A 0, `run_status.json`, shodné hlavičky, čas ≤ budget + 60 s.
 
 **Co po měření zůstane (samopopisné, worktree je k tomu netřeba):**
-`data/results/_regression/<stamp>/` (benchmark: `_bench_cost_matrix/<stamp>/`)
+`../data/results/_regression/<stamp>/` (benchmark: `_bench_cost_matrix/<stamp>/`)
 — `meta.json` (obě strany: složka, **git commit + dirty**, extra argumenty;
 dny, depa, reps, budget, vozový park, ORS zdroj, kritérium, start/konec,
 verdikt; zapisuje se hned na startu, takže přežije i přerušený běh),
@@ -760,7 +852,7 @@ verdikt; zapisuje se hned na startu, takže přežije i přerušený běh),
 skutečná), `run_log_A|B.jsonl` (per běh **CONFIG snapshot + git_commit
 solveru**), `A|B/<případ>_r<n>/` (kompletní výstup solveru: `lines_summary`,
 `lines_stops`, `eso_export`, `run_status.json`) + `.log` konzole per běh,
-a log `data/results/overnight_<stamp>.log`. Chceš-li starý solver znovu
+a log `../data/results/overnight_<stamp>.log`. Chceš-li starý solver znovu
 spustit: `git worktree add --detach _baseline_<commit> <commit>` (commit je
 v `meta.json`) — nebo rovnou `overnight_regression.ps1 -BaselineCommit <commit>`.
 Solver s daným seedem je při
@@ -777,7 +869,7 @@ solver, jiný `--cost-matrix-mode`; rozhoduje o defaultu `cost_matrix_mode`
 .\overnight_cost_matrix.ps1                    # 108 běhů ≈ 10 h; -Budget 3 ≈ 6 h
 # ručně: python benchmark_cost_matrix.py --dates … --depots … --reps 3 --budget 5
 ```
-Report `data/results/_bench_cost_matrix/<stamp>/report.md`.
+Report `../data/results/_bench_cost_matrix/<stamp>/report.md`.
 
 **Výsledek 18. 8. 2026 (108 běhů, 8,4 h): PASS 18/18 → `exact` je DEFAULT.**
 Exact levnější ve 13/18 případů, dražší ve 2 (nejvýš +0,80 %), shodný ve 3;

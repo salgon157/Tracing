@@ -52,18 +52,24 @@ def ensure_data_root() -> Path:
     return DATA_ROOT
 
 
-def resolve_data_path(p: str | Path) -> Path:
-    """Cesta ze staršího záznamu (run log, state) → dnešní umístění.
+def resolve_legacy(p: str | Path) -> Path:
+    """Přechodová pojistka pro cesty psané ještě podle staré struktury.
 
-    Záznamy z doby před restrukturalizací nesou relativní cesty typu
-    'data/results/…' (tehdy vůči kořeni repa). Data se přestěhovala o úroveň
-    výš, takže relativní 'data/…' dnes znamená DATA_ROOT/…; absolutní cesty
-    a nové záznamy projdou beze změny.
+    Do 21. 8. 2026 data ležela uvnitř repa, takže se všude psalo
+    'data/prepared/CB/orders_CB_….csv' relativně ke cwd. Kdo (nebo co —
+    třeba serverové UI) takovou cestu předá dnes, dostane FileNotFound.
+    Když soubor na zadané cestě NEEXISTUJE a cesta začíná 'data/', zkusíme
+    ji pod novým datovým kořenem; volající na to upozorní hláškou.
+
+    Vrací původní cestu, když se nic lepšího nenašlo — chyba pak vznikne
+    normálně na zadané cestě.
     """
-    p = Path(p)
-    if p.is_absolute():
-        return p
-    parts = p.parts
+    orig = Path(p)
+    if orig.exists() or orig.is_absolute():
+        return orig
+    parts = orig.parts
     if parts and parts[0] == "data":
-        return DATA_ROOT.joinpath(*parts[1:])
-    return REPO_ROOT / p
+        alt = DATA_ROOT.joinpath(*parts[1:])
+        if alt.exists():
+            return alt
+    return orig

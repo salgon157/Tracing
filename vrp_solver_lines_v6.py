@@ -3593,8 +3593,15 @@ def main():
         abort(
             "\n[CHYBA] Chybí --orders-file.\n"
             "Příklad: python vrp_solver_lines_v6.py "
-            "--orders-file data/prepared/CB/orders_CB_2026-04-10.csv",
+            "--orders-file ../data/prepared/CB/orders_CB_2026-04-10.csv",
             EXIT_DATA)
+    # Cesta psaná podle staré struktury (data/ uvnitř repa) se přesměruje
+    # na dnešní datový kořen — hlasitě, ať je vidět, že to je berlička.
+    _legacy = paths.resolve_legacy(args.orders_file)
+    if _legacy != Path(args.orders_file):
+        print(f"  [!] '{args.orders_file}' neexistuje; beru "
+              f"{_legacy} (data se 21. 8. 2026 přestěhovala vedle repa)")
+        args.orders_file = str(_legacy)
     if not Path(args.orders_file).exists():
         abort(
             f"\n[CHYBA] Orders soubor neexistuje: {args.orders_file}\n"

@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+import paths
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Názvy, které nesmí být v repu ani mimo data/ (kdyby je někdo „dočasně"
@@ -67,3 +69,54 @@ def test_gitignore_blocks_data_dir():
     lines = {line.strip() for line in gi.splitlines()}
     assert "/data/" in lines or "data/" in lines, \
         ".gitignore neblokuje složku data/ — chybí pojistka proti návratu dat do repa"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Datový kořen a přechodová pojistka pro staré cesty
+# ═════════════════════════════════════════════════════════════════════════════
+
+class TestDataRoot:
+    def test_data_root_is_outside_repo(self):
+        assert not paths.DATA_ROOT.is_relative_to(REPO_ROOT), \
+            f"data ({paths.DATA_ROOT}) nesmí ležet uvnitř repa ({REPO_ROOT})"
+
+    def test_env_override(self, monkeypatch, tmp_path):
+        # VRP_DATA_ROOT se čte při importu — ověřujeme samotné pravidlo
+        monkeypatch.setenv("VRP_DATA_ROOT", str(tmp_path))
+        import importlib
+        reloaded = importlib.reload(paths)
+        try:
+            assert reloaded.DATA_ROOT == tmp_path
+            assert reloaded.PREPARED_ROOT == tmp_path / "prepared"
+        finally:
+            monkeypatch.delenv("VRP_DATA_ROOT")
+            importlib.reload(paths)
+
+    def test_ensure_data_root_explains_structure(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "DATA_ROOT", tmp_path / "neni")
+        with pytest.raises(SystemExit) as e:
+            paths.ensure_data_root()
+        assert "Tracing_Main" in str(e.value)
+
+
+class TestResolveLegacy:
+    def test_old_style_path_redirected_when_file_exists(self, monkeypatch, tmp_path):
+        (tmp_path / "prepared" / "CB").mkdir(parents=True)
+        target = tmp_path / "prepared" / "CB" / "orders_CB_2026-08-21.csv"
+        target.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(paths, "DATA_ROOT", tmp_path)
+        assert paths.resolve_legacy(
+            "data/prepared/CB/orders_CB_2026-08-21.csv") == target
+
+    def test_missing_file_kept_as_is(self, monkeypatch, tmp_path):
+        # nic nenajde → vrátí zadanou cestu, chyba vznikne normálně tam
+        monkeypatch.setattr(paths, "DATA_ROOT", tmp_path)
+        p = paths.resolve_legacy("data/prepared/CB/neni.csv")
+        assert p == Path("data/prepared/CB/neni.csv")
+
+    def test_absolute_path_untouched(self, tmp_path):
+        assert paths.resolve_legacy(tmp_path) == tmp_path
+
+    def test_non_data_relative_path_untouched(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "DATA_ROOT", tmp_path)
+        assert paths.resolve_legacy("neco/jineho.csv") == Path("neco/jineho.csv")
