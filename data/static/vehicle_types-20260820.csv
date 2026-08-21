@@ -1,6 +1,0 @@
-type_code;type_name;max_kg;cost_per_km;start_cost_kc;available_count;total_count;active_count;cost_per_km_source;available_count_source;time_multiplier;osrm_profile;valid_for_date
-TYPE_01;do 3t;1200;11.0000;1000;2;2;2;loaded_from_db_2026_08_19;loaded_from_db_2026_08_19;1.0;driving;2026-08-20
-TYPE_02;do 3t;1350;11.0000;1000;49;49;49;loaded_from_db_2026_08_19;loaded_from_db_2026_08_19;1.0;driving;2026-08-20
-TYPE_03;do 7t;3200;19.5000;1000;2;2;2;loaded_from_db_2026_08_19;loaded_from_db_2026_08_19;1.0;driving-hgv;2026-08-20
-TYPE_04;do 18t;8000;28.0000;1000;1;1;1;loaded_from_db_2026_08_19;loaded_from_db_2026_08_19;1.0;driving-hgv;2026-08-20
-TYPE_05;do 4t;2000;17.5000;1000;1;1;1;loaded_from_db_2026_08_19;loaded_from_db_2026_08_19;1.0;driving-hgv;2026-08-20
