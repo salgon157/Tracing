@@ -43,6 +43,7 @@ import re
 import sys
 import argparse
 from pathlib import Path
+import paths
 
 # RiRo CSV columns — formát od 13. 8. 2026 (0-indexed, středníky, bez hlavičky)
 COL_RECORD_TYPE    = 0     # A — verze formátu (string se nezměnil ani při novém layoutu)
@@ -90,7 +91,7 @@ KG_COEF_MIN   = 0.5
 KG_COEF_MAX   = 2.0
 KG_COEF_MIN_PAIRS = 10
 
-DATA_DIR           = Path("data")
+DATA_DIR           = paths.DATA_ROOT
 INPUT_DIR          = DATA_DIR / "input"
 PREPARED_DIR       = DATA_DIR / "prepared"
 

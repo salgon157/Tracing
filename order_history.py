@@ -32,8 +32,9 @@ from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence
+import paths
 
-HISTORY_DIR = Path("data") / "historie_objednavky"
+HISTORY_DIR = paths.HISTORIE_OBJEDNAVKY_DIR
 HISTORY_SHEET_FALLBACK = "List1"
 
 # Jak daleko zpět se koukáme, i kdyby adresa jezdila roky.

@@ -20,8 +20,9 @@ import csv
 import requests
 from pathlib import Path
 from datetime import date
+import paths
 
-CLOSURES_FILE = Path("data/static/closures.json")
+CLOSURES_FILE = paths.STATIC_DIR / "closures.json"
 
 
 # ============================================================

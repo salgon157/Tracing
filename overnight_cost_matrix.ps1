@@ -35,13 +35,13 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Set-Location $PSScriptRoot
 
 $stamp = Get-Date -Format "yyyyMMdd_HHmm"
-$log = "data\results\overnight_cost_$stamp.log"
-New-Item -ItemType Directory -Force -Path "data\results" | Out-Null
+$log = "..\data\results\overnight_cost_$stamp.log"
+New-Item -ItemType Directory -Force -Path "..\data\results" | Out-Null
 ("=== overnight cost matrix (legacy vs exact) {0} | budget={1} reps={2} dates={3} ===" -f $stamp, $Budget, $Reps, ($Dates -join ',')) | Tee-Object -FilePath $log
 ("### start {0}" -f (Get-Date -Format "HH:mm")) | Tee-Object -FilePath $log -Append
 
 python benchmark_cost_matrix.py --dates @Dates --depots @Depots `
-    --reps $Reps --budget $Budget --extras --out "data\results\_bench_cost_matrix\$stamp" 2>&1 |
+    --reps $Reps --budget $Budget --extras --out "..\data\results\_bench_cost_matrix\$stamp" 2>&1 |
     Tee-Object -FilePath $log -Append
 
 ("### hotovo {0} - report: data\results\_bench_cost_matrix\{1}\report.md" -f (Get-Date -Format "HH:mm"), $stamp) | Tee-Object -FilePath $log -Append

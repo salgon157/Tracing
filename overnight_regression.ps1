@@ -52,13 +52,13 @@ $marker = @(
 Set-Content -Path "$baseDir\_NESAHAT_ARCHIV.md" -Value $marker -Encoding UTF8
 
 $stamp = Get-Date -Format "yyyyMMdd_HHmm"
-$log = "data\results\overnight_$stamp.log"
-New-Item -ItemType Directory -Force -Path "data\results" | Out-Null
+$log = "..\data\results\overnight_$stamp.log"
+New-Item -ItemType Directory -Force -Path "..\data\results" | Out-Null
 ("=== overnight regression {0} | baseline={1} budget={2} reps={3} dates={4} ===" -f $stamp, $BaselineCommit, $Budget, $Reps, ($Dates -join ',')) | Tee-Object -FilePath $log
 ("### start {0}" -f (Get-Date -Format "HH:mm")) | Tee-Object -FilePath $log -Append
 
 python regression_ab.py --baseline-dir $baseDir --dates @Dates --depots @Depots `
-    --reps $Reps --budget $Budget --extras --out "data\results\_regression\$stamp" 2>&1 |
+    --reps $Reps --budget $Budget --extras --out "..\data\results\_regression\$stamp" 2>&1 |
     Tee-Object -FilePath $log -Append
 
 ("### hotovo {0} - report: data\results\_regression\{1}\report.md" -f (Get-Date -Format "HH:mm"), $stamp) | Tee-Object -FilePath $log -Append

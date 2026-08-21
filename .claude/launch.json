@@ -37,7 +37,7 @@
         "http.server",
         "8766",
         "--directory",
-        "data/results"
+        "../data/results"
       ],
       "port": 8766
     }

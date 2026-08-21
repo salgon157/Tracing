@@ -69,6 +69,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from fleet_budget import DEPOT_ORDER
+import paths
 
 # ── Konfigurace (váhy a parametry — ladí se tady, ne v kódu) ─────────────────
 CONFIG = {
@@ -92,12 +93,12 @@ CONFIG = {
     "tight_pos_coef": 0.3,
     # Kvalita řidiče -> "rychlost" 0..1; skóre = 1 - |tightness - rychlost|
     "quality_speed": {"Rychlý": 1.0, "Standart": 0.5, "Pomalý": 0.0},
-    "ridici_dir":       "data/ridici/aktivni",
+    "ridici_dir":       (paths.RIDICI_DIR / "aktivni").as_posix(),
     "registry_pattern": "vehicles-active*.csv",
-    "history_dir":      "data/historie_ridici",
+    "history_dir":      paths.HISTORIE_RIDICI_DIR.as_posix(),
     "history_pattern":  "*.csv",
-    "results_root":     "data/results",
-    "prepared_root":    "data/prepared",
+    "results_root":     paths.RESULTS_ROOT.as_posix(),
+    "prepared_root":    paths.PREPARED_ROOT.as_posix(),
 }
 
 BIG_COST = 1e9          # zakázaná buňka (hard constraint)

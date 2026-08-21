@@ -157,7 +157,8 @@ def daily(req: DailyRequest) -> dict:
     ]
     if req.visualize:
         steps.append(_step("visualize", commands.build_visualize(
-            f"data/results/{depot}/{date}", fresh_osm=req.fresh_osm)))
+            (config.RESULTS_ROOT / depot / date).as_posix(),
+            fresh_osm=req.fresh_osm)))
 
     job = jobs.Job(
         id=jobs.new_job_id(), type="daily",
@@ -176,9 +177,9 @@ def visualize(req: VisualizeRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
     if not d.is_dir():
         raise HTTPException(status_code=404, detail=f"Složka neexistuje: {req.path}")
-    # Cesta pro visualize_routes.py musí být relativní ke kořeni repa (cwd),
-    # tj. 'data/results/CB/...'. Label do titulku je zkrácený (rel k results).
-    arg_path = d.relative_to(config.REPO_ROOT).as_posix()
+    # Cesta pro visualize_routes.py je absolutní — data leží mimo repo,
+    # takže relativně ke cwd (kořen repa) by nešla složit.
+    arg_path = d.as_posix()
     label    = d.relative_to(config.RESULTS_ROOT).as_posix()
     job = jobs.Job(
         id=jobs.new_job_id(), type="visualize",

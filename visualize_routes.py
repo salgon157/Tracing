@@ -22,6 +22,7 @@ import argparse
 import sys
 import webbrowser
 from pathlib import Path
+import paths
 
 try:
     from closures_utils import (
@@ -512,7 +513,7 @@ def generate_html(route_list: list, title: str, closures: list | None = None) ->
 
 def find_latest_result_dir() -> Path | None:
     """Pokusí se najít nejnovější výsledkovou složku v data/results/."""
-    base = Path("data/results")
+    base = paths.RESULTS_ROOT
     if not base.exists():
         return None
     candidates = sorted(

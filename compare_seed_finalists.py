@@ -32,10 +32,11 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+import paths
 
 PY         = sys.executable
 DEPOTS_ALL = ["CB", "MO", "HK", "PR"]
-AB_ROOT    = Path("data/results/_ab_finalists")
+AB_ROOT    = paths.RESULTS_ROOT / "_ab_finalists"
 
 
 def run_one(orders: Path, out_dir: Path, fleet_file: Path, budget: float,
@@ -95,7 +96,7 @@ def main() -> None:
     ap.add_argument("--date", required=True, help="Datum závozu (YYYY-MM-DD)")
     ap.add_argument("--depots", nargs="*", default=DEPOTS_ALL,
                     help=f"Depa (default: {' '.join(DEPOTS_ALL)})")
-    ap.add_argument("--data-root", default="data/prediction",
+    ap.add_argument("--data-root", default=paths.PREDICTION_ROOT.as_posix(),
                     help="Kořen s prepared/{DEPO}/orders_… "
                          "(default: predikční data; ostrá = data)")
     ap.add_argument("--budget", type=float, default=5.0,

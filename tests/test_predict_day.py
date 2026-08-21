@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import paths
+
 from predict_day import (
     build_depot_commands,
     depots_with_input,
@@ -27,22 +29,26 @@ class TestBuildDepotCommands:
         assert prepare[1] == "prepare_inputs_v6.py"
         assert prepare[2] == "CB"
         assert "--data-root" in prepare
-        assert prepare[prepare.index("--data-root") + 1] == "data/prediction"
+        assert prepare[prepare.index("--data-root") + 1] == \
+            paths.PREDICTION_ROOT.as_posix()
 
     def test_solve_paths_under_prediction_root(self):
         cmds, out_dir = _cmds()
         solve = cmds[1]
         assert solve[1] == "vrp_solver_lines_v6.py"
         orders = solve[solve.index("--orders-file") + 1]
-        assert orders == "data/prediction/prepared/CB/orders_CB_2026-07-14.csv"
+        assert orders == (paths.PREDICTION_ROOT / "prepared" / "CB"
+                          / "orders_CB_2026-07-14.csv").as_posix()
         assert solve[solve.index("--output-dir") + 1] == out_dir.as_posix()
-        assert out_dir.as_posix() == "data/prediction/results/CB/2026-07-14_1430"
+        assert out_dir.as_posix() == (paths.PREDICTION_ROOT / "results" / "CB"
+                                      / "2026-07-14_1430").as_posix()
 
     def test_solve_run_log_separated(self):
         cmds, _ = _cmds()
         solve = cmds[1]
         log = solve[solve.index("--run-log-path") + 1]
-        assert log == "data/prediction/results/run_log.jsonl"
+        assert log == (paths.PREDICTION_ROOT / "results"
+                       / "run_log.jsonl").as_posix()
 
     def test_budget_formatted_like_workflow(self):
         cmds, _ = _cmds(budget_min=5.0)

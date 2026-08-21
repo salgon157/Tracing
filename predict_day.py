@@ -34,8 +34,10 @@ from pathlib import Path
 
 from prepare_inputs_v6 import find_active_riro_file, parse_date_from_filename
 
+import paths
+
 PY              = sys.executable
-PREDICTION_ROOT = Path("data/prediction")
+PREDICTION_ROOT = paths.PREDICTION_ROOT
 RUN_LOG_REL     = PREDICTION_ROOT / "results" / "run_log.jsonl"
 ALL_DEPOTS      = ["CB", "HK", "MO", "PR"]
 

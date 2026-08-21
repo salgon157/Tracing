@@ -31,12 +31,13 @@ import requests
 
 import vrp_solver_lines_v6 as solver
 from osm_routing import add_osm_args, apply_osm_source, resolve_osm_source
+import paths
 
 
 DEFAULT_DEPOTS = ("CB", "MO", "HK", "PR")
 ZONE_LABEL = "ALL"
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path("data")
+DATA_DIR = paths.DATA_ROOT
 PREPARED_DIR = DATA_DIR / "prepared"
 RESULTS_DIR = DATA_DIR / "results"
 

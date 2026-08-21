@@ -17,10 +17,11 @@ Poznámka:
 
 from pathlib import Path
 import pandas as pd
+import paths
 
 VEHICLES_XLSX = Path("Databáze - Vozidla.xlsx")
 LOCATIONS_XLSX = Path("Lokace CB.xlsx")
-STATIC_DIR = Path("data/static")
+STATIC_DIR = paths.STATIC_DIR
 
 
 def assumed_cost(weight: int) -> float:

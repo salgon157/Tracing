@@ -22,10 +22,11 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+import paths
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path("data")
+DATA_DIR = paths.DATA_ROOT
 PREPARED_DIR = DATA_DIR / "prepared"
 RESULTS_DIR = DATA_DIR / "results"
 SOLVER_SCRIPT = SCRIPT_DIR / "vrp_solver_lines_all_depots_v6.py"

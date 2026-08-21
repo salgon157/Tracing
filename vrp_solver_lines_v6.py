@@ -47,6 +47,7 @@ from ortools.constraint_solver import pywrapcp
 
 from osm_routing import (add_osm_args, apply_osm_source,
                          resolve_osm_source, start_hint)
+import paths
 
 SOLVER_VERSION = "v6"   # verze solveru — zvedni ručně při větších změnách logiky
 
@@ -393,7 +394,7 @@ CONFIG = {
 # že je jednoznačný. Co neplatí, patří do `data/static/vehicle_types_archiv/`.
 # Starý čárkový formát se odmítá — tichý fallback by znamenal plánování
 # na neaktuální flotile.
-VEHICLE_TYPES_DIR     = Path("data/static")
+VEHICLE_TYPES_DIR     = paths.STATIC_DIR
 VEHICLE_TYPES_PATTERN = "vehicle_types-*.csv"
 
 
@@ -2888,7 +2889,7 @@ def save_excel(routes, total_cost_kc, filepath="lines_plan.xlsx"):
 #  RUN LOG — porovnání runů
 # ============================================================
 
-RUN_LOG_PATH = Path("data/results/run_log.jsonl")
+RUN_LOG_PATH = paths.RUN_LOG_PATH
 
 ORDERS_FILE_RE = re.compile(r"orders_([A-Z]+)_(\d{4}-\d{2}-\d{2})\.csv$")
 
@@ -3609,7 +3610,7 @@ def main():
     orders_path = Path(args.orders_file)
     depot_code_out, date_out = orders_file_meta(orders_path.name)
     if depot_code_out and args.output_dir == "output":
-        output_dir = Path(f"data/results/{depot_code_out}/{date_out}")
+        output_dir = paths.RESULTS_ROOT / depot_code_out / date_out
     else:
         output_dir = Path(args.output_dir)
     delivery_date = date_out

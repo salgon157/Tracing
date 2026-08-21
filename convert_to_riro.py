@@ -24,6 +24,7 @@ import re
 import argparse
 from pathlib import Path
 from collections import defaultdict
+import paths
 
 
 RIRO_VERSION = "RIRO_INPUT_LOCATIONSANDORDERS_V3.00"
@@ -242,7 +243,7 @@ def main():
     )
     parser.add_argument(
         "--locations-file",
-        default="data/static/locations_lookup.csv",
+        default=(paths.STATIC_DIR / "locations_lookup.csv").as_posix(),
         help="CSV s adresami a GPS lokací (default: data/static/locations_lookup.csv)"
     )
     parser.add_argument(

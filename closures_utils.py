@@ -22,8 +22,9 @@ from pathlib import Path
 
 import numpy as np
 import requests
+import paths
 
-CLOSURES_FILE = Path("data/static/closures.json")
+CLOSURES_FILE= paths.STATIC_DIR / "closures.json"
 
 OSRM_URL_DEFAULT = "http://localhost:5000"
 ORS_URL_DEFAULT = "http://localhost:8080"

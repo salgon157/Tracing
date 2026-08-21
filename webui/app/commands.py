@@ -1,15 +1,17 @@
 """
 Čisté buildery argv (bez I/O, unit-testovatelné).
 
-Reprodukují PŘESNĚ příkazy z WORKFLOW.md, s relativními cestami (cwd = kořen
-repa), aby byl každý příkaz ručně copy-paste spustitelný. argv[0] je konkrétní
-interpreter (sys.executable) kvůli spolehlivému spuštění; skript + argumenty
-odpovídají WORKFLOW.md token po tokenu.
+Reprodukují PŘESNĚ příkazy z WORKFLOW.md (cwd = kořen repa), aby byl každý
+příkaz ručně copy-paste spustitelný. Skripty jsou relativní ke kořeni repa,
+cesty do dat absolutní (data leží mimo repo). argv[0] je konkrétní
+interpreter (sys.executable) kvůli spolehlivému spuštění.
 """
 
 from __future__ import annotations
 
 import sys
+
+from . import config
 
 PY = sys.executable
 
@@ -22,7 +24,9 @@ def _fmt_num(x) -> str:
 
 
 def orders_rel_path(depot: str, date: str) -> str:
-    return f"data/prepared/{depot}/orders_{depot}_{date}.csv"
+    """Cesta k prepared objednávkám. Absolutní — data leží mimo repo."""
+    return (config.PREPARED_ROOT / depot
+            / f"orders_{depot}_{date}.csv").as_posix()
 
 
 def build_prepare(depot: str) -> list[str]:

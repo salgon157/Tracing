@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import unicodedata
 from pathlib import Path
 
 # webui/app/config.py  →  parents[0]=app, parents[1]=webui, parents[2]=REPO ROOT
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Datový kořen řeší centrálně paths.py v kořeni repa (data leží VEDLE repa).
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+import paths  # noqa: E402
 
 # Sanity-check při importu — musíme sedět vedle solveru.
 _SOLVER_MARKER = REPO_ROOT / "vrp_solver_lines_v6.py"
@@ -25,7 +31,7 @@ if not _SOLVER_MARKER.exists():
     )
 
 # ── Cesty ────────────────────────────────────────────────────────────────────
-DATA_ROOT     = REPO_ROOT / "data"
+DATA_ROOT     = paths.DATA_ROOT
 INPUT_ROOT    = DATA_ROOT / "input"
 PREPARED_ROOT = DATA_ROOT / "prepared"
 RESULTS_ROOT  = DATA_ROOT / "results"

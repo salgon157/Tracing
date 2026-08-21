@@ -23,6 +23,7 @@ Vypnout: --no-reprice-hgv (pak by legacy měl výhodu).
 import subprocess
 import sys
 from pathlib import Path
+import paths
 
 if __name__ == "__main__":
     args = sys.argv[1:]
@@ -34,6 +35,6 @@ if __name__ == "__main__":
            "--label-a", "legacy", "--label-b", "exact"]
     if not any(a.startswith("--out") for a in args):
         from datetime import datetime
-        cmd += ["--out", (Path("data/results/_bench_cost_matrix")
+        cmd += ["--out", ((paths.RESULTS_ROOT / "_bench_cost_matrix")
                           / datetime.now().strftime("%Y%m%d_%H%M")).as_posix()]
     sys.exit(subprocess.run(cmd + args).returncode)

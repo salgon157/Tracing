@@ -8,8 +8,12 @@ from pathlib import Path
 
 import pytest
 
+import paths
 import plan_day
 from plan_day import build_solver_cmd, resolve_depots_and_date
+
+# Data leží mimo repo (Tracing_Main/data) — cesty v příkazech jsou proto
+# absolutní a odvozují se z paths.py, ne z literálu.
 
 
 class TestBuildSolverCmd:
@@ -36,12 +40,13 @@ class TestBuildSolverCmd:
     def test_prediction_run_log(self):
         cmd = self._cmd()
         assert cmd[cmd.index("--run-log-path") + 1] == \
-            "data/prediction/results/run_log.jsonl"
+            (paths.PREDICTION_ROOT / "results" / "run_log.jsonl").as_posix()
 
     def test_orders_file_from_prediction_root(self):
         cmd = self._cmd(depot="PR", date_str="2026-08-03")
         assert cmd[cmd.index("--orders-file") + 1] == \
-            "data/prediction/prepared/PR/orders_PR_2026-08-03.csv"
+            (paths.PREDICTION_ROOT / "prepared" / "PR"
+             / "orders_PR_2026-08-03.csv").as_posix()
 
     def test_force_matrix_optional(self):
         assert "--force-matrix" not in self._cmd()
@@ -117,7 +122,7 @@ class TestRealHelpers:
             "MO", "2026-08-05", Path("f.csv"),
             {"capacity_multiplier": 1.0, "double_runs": False}, args)
         assert cmd[cmd.index("--output-dir") + 1] == \
-            "data/results/MO/2026-08-05_test"
+            (paths.RESULTS_ROOT / "MO" / "2026-08-05_test").as_posix()
         assert cmd[cmd.index("--run-log-path") + 1] == "x/log.jsonl"
 
     def test_orders_from_real_prepared(self):
@@ -125,7 +130,7 @@ class TestRealHelpers:
             "PR", "2026-08-05", Path("f.csv"),
             {"capacity_multiplier": 1.0, "double_runs": False}, self._args())
         assert cmd[cmd.index("--orders-file") + 1] == \
-            "data/prepared/PR/orders_PR_2026-08-05.csv"
+            (paths.PREPARED_ROOT / "PR" / "orders_PR_2026-08-05.csv").as_posix()
 
     def test_state_roundtrip(self, tmp_path):
         state = {"remaining": {"TYPE_02": 40}, "planned": ["CB"],

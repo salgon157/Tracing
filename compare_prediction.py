@@ -30,10 +30,11 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+import paths
 
-PREDICTION_LOG  = Path("data/prediction/results/run_log.jsonl")
-REAL_LOG        = Path("data/results/run_log.jsonl")
-COMPARISON_PATH = Path("data/prediction/results/comparison.jsonl")
+PREDICTION_LOG  = paths.PREDICTION_ROOT / "results" / "run_log.jsonl"
+REAL_LOG        = paths.RUN_LOG_PATH
+COMPARISON_PATH = paths.PREDICTION_ROOT / "results" / "comparison.jsonl"
 VEHICLE_TYPES   = None      # None = nejnovější vehicle_types-YYYYMMDD.csv
 
 # Poslední segment output_dir: {YYYY-MM-DD}, {YYYY-MM-DD}_{HHMM} nebo

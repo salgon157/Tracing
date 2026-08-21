@@ -26,8 +26,9 @@ import requests as _requests
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import date
+import paths
 
-CLOSURES_FILE    = Path("data/static/closures.json")
+CLOSURES_FILE    = paths.STATIC_DIR / "closures.json"
 PORT             = 8765
 ORS_URL          = "http://localhost:8080"
 ORS_PROFILE      = "driving-hgv"

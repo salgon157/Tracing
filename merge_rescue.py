@@ -52,6 +52,7 @@ from datetime import datetime
 from pathlib import Path
 
 import fleet_budget as fb
+import paths
 
 CONFIG = {
     "max_stops": 30,          # strop zastávek sloučené linky (dohodnuto 20. 8.)
@@ -63,9 +64,9 @@ CONFIG = {
     "break_min": 45,
     "solve_limit_s": 1,       # OR-Tools limit na jeden pár
     "budget_min": 5.0,        # budget přeplánování PR na jedno kolo
-    "results_root": "data/results",
-    "state_root":   "data/results/plan_day",
-    "prepared_root": "data/prepared",
+    "results_root": paths.RESULTS_ROOT.as_posix(),
+    "state_root":   (paths.RESULTS_ROOT / "plan_day").as_posix(),
+    "prepared_root": paths.PREPARED_ROOT.as_posix(),
     "zones": ["CB", "MO", "HK"],
 }
 

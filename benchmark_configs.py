@@ -33,6 +33,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from sklearn.cluster import KMeans
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
+import paths
 
 # ── Import solveru ────────────────────────────────────────────
 # Předpokládáme že vrp_solver_lines_v6.py je ve stejné složce.
@@ -171,7 +172,7 @@ def find_blocks(blocks_dir: Path) -> list:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--blocks-dir",     default="data/prepared",
+    parser.add_argument("--blocks-dir",     default=paths.PREPARED_ROOT.as_posix(),
                         help="Složka s orders_block_*.csv soubory")
     parser.add_argument("--vehicles-file",  default="",
                         help="Vozový park; prázdné = nejnovější vehicle_types-YYYYMMDD.csv")

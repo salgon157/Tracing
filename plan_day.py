@@ -42,13 +42,14 @@ from datetime import datetime
 from pathlib import Path
 
 import fleet_budget as fb
+import paths
 import l3_planner as l3
 from predict_day import depots_with_input, run_startup_tests_once, _fmt_num
 from prepare_inputs_v6 import find_active_riro_file
 from vrp_solver_lines_v6 import find_vehicle_types_file
 
 PY              = sys.executable
-PREDICTION_ROOT = Path("data/prediction")
+PREDICTION_ROOT = paths.PREDICTION_ROOT
 RUN_LOG         = PREDICTION_ROOT / "results" / "run_log.jsonl"
 PLAN_DAY_ROOT   = PREDICTION_ROOT / "results" / "plan_day"
 
@@ -583,7 +584,7 @@ def main_predict(args: argparse.Namespace) -> None:
 #  Fáze real — večerní ostrý běh podle decision
 # ─────────────────────────────────────────────────────────────────────────────
 
-REAL_ROOT = Path("data")
+REAL_ROOT = paths.DATA_ROOT
 
 
 def load_decision(date_str: str) -> dict:

@@ -12,9 +12,11 @@ argv[0] je konkrétní interpreter (sys.executable) — testujeme argv[1:]
 Spouštět:  python -m pytest webui/tests -q
 """
 
+from pathlib import Path
+
 import pytest
 
-from webui.app import commands
+from webui.app import commands, config
 
 
 def test_build_prepare_matches_workflow():
@@ -26,7 +28,8 @@ def test_build_solve_minimal_matches_workflow():
     argv = commands.build_solve("CB", "2026-04-29")
     assert argv[1:] == [
         "vrp_solver_lines_v6.py",
-        "--orders-file", "data/prepared/CB/orders_CB_2026-04-29.csv",
+        "--orders-file", (config.PREPARED_ROOT / "CB"
+                          / "orders_CB_2026-04-29.csv").as_posix(),
     ]
 
 
@@ -37,7 +40,8 @@ def test_build_solve_all_flags():
     s = argv[1:]
     assert s[0] == "vrp_solver_lines_v6.py"
     assert s[1] == "--orders-file"
-    assert s[2] == "data/prepared/PR/orders_PR_2026-04-29.csv"
+    assert s[2] == (config.PREPARED_ROOT / "PR"
+                    / "orders_PR_2026-04-29.csv").as_posix()
     assert "--budget-min" in s and s[s.index("--budget-min") + 1] == "5"
     assert "--force-matrix" in s
     assert "--fresh-osm" in s
@@ -64,11 +68,12 @@ def test_build_visualize_flags_no_open():
     assert "--fresh-osm" in argv
 
 
-def test_orders_rel_path_relative():
-    # Relativní cesta (cwd = kořen repa) → ručně reprodukovatelné.
+def test_orders_path_points_into_data_root():
+    # Data leží mimo repo → cesta je absolutní, pod PREPARED_ROOT.
     p = commands.orders_rel_path("MO", "2026-04-29")
-    assert p == "data/prepared/MO/orders_MO_2026-04-29.csv"
-    assert not p.startswith("/") and ":" not in p
+    assert p == (config.PREPARED_ROOT / "MO"
+                 / "orders_MO_2026-04-29.csv").as_posix()
+    assert Path(p).is_absolute()
 
 
 # ── all-depots ───────────────────────────────────────────────────────────────
