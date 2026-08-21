@@ -46,13 +46,35 @@ import statistics
 import subprocess
 import sys
 import time
+import shutil
 from datetime import datetime
 from pathlib import Path
+
+import paths
 
 PY = sys.executable
 DEPOTS_ALL = ["CB", "MO", "HK", "PR"]
 TOL_MEDIAN, TOL_MAX, TOL_WORST = 0.01, 0.02, 0.03
 TIME_SLACK_SEC = 60
+
+
+def prepare_baseline_data(baseline: Path) -> None:
+    """Uzavírky do worktree baseline — jediný vstup, který starý solver
+    nebere z CLI, ale ze cwd-relativní data/static/closures.json.
+
+    Data dnes leží mimo repo (paths.DATA_ROOT), takže worktree by jel na
+    verzi uzavírek ze svého commitu, nebo na žádných. Obě strany musí
+    počítat s TÝMIŽ uzavírkami, jinak porovnáváme jablka s hruškami.
+    """
+    src = paths.STATIC_DIR / "closures.json"
+    dst = baseline / "data" / "static" / "closures.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.exists():
+        shutil.copy2(src, dst)
+        print(f"  [i] uzavírky → {dst} (kopie z {src})")
+    else:
+        dst.write_text('{"version": 1, "closures": []}', encoding="utf-8")
+        print(f"  [i] {src} neexistuje → baseline jede bez uzavírek")
 
 
 def git_describe(directory: Path) -> dict:
@@ -188,6 +210,9 @@ def output_signature(out_dir: Path, zone: str) -> dict:
 def run_solver(script_dir: Path, orders: Path, out_dir: Path, fleet_file: Path,
                budget: float, osm: str, run_log: Path, console_log: Path,
                extra_args: list[str], env: dict, get_matrix_fn=None) -> dict:
+    # cwd = složka té strany: baseline (starý commit) skládá interní cesty
+    # relativně ke cwd, kandidát je bere z paths.py. Všechny vstupy i výstupy
+    # jsou stejně předané absolutně přes CLI.
     cmd = [PY, (script_dir / "vrp_solver_lines_v6.py").as_posix(),
            "--orders-file", orders.as_posix(),
            "--output-dir", out_dir.as_posix(),
@@ -199,7 +224,7 @@ def run_solver(script_dir: Path, orders: Path, out_dir: Path, fleet_file: Path,
     t0 = time.time()
     with open(console_log, "w", encoding="utf-8") as lf:
         rc = subprocess.run(cmd, env=env, stdout=lf, stderr=subprocess.STDOUT,
-                            cwd=os.getcwd()).returncode
+                            cwd=script_dir).returncode
     elapsed = time.time() - t0
     rec = {"rc": rc, "elapsed_sec": round(elapsed, 1), "cost_reported": None,
            "cost_true": None, "lines": None, "km": None, "hgv_repriced": 0,
@@ -321,6 +346,7 @@ def main() -> None:
     side_args = {"A": args.a_args.split(), "B": args.b_args.split()}
     if not (baseline / "vrp_solver_lines_v6.py").exists():
         raise SystemExit(f"[CHYBA] {baseline} není worktree se solverem")
+    prepare_baseline_data(baseline)
 
     if args.fleet_file:
         fleet_file = Path(args.fleet_file)
@@ -341,10 +367,14 @@ def main() -> None:
             print(f"  [!] přeceňování hgv km vypnuto ({e})")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    out_root = Path(args.out) if args.out else root / "data" / "results" / "_regression" / stamp
+    out_root = (Path(args.out) if args.out
+                else paths.RESULTS_ROOT / "_regression" / stamp)
     out_root.mkdir(parents=True, exist_ok=True)
     results_path = out_root / "results.jsonl"
-    env = {**os.environ, "SKIP_STARTUP_TESTS": "1", "PYTHONIOENCODING": "utf-8"}
+    # VRP_DATA_ROOT: kandidát ho poslechne (paths.py), baseline ho ignoruje
+    # — ten dostává všechny cesty absolutně přes CLI.
+    env = {**os.environ, "SKIP_STARTUP_TESTS": "1", "PYTHONIOENCODING": "utf-8",
+           "VRP_DATA_ROOT": str(paths.DATA_ROOT)}
     git_sides = {"A": git_describe(baseline), "B": git_describe(candidate)}
     meta = {
         "kind": "regression_ab", "harness": Path(__file__).name,
@@ -358,7 +388,8 @@ def main() -> None:
         },
         "dates": args.dates, "depots": args.depots, "reps": args.reps,
         "budget_min": args.budget, "osm_source": args.osm_source,
-        "fleet_file": str(fleet_file), "extras": bool(args.extras),
+        "fleet_file": str(fleet_file), "data_root": str(paths.DATA_ROOT),
+        "extras": bool(args.extras),
         "extras_date": args.extras_date if args.extras else None,
         "reprice_hgv": get_matrix_fn is not None, "only": args.only or None,
         "order": "ABAB per případ (A r1, B r1, A r2, B r2, …)",
@@ -384,20 +415,20 @@ def main() -> None:
     cases: list[dict] = []
     for d in args.dates:
         for depot in args.depots:
-            orders = root / "data" / "prepared" / depot / f"orders_{depot}_{d}.csv"
+            orders = paths.PREPARED_ROOT / depot / f"orders_{depot}_{d}.csv"
             if not orders.exists():
                 print(f"  [!] chybí {orders} — přeskakuji")
                 continue
             cases.append({"case": f"{depot} {d}", "orders": orders,
                           "fleet": fleet_file, "extra": []})
     if args.extras:
-        st = root / "data" / "results" / "plan_day" / args.extras_date
-        pr_orders = root / "data" / "prepared" / "PR" / f"orders_PR_{args.extras_date}.csv"
+        st = paths.RESULTS_ROOT / "plan_day" / args.extras_date
+        pr_orders = paths.PREPARED_ROOT / "PR" / f"orders_PR_{args.extras_date}.csv"
         if (st / "fleet_PR.csv").exists() and pr_orders.exists():
             cases.append({"case": f"PR {args.extras_date} dvojlinky",
                           "orders": pr_orders, "fleet": st / "fleet_PR.csv",
                           "extra": ["--double-runs", "--capacity-multiplier", "1.03"]})
-        l3_orders = root / "data" / "prepared" / "L3" / f"orders_L3_{args.extras_date}.csv"
+        l3_orders = paths.PREPARED_ROOT / "L3" / f"orders_L3_{args.extras_date}.csv"
         if (st / "fleet_L3.csv").exists() and l3_orders.exists():
             cases.append({"case": f"L3 {args.extras_date}", "orders": l3_orders,
                           "fleet": st / "fleet_L3.csv",
