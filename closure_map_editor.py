@@ -6,7 +6,7 @@ Spuštění:
   python closure_map_editor.py
 
 Otevře prohlížeč na http://localhost:8765
-Klikáš na mapu, server zapíše přímo do data/static/closures.json
+Klikáš na mapu, server zapíše přímo do ../data/uzavirky/closures.json
 
 Ovládání:
   Krok 1 — klikni na začátek uzavírky (červený bod)
@@ -28,7 +28,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import date
 import paths
 
-CLOSURES_FILE    = paths.STATIC_DIR / "closures.json"
+CLOSURES_FILE    = paths.CLOSURES_FILE
 PORT             = 8765
 ORS_URL          = "http://localhost:8080"
 ORS_PROFILE      = "driving-hgv"

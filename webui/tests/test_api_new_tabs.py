@@ -37,7 +37,7 @@ class TestFleet:
         assert d["source_file"] == "vehicle_types-20260806.csv"
 
     def test_two_files_reported_as_error(self, tmp_path, monkeypatch):
-        # v data/static smí být právě jeden — UI nesmí ukazovat jiný soubor,
+        # ve vozovy_park/aktivni smí být právě jeden — UI nesmí ukazovat jiný soubor,
         # než se kterým počítá solver (ten při víc souborech odmítne běžet)
         self._write(tmp_path / "vehicle_types-20260806.csv",
                     ["T1;Nova;1350;11.0;1000;50;Malé auto;driving;c;n;20260805\n"])

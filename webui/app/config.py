@@ -43,16 +43,16 @@ PREDICTION_RESULTS     = PREDICTION_ROOT / "results"
 PREDICTION_RUN_LOG     = PREDICTION_RESULTS / "run_log.jsonl"
 PREDICTION_COMPARISON  = PREDICTION_RESULTS / "comparison.jsonl"
 
-# Flotila a její archiv (config bez PII, verzovaný).
-# V data/static smí být PRÁVĚ JEDEN vehicle_types-*.csv — stejné pravidlo
-# jako v solveru. Který to je, řeší vrstva nad programem, ne my.
-VEHICLE_TYPES_DIR    = DATA_ROOT / "static"
+# Vozový park dne. Ve vozovy_park/aktivni smí být PRÁVĚ JEDEN
+# vehicle_types-*.csv — stejné pravidlo jako v solveru. Který to je,
+# řeší člověk (odkládá do archiv/), ne my.
+VEHICLE_TYPES_DIR    = paths.VOZOVY_PARK_AKTIVNI
 VEHICLE_TYPES_GLOB   = "vehicle_types-*.csv"
-VEHICLE_TYPES_ARCHIV = DATA_ROOT / "static" / "vehicle_types_archiv"
+VEHICLE_TYPES_ARCHIV = paths.VOZOVY_PARK_ARCHIV
 
 
 def vehicle_types_files() -> list[Path]:
-    """Všechny soubory vozového parku v data/static (má být právě jeden)."""
+    """Soubory vozového parku ve vozovy_park/aktivni (má být právě jeden)."""
     return sorted(VEHICLE_TYPES_DIR.glob(VEHICLE_TYPES_GLOB))
 
 WEBUI_DIR  = Path(__file__).resolve().parents[1]   # .../webui

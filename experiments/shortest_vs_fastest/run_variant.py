@@ -67,7 +67,7 @@ def main() -> None:
     out_dir = exp_out / f"{orders_file.stem}_{args.variant}_{stamp}"
     run_log = exp_out / "run_log.jsonl"
 
-    # Solver čte relativní cesty vůči kořeni repa (data/static/closures.json apod.)
+    # Solver bere cesty z paths.py (uzavírky atd.), cwd stačí kořen repa
     os.chdir(REPO_ROOT)
     sys.path.insert(0, str(REPO_ROOT))
 

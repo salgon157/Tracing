@@ -66,7 +66,7 @@ def prepare_baseline_data(baseline: Path) -> None:
     verzi uzavírek ze svého commitu, nebo na žádných. Obě strany musí
     počítat s TÝMIŽ uzavírkami, jinak porovnáváme jablka s hruškami.
     """
-    src = paths.STATIC_DIR / "closures.json"
+    src = paths.CLOSURES_FILE
     dst = baseline / "data" / "static" / "closures.json"
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.exists():
@@ -323,7 +323,7 @@ def main() -> None:
     ap.add_argument("--budget", type=float, default=5.0)
     ap.add_argument("--osm-source", default="current", choices=["current", "stable"])
     ap.add_argument("--fleet-file", default="",
-                    help="vozový park pro obě strany (default: aktivní v data/static)")
+                    help="vozový park pro obě strany (default: vozovy_park/aktivni)")
     ap.add_argument("--extras", action="store_true",
                     help="navíc PR s dvojlinkami (fleet_PR ze stavu 17. 8.) a L3 běh")
     ap.add_argument("--extras-date", default="2026-08-17")

@@ -23,11 +23,21 @@ REPO_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.environ.get("VRP_DATA_ROOT") or REPO_ROOT.parent / "data")
 
 # ── Odvozené kořeny (ostrý strom) ────────────────────────────────────────────
-STATIC_DIR      = DATA_ROOT / "static"        # vehicle_types-*.csv, closures.json
 INPUT_ROOT      = DATA_ROOT / "input"         # RiRo exporty per depo
 PREPARED_ROOT   = DATA_ROOT / "prepared"      # jediný autor: prepare_inputs_v6
 RESULTS_ROOT    = DATA_ROOT / "results"       # výstupy běhů (čte serverové UI)
 RUN_LOG_PATH    = RESULTS_ROOT / "run_log.jsonl"
+
+# ── Vozový park a uzavírky (dřív dohromady ve static/) ───────────────────────
+# Vzor „aktivni/ + archiv/": aktivní = jediný soubor v aktivni/, odložené
+# odkládá ČLOVĚK do archiv/ vedle ní, rodič zůstává prázdný. Stejně jako
+# input/{DEPO}/ a ridici/.
+VOZOVY_PARK_DIR     = DATA_ROOT / "vozovy_park"
+VOZOVY_PARK_AKTIVNI = VOZOVY_PARK_DIR / "aktivni"   # PRÁVĚ JEDEN vehicle_types-*.csv
+VOZOVY_PARK_ARCHIV  = VOZOVY_PARK_DIR / "archiv"
+
+UZAVIRKY_DIR  = DATA_ROOT / "uzavirky"
+CLOSURES_FILE = UZAVIRKY_DIR / "closures.json"      # jediný soubor, přepis na místě
 
 # ── Predikční strom (paralelní k ostrému) ────────────────────────────────────
 PREDICTION_ROOT = DATA_ROOT / "prediction"

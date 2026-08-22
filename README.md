@@ -146,7 +146,9 @@ Nic z něj se neverzuje.
 ├── prepared/{DEPO}/          solver-ready CSV + prepare_stats
 ├── results/{DEPO}/{datum}/   plány, mapy, run_log.jsonl
 ├── prediction/               tentýž strom pro predikce
-├── static/                   vehicle_types-YYYYMMDD.csv, closures.json
+├── vozovy_park/aktivni/      PRÁVĚ JEDEN vehicle_types-YYYYMMDD.csv
+│              └── archiv/    odložené parky (odkládá člověk)
+├── uzavirky/                 closures.json (jediný, přepis na místě)
 ├── ridici/aktivni/           registr auto+řidič z ESO9
 └── historie_objednavky/, historie_ridici/
 ```

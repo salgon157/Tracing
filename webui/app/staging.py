@@ -4,7 +4,7 @@ Staging RiRo uploadů do data/input/{depot}/aktivni/.
 Pravidla:
 - Název musí sedět na riro-YYYYMMDD-{DEPOT}.csv A depot token = cílové depo.
 - Neprázdná aktivni/ + force=False → 409 (seznam existujících).
-- force=True → existující se PŘESUNE do data/input/{depot}/archiv_webui/
+- force=True → existující se PŘESUNE do data/input/{depot}/archiv/
   ({stamp}_{název}) — NIKDY se nemaže.
 - Zápis atomicky: stream do {název}.part, pak os.replace.
 
@@ -39,7 +39,7 @@ def aktivni_dir(depot: str, base: Path | None = None) -> Path:
 
 
 def archiv_dir(depot: str, base: Path | None = None) -> Path:
-    return _base(base) / depot / "archiv_webui"
+    return _base(base) / depot / "archiv"
 
 
 def list_active(depot: str, base: Path | None = None) -> list[str]:

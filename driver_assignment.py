@@ -15,7 +15,7 @@ Vstupy (od 19. 8. 2026 — nový export z ESO):
                                               soubor; 1 řádek = 1 auto s jeho
                                               řidičem, vč. max_kg a type_code;
                                               PII — složka gitignored)
-  data/static/vehicle_types-YYYYMMDD.csv      vozový park dne — kontrola, že
+  vozovy_park/aktivni/vehicle_types-YYYYMMDD.csv   vozový park dne — kontrola, že
                                               type_code + max_kg registru sedí
                                               (tentýž den, táž DB), počty aut;
                                               bez type_code v registru se kód
@@ -128,7 +128,7 @@ HISTORY_REQUIRED = ["driver_code", "id_subj_adr", "adress_note", "visit_count"]
 def load_type_map(vehicle_types_file: Path | str | None = None) -> dict:
     """
     {(type_name, max_kg int): {"type_code", "available_count", "profile"}}
-    z vehicle_types-YYYYMMDD.csv (bez path: jediný soubor v data/static —
+    z vehicle_types-YYYYMMDD.csv (bez path: jediný ve vozovy_park/aktivni —
     tentýž, se kterým plánoval solver). Řídí se OBSAHEM souboru, žádná
     natvrdo psaná tabulka — přečíslování typů (TYPE_07 -> TYPE_06 19. 8.)
     tak nic nerozbije.
@@ -891,7 +891,7 @@ def main() -> None:
                     help="Explicitní historie řidič×adresa (default: jediný csv "
                          f"v {CONFIG['history_dir']}/)")
     ap.add_argument("--vehicle-types-file", default="",
-                    help="Vozový park dne (default: jediný v data/static)")
+                    help="Vozový park dne (default: jediný ve vozovy_park/aktivni)")
     ap.add_argument("--force", action="store_true",
                     help="Pokračovat i při neshodě registru s dnem/vozovým parkem")
     args = ap.parse_args()

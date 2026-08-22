@@ -11,11 +11,11 @@ Depot kódy: CB (České Budějovice), HK (Hradec Králové), MO (Morava),
             PR (Praha), OM (Ovoce a mléko — zatím bez RiRo dat/lokací).
 
 Statické soubory:
-  data/static/vehicle_types.csv → jeden řádek = jeden typ auta (kapacita, Kč/km,
+  vozovy_park/aktivni/vehicle_types-YYYYMMDD.csv → jeden řádek = jeden typ auta (kapacita, Kč/km,
                                   fixní náklad, available_count = sdílený pool)
-  data/static/closures.json     → aktivní uzavírky (objízdky)
+  uzavirky/closures.json        → aktivní uzavírky (objízdky)
 
-Pozn.: data/static/locations_*.csv už solver NEPOUŽÍVÁ — GPS i předpočítaný
+Pozn.: locations_*.csv (starý formát) už solver NEPOUŽÍVÁ — GPS i předpočítaný
 čas zastávky chodí přímo v RiRo souboru z ESO9 (od 17. 7. 2026).
 
 Poznámky:
@@ -219,7 +219,7 @@ CONFIG = {
     # Hodnota se za běhu přepíše na args.orders_file (viz main()).
     "orders_file":                   "",
     # Prázdné = automaticky nejnovější vehicle_types-YYYYMMDD.csv
-    # z data/static (find_vehicle_types_file). Přepsat lze --vehicle-types-file.
+    # z vozovy_park/aktivni (find_vehicle_types_file). Přepsat lze --vehicle-types-file.
     "vehicle_types_file":            "",
 
     # Časový buffer na každý úsek: fixní + procentuální (v OSRM/ORS matrici)
@@ -387,20 +387,20 @@ CONFIG = {
 # ============================================================
 
 
-# ── Vozový park: právě jeden soubor v data/static ────────────────────────────
+# ── Vozový park: právě jeden soubor ve vozovy_park/aktivni ───────────────────
 # Aktivní vozový park je `vehicle_types-*.csv` (středníky, sloupec
-# valid_for_date navíc) a ve složce smí být PRÁVĚ JEDEN. Který to je,
+# valid_for_date navíc) a v aktivni/ smí být PRÁVĚ JEDEN. Který to je,
 # neřeší tenhle program — postará se o to vrstva nad ním; my jen ověříme,
-# že je jednoznačný. Co neplatí, patří do `data/static/vehicle_types_archiv/`.
+# že je jednoznačný. Co neplatí, odkládá člověk do `vozovy_park/archiv/`.
 # Starý čárkový formát se odmítá — tichý fallback by znamenal plánování
 # na neaktuální flotile.
-VEHICLE_TYPES_DIR     = paths.STATIC_DIR
+VEHICLE_TYPES_DIR     = paths.VOZOVY_PARK_AKTIVNI
 VEHICLE_TYPES_PATTERN = "vehicle_types-*.csv"
 
 
 def find_vehicle_types_file(static_dir: Path | str | None = None) -> Path:
     """
-    Najde jediný soubor vozového parku v data/static.
+    Najde jediný soubor vozového parku ve vozovy_park/aktivni.
 
     Víc souborů je vada, ne situace k řešení heuristikou: kdyby program
     sám vybíral (podle data v názvu, času úpravy…), plánoval by podle
@@ -410,22 +410,31 @@ def find_vehicle_types_file(static_dir: Path | str | None = None) -> Path:
     # by nešla přepsat (testy, jiný kořen dat).
     static_path = Path(static_dir if static_dir is not None else VEHICLE_TYPES_DIR)
     found = sorted(static_path.glob(VEHICLE_TYPES_PATTERN)) if static_path.exists() else []
+    archiv = static_path.parent / "archiv"
+
+    # Hlídač nepořádku (jen ostrá cesta, ne testy): soubory MIMO aktivni/
+    # a archiv/ nikdo nečte — upozornit, ale neshodit běh.
+    if static_dir is None and paths.VOZOVY_PARK_DIR.exists():
+        loose = sorted(p.name for p in paths.VOZOVY_PARK_DIR.iterdir()
+                       if p.is_file())
+        if loose:
+            print(f"  [!] Ve {paths.VOZOVY_PARK_DIR} leží volné soubory "
+                  f"({', '.join(loose[:4])}{'…' if len(loose) > 4 else ''}) — "
+                  f"patří do aktivni/ nebo archiv/.")
 
     if not found:
         raise FileNotFoundError(
             f"[CHYBA] V {static_path} není žádný soubor vozového parku.\n"
             f"        Očekávám právě jeden {VEHICLE_TYPES_PATTERN} "
             f"(středníky, sloupec valid_for_date).\n"
-            f"        Co už neplatí, patří do "
-            f"{static_path / 'vehicle_types_archiv'}."
+            f"        Co už neplatí, patří do {archiv}."
         )
     if len(found) > 1:
         names = "\n".join(f"          - {f.name}" for f in found)
         raise ValueError(
             f"[CHYBA] V {static_path} je {len(found)} souborů vozového parku:\n"
             f"{names}\n"
-            f"        Nech tam PRÁVĚ JEDEN — ostatní přesuň do "
-            f"{static_path / 'vehicle_types_archiv'}.\n"
+            f"        Nech tam PRÁVĚ JEDEN — ostatní přesuň do {archiv}.\n"
             f"        Program schválně nevybírá sám: plánovat podle souboru,\n"
             f"        o kterém nikdo nerozhodl, je horší než se zastavit."
         )
@@ -477,7 +486,7 @@ def load_vehicle_types_db(path: str | None = None, block_id: str = "") -> list:
     Načte vozový park — každý řádek = jeden typ vozidla.
 
     Bez `path` si sám vezme nejnovější `vehicle_types-YYYYMMDD.csv`
-    z data/static (viz find_vehicle_types_file). Vrátí list
+    z vozovy_park/aktivni (viz find_vehicle_types_file). Vrátí list
     pseudo-vozidel expandovaných podle count_block_{block_id}
     (pokud sloupec existuje), jinak podle available_count.
     """
@@ -3404,7 +3413,7 @@ def parse_args():
                         help="Solver-ready orders CSV pro jeden block")
     parser.add_argument("--vehicle-types-file", default=CONFIG["vehicle_types_file"],
                         help="CSV s vozovým parkem (středníky). Bez zadání se "
-                             "vezme JEDINÝ soubor v data/static/ — víc souborů "
+                             "vezme JEDINÝ soubor ve vozovy_park/aktivni/ — víc souborů "
                              "je chyba, program mezi nimi nevybírá.")
     parser.add_argument("--output-dir", default="output",
                         help="Složka pro výstupy")

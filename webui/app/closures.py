@@ -1,5 +1,5 @@
 """
-Read-only přístup k uzavírkám (data/static/closures.json) + náhledová mapa.
+Read-only přístup k uzavírkám (../data/uzavirky/closures.json) + náhledová mapa.
 
 Veškeré MUTACE (toggle/remove/create/test) jdou přes existující nástroje
 (manage_closures.py subprocess, closure_map_editor.py) — tady se logika uzavírek
@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 
-from . import config
+from . import config  # noqa: F401  (zajistí sys.path na kořen repa)
 
-CLOSURES_JSON = config.DATA_ROOT / "static" / "closures.json"
+import paths
+
+CLOSURES_JSON = paths.CLOSURES_FILE
 
 
 def list_closures() -> dict:

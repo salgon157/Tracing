@@ -2,7 +2,7 @@
 /api/fleet/* — READ-ONLY pohled na flotilu.
 
 Přesně ten soubor, se kterým solver počítá náklady: nejnovější
-data/static/vehicle_types-YYYYMMDD.csv (středníky). UI ho jen zobrazuje —
+vozovy_park/aktivni/vehicle_types-YYYYMMDD.csv (středníky). UI ho jen zobrazuje —
 editace se dělá mimo web (validace by chtěla zvláštní pozornost). Archiv
 předchozích verzí je vedle.
 """
@@ -22,7 +22,7 @@ def _read_fleet(path) -> dict:
     """Řádky vozového parku + souhrn malá/velká. Tolerantní k absenci."""
     if path is None:
         return {"rows": [], "summary": {},
-                "error": "žádný vehicle_types-YYYYMMDD.csv v data/static"}
+                "error": "žádný vehicle_types-YYYYMMDD.csv ve vozovy_park/aktivni"}
     if not path.exists():
         return {"rows": [], "summary": {}, "error": f"{path.name} neexistuje"}
     try:
@@ -77,7 +77,7 @@ def fleet() -> dict:
         # UI nesmí ukazovat jiný soubor, než se kterým počítá solver —
         # ten při víc souborech odmítne běžet, tak to tu jen zobrazíme.
         return {"rows": [], "summary": {},
-                "error": f"v data/static je {len(files)} souborů vozového parku "
+                "error": f"ve vozovy_park/aktivni je {len(files)} souborů vozového parku "
                          f"({', '.join(f.name for f in files)}) — nech tam právě jeden"}
     return _read_fleet(files[0] if files else None)
 

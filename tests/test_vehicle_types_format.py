@@ -2,9 +2,9 @@
 test_vehicle_types_format.py — vozový park se středníky
 
 Aktivní vozový park je `vehicle_types-*.csv` (středníky místo čárek +
-sloupec `valid_for_date`) a v `data/static` smí být PRÁVĚ JEDEN. Program
+sloupec `valid_for_date`) a ve `vozovy_park/aktivni` smí být PRÁVĚ JEDEN. Program
 sám nevybírá — víc souborů je vada, kterou nahlásí; který soubor tam bude,
-řeší vrstva nad ním. Co neplatí, patří do `vehicle_types_archiv/`.
+řeší vrstva nad ním. Co neplatí, odkládá člověk do `vozovy_park/archiv/`.
 
 Starý čárkový formát se odmítá jasnou chybou — tichý fallback by znamenal
 plánování s prázdnou flotilou nebo na neaktuálních počtech aut.
@@ -158,7 +158,7 @@ class TestOldFormatRejected:
 
 class TestRealFleetFile:
     def test_production_file_loads(self):
-        # ostrý soubor v data/static musí jít načíst — jinak nepojede nic
+        # ostrý soubor ve vozovy_park/aktivni musí jít načíst — jinak nepojede nic
         path = find_vehicle_types_file()
         vehicles = load_vehicle_types_db(str(path))
         assert vehicles, "vozový park je prázdný"

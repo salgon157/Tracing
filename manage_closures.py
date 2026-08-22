@@ -22,7 +22,7 @@ from pathlib import Path
 from datetime import date
 import paths
 
-CLOSURES_FILE = paths.STATIC_DIR / "closures.json"
+CLOSURES_FILE = paths.CLOSURES_FILE
 
 
 # ============================================================

@@ -17,8 +17,12 @@ import regression_ab as R
 
 
 @pytest.fixture
-def spy_run(monkeypatch):
-    """Zachytí argv a cwd místo spuštění solveru."""
+def spy_run(monkeypatch, tmp_path):
+    """Zachytí argv a cwd místo spuštění solveru.
+
+    Zároveň přepne cwd do tmp_path — run_solver zakládá out_dir, a relativní
+    cesty by jinak vznikaly v OSTRÝCH datech (stalo se: _regression/x)."""
+    monkeypatch.chdir(tmp_path)
     seen = {}
 
     def fake_run(cmd, **kw):
@@ -37,7 +41,7 @@ def _call(tmp_path, spy_run, **over):
         script_dir=script_dir,
         orders=Path("../data/prepared/CB/orders_CB_2026-08-17.csv"),
         out_dir=Path("../data/results/_regression/x/A/CB_r1"),
-        fleet_file=Path("../data/static/vehicle_types-20260821.csv"),
+        fleet_file=Path("../data/vozovy_park/aktivni/vehicle_types-20260821.csv"),
         budget=1, osm="current",
         run_log=Path("../data/results/_regression/x/run_log_A.jsonl"),
         console_log=tmp_path / "konzole.log",

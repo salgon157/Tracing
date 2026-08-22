@@ -88,7 +88,7 @@ počtu sloupců):
   i do výstupů solveru (`lines_stops.csv`, sloupec `Rampa` v XLSX);
   `prepare_stats` hlásí `ramp_orders`.
 - Proti starému formátu **zanikly**: telefon, e-mail a textová poznámka o rampě.
-- `../data/static/locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
+- `locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
   (`build_static_data.py` a `convert_to_riro.py` jsou legacy, jen se nemažou.)
 - **Starší formáty** (30/31/32 sloupců, do 12. 8. 2026) jsou odmítnuty jasnou
   chybou. Archiv: `../data/input/{DEPOT}/archiv_stary_format/`.
@@ -589,7 +589,7 @@ Přepínače: `--depots CB,MO,HK,PR`, `--budget-ratios 0.35,0.25,0.40`,
 python closure_map_editor.py     # klikací mapa v prohlížeci -> zapisuje closures.json
 python manage_closures.py        # CLI sprava
 ```
-Aktivní uzavírky (`../data/static/closures.json`) solver i vizualizér berou
+Aktivní uzavírky (`../data/uzavirky/closures.json`) solver i vizualizér berou
 automaticky — **podle dne závozu** (z názvu orders souboru / složky
 výsledků), ne podle dneška: plán se počítá den předem, takže uzavírka
 začínající zítra už v něm je a dnes končící už ne (od 17. 8.). Když ORS
@@ -603,11 +603,11 @@ verzován**.
 
 ## 6. Vozový park a náklady vozidel
 
-**V `../data/static/` smí být PRÁVĚ JEDEN `vehicle_types-*.csv`** — ten se
+**Ve `../data/vozovy_park/aktivni/` smí být PRÁVĚ JEDEN `vehicle_types-*.csv`** — ten se
 použije. Program **sám nevybírá**: víc souborů je vada, kterou nahlásí
 a zastaví se. Který soubor tam bude, řeší vrstva nad ním; plánovat podle
 souboru, o kterém nikdo nerozhodl, je horší než se zastavit.
-Co už neplatí, přesuň do `../data/static/vehicle_types_archiv/`.
+Co už neplatí, přesuň do `../data/vozovy_park/archiv/`.
 
 Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 
@@ -628,7 +628,8 @@ Formát: **středníky** (`;`), kódování UTF-8, hlavička povinná.
 > **Pozor na Excel.** `cost_per_km` má hodnoty jako `17.4` — české locale je
 > zobrazí jako 17. duben. Prohlížet soubor můžeš, ale **neukládej ho z Excelu**;
 > uložením se to zobrazení zapíše natvrdo. Uprav ho v textovém editoru, nebo
-> exportuj z ESO9 znovu. `git diff` na `../data/static/` ukáže, jestli se změnil.
+> exportuj z ESO9 znovu (soubor už není v gitu — porovnej s archivem
+> ve `../data/vozovy_park/archiv/`).
 - Který soubor běh použil, je vidět v konzoli (`Vozový park: …`) a v run logu.
 - Ruční volba jiného souboru: `--vehicle-types-file CESTA`.
 - Starý `count_block_{DEPOT}` byl fikce a je odstraněn.
@@ -649,7 +650,7 @@ python driver_assignment.py 2026-08-19 --force      # přes neshodu registru s d
 | soubor | co | pravidlo |
 |---|---|---|
 | `../data/ridici/aktivni/vehicles-active-YYYYMMDD.csv` | registr **AUTO + ŘIDIČ** z ESO (1 řádek = 1 auto se svým řidičem): `driver` (kód = klíč do historie), `vehicle_type`, **`max_kg`** + **`type_code`** (TYPE kód z téže DB, která generuje `vehicle_types`; bez `type_code` se odvodí z (typ, nosnost) — bez obojího chyba), `dny_pouzitelnosti`, `dostupnost_od/do`, `km_plan_mes/rok`, `km_aktual_mes/rok`, `driver_quality`, `driver_km_to_depot`, `valid_for_date` | právě jeden soubor; `.xlsx` = starý formát → jasná chyba |
-| `../data/static/vehicle_types-YYYYMMDD.csv` | vozový park dne — křížová kontrola `type_code` + `max_kg` + typ registru, `available_count` pro kontrolu počtů | týž soubor, se kterým plánoval solver; **žádná natvrdo psaná mapa typů** — kódy se mezi dny přečíslovávají (19. 8. TYPE_07→TYPE_06, 20. 8. znovu), proto registr a park musí být z téhož dne; neshoda = stop (`--force` = kódy z registru tak, jak jsou) |
+| `../data/vozovy_park/aktivni/vehicle_types-YYYYMMDD.csv` | vozový park dne — křížová kontrola `type_code` + `max_kg` + typ registru, `available_count` pro kontrolu počtů | týž soubor, se kterým plánoval solver; **žádná natvrdo psaná mapa typů** — kódy se mezi dny přečíslovávají (19. 8. TYPE_07→TYPE_06, 20. 8. znovu), proto registr a park musí být z téhož dne; neshoda = stop (`--force` = kódy z registru tak, jak jsou) |
 | `../data/historie_ridici/driver-address-visits.csv` | historie **řidič × adresa**: `driver_code;id_subj_adr;adress_note;visit_count` | právě jeden pravdivý soubor; `id_subj_adr` = `eso_col7` objednávky (ověřeno 1013/1013), `adress_note` = `location_code` |
 | `../data/results/{DEPO}/{DATUM}/` (+ `L3/`) | `lines_summary.csv` + `lines_stops.csv` | zastávka se s historií páruje přes id adresy z `../data/prepared/{DEPO}/orders_{DEPO}_{DATUM}.csv`, bez něj přes `location_code` |
 
@@ -693,6 +694,30 @@ zastávek jede řidič, který tam už jezdil.
 
 ---
 
+## 6b. Datový řád — jedna konvence pro celou data/
+
+Aby v datech šlo hledat a chování bylo všude stejné (sjednoceno 22. 8. 2026):
+
+1. **Vstupy se vzorem `aktivni/` + `archiv/`** — aktivní = JEDINÝ soubor
+   v `aktivni/`, co neplatí, odkládá ČLOVĚK do `archiv/` vedle ní, rodič
+   zůstává prázdný. Platí pro `input/{DEPO}/`, `vozovy_park/`, `ridici/`
+   (i pro predikční `prediction/input/{DEPO}/`). Programy z rodiče nikdy
+   nečtou; volné soubory mimo aktivni/archiv jen vypíšou jako varování.
+2. **Soubory přepisované na místě, bez archivu**: `uzavirky/closures.json`,
+   `historie_objednavky/`, `historie_ridici/` — jediná pravdivá verze.
+3. **`results/{DEPO}/`** obsahuje jen ostré běhy (`YYYY-MM-DD`) a označené
+   porovnávací běhy (`YYYY-MM-DD_label`). Služby dne (`plan_day/`,
+   `driver_assignment/`, `L3/`, `run_log.jsonl`) zůstávají vedle dep.
+   **Vše servisní začíná podtržítkem**: `_regression/`, `_bench_cost_matrix/`,
+   `_ab_finalists/`, `_archiv/`.
+4. **Archivy výstupů**: `results/_archiv/{DEPO}/` = staré, ale platné běhy
+   (jdou otevřít vizualizací). `data/_archiv/legacy/` = mrtvé formáty a
+   výstupy zrušených nástrojů — drží se jen proto, aby se nic neztratilo.
+5. **Nikdo nemaže.** Přesuny do archivu dělá člověk ručně; retence
+   (automatické mazání po čase) zatím není zavedená.
+
+---
+
 ## 7. Git a osobní údaje (GDPR) — DŮLEŽITÉ
 
 **Do gitu NIKDY nejdou osobní údaje.** Od 21. 8. 2026 to řeší struktura, ne
@@ -713,7 +738,8 @@ Tracing_Main/
   `locations_*`, `vehicle_registry*`, `vehicles-active*`, `historie_*`.
 - **`closures.json` a `vehicle_types-*.csv` se od 21. 8. 2026 taky
   neverzují** — jsou to provozní data, mění se denně a chodí z ESO9.
-  Žijí v `../data/static/`. Starší verze jsou dohledatelné v git historii.
+  Žijí v `../data/uzavirky/` a `../data/vozovy_park/aktivni/`. Starší verze
+  jsou v git historii a ve `vozovy_park/archiv/`.
 - Repo je **Private**.
 
 Commitujeme **při milnících** (dokončená feature / opravený bug / funkční stav),
@@ -774,6 +800,15 @@ python -m pytest tests -q --ignore tests/test_ors_hgv_integration.py
 
 Checkout **nesahá na data** — leží o úroveň výš, mimo pracovní strom repa.
 Vrácení na předchozí verzi = `git checkout <starší tag>`.
+
+**Co se DO systému vkládá** (vzor `aktivni/` + `archiv/`, viz Datový řád 6b):
+
+| co | kam |
+|---|---|
+| RiRo export dne | `../data/input/{DEPO}/aktivni/` — právě jeden CSV |
+| vozový park dne | `../data/vozovy_park/aktivni/` — právě jeden `vehicle_types-YYYYMMDD.csv` |
+| registr auto+řidič | `../data/ridici/aktivni/` — právě jeden `vehicles-active-*.csv` |
+| historie závozů / řidičů | `../data/historie_objednavky/`, `../data/historie_ridici/` — přepis na místě |
 
 **Co ze systému čte vnější svět** (formáty se nemění, jen se posunulo
 umístění o úroveň výš):

@@ -8,7 +8,7 @@ Nic v existujících skriptech se nemění — jde o samostatný konverzní nás
 
 Vstupy:
   data/results/CB/2026-04-10/lines_stops.csv        ← výstup solveru
-  data/static/locations_lookup.csv                  ← adresy, ZIP, město
+  _archiv/legacy/static/locations_lookup.csv        ← adresy, ZIP, město (LEGACY)
 
 Výstup:
   data/results/CB/2026-04-10/converted/riro_CB_2026-04-10.csv
@@ -16,7 +16,7 @@ Výstup:
 Použití:
   python convert_to_riro.py data/results/CB/2026-04-10
   python convert_to_riro.py data/results/CB/2026-04-10 --encoding cp1250
-  python convert_to_riro.py data/results/HK/2026-04-16 --locations-file data/static/locations_HK.csv
+  python convert_to_riro.py ../data/results/HK/2026-04-16 --locations-file <cesta k locations CSV>
 """
 
 import csv
@@ -243,8 +243,9 @@ def main():
     )
     parser.add_argument(
         "--locations-file",
-        default=(paths.STATIC_DIR / "locations_lookup.csv").as_posix(),
-        help="CSV s adresami a GPS lokací (default: data/static/locations_lookup.csv)"
+        default=(paths.DATA_ROOT / "_archiv" / "legacy" / "static"
+                 / "locations_lookup.csv").as_posix(),
+        help="CSV s adresami a GPS lokací (LEGACY, default v _archiv/legacy/static)"
     )
     parser.add_argument(
         "--encoding",

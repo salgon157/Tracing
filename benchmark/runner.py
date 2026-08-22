@@ -728,7 +728,7 @@ Doporučený postup (dvě fáze):
     parser.add_argument(
         "--vehicles-file", default="",
         metavar="CSV",
-        help="Vozový park; prázdné = nejnovější data/static/vehicle_types-YYYYMMDD.csv",
+        help="Vozový park; prázdné = jediný ve vozovy_park/aktivni",
     )
     parser.add_argument(
         "--top", type=int, default=0,

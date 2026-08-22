@@ -1,14 +1,16 @@
 """
-build_static_data.py — vytvoří statická CSV z dodaných Excel databází
+build_static_data.py — LEGACY (starý formát; pipeline tyto soubory už nečte)
+=============================================================================
+Vytvoří statická CSV z dodaných Excel databází
 =====================================================================
 Vstupy:
   Databáze - Vozidla.xlsx
   Lokace CB.xlsx
 
 Výstupy:
-  data/static/vehicle_registry.csv
-  data/static/vehicle_types.csv
-  data/static/locations_lookup.csv
+  _archiv/legacy/static/vehicle_registry.csv
+  _archiv/legacy/static/vehicle_types.csv
+  _archiv/legacy/static/locations_lookup.csv
 
 Poznámka:
 - cost_per_km ve vehicle_types.csv je zatím inherited default z předchozího projektu.
@@ -21,7 +23,7 @@ import paths
 
 VEHICLES_XLSX = Path("Databáze - Vozidla.xlsx")
 LOCATIONS_XLSX = Path("Lokace CB.xlsx")
-STATIC_DIR = paths.STATIC_DIR
+STATIC_DIR = paths.DATA_ROOT / "_archiv" / "legacy" / "static"
 
 
 def assumed_cost(weight: int) -> float:

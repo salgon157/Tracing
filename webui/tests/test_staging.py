@@ -83,7 +83,7 @@ def test_force_archives_old(tmp_path):
                              force=True, base=tmp_path)
     assert r["active"] == ["riro-20260718-CB.csv"]
     assert len(r["archived"]) == 1
-    arch = tmp_path / "CB" / "archiv_webui"
+    arch = tmp_path / "CB" / "archiv"
     archived = list(arch.iterdir())
     assert len(archived) == 1
     assert archived[0].name.endswith("_riro-20260717-CB.csv")   # nesmazáno, odsunuto
