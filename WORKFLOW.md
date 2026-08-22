@@ -794,7 +794,7 @@ cd vrp_benchmark ; pip install -r requirements.txt
 ```powershell
 cd C:\...\Tracing_Main\vrp_benchmark
 git fetch --tags
-git checkout v1.0.0        # konkrétní otagovaná verze, ne "main"
+git checkout v1.1.0        # konkrétní otagovaná verze, ne "main"
 python -m pytest tests -q --ignore tests/test_ors_hgv_integration.py
 ```
 
