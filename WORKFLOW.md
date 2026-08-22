@@ -89,7 +89,8 @@ počtu sloupců):
   `prepare_stats` hlásí `ramp_orders`.
 - Proti starému formátu **zanikly**: telefon, e-mail a textová poznámka o rampě.
 - `locations_*.csv` už **NEJSOU potřeba** — GPS chodí v riro.
-  (`build_static_data.py` a `convert_to_riro.py` jsou legacy, jen se nemažou.)
+  (Legacy nástroje kolem nich byly 22. 8. z repa odstraněny — git historie
+  je drží, viz README sekce Legacy.)
 - **Starší formáty** (30/31/32 sloupců, do 12. 8. 2026) jsou odmítnuty jasnou
   chybou. Archiv: `../data/input/{DEPOT}/archiv_stary_format/`.
 - Historické `orders_*.csv` z dubna/července **nejde spustit** — nemají `service_sec`.
@@ -903,15 +904,16 @@ vznikají volbou vítězného seedu fáze C — proto medián ze 3 opakování.
 Takhle se 17. 8. chytilo, že slack 120 min zhoršuje plány (viz
 `--time-slack-max`).
 
-**Benchmark nákladové matice (vlna 4, `legacy` vs `exact`)** — týž
-solver, jiný `--cost-matrix-mode`; rozhoduje o defaultu `cost_matrix_mode`
-(exact jen když projde stejné přísné kritérium):
+**Benchmark nákladové matice (vlna 4, `legacy` vs `exact`)** — HOTOVO,
+rozhodnuto 18. 8. (exact = default, výsledky níž). Jednorázový harness
+(`benchmark_cost_matrix.py` + noční skript) byl 22. 8. z repa odstraněn
+(git historie ho drží); stejné srovnání dnes umí regresní A/B:
 
 ```powershell
-.\overnight_cost_matrix.ps1                    # 108 běhů ≈ 10 h; -Budget 3 ≈ 6 h
-# ručně: python benchmark_cost_matrix.py --dates … --depots … --reps 3 --budget 5
+# obě strany = pracovní kopie, liší se jen režimem nákladové matice
+python regression_ab.py --baseline-dir . --a-args "--cost-matrix-mode legacy" --b-args "--cost-matrix-mode exact" --dates 2026-08-17 --depots CB MO HK PR --reps 3 --budget 5
 ```
-Report `../data/results/_bench_cost_matrix/<stamp>/report.md`.
+Reporty historických běhů: `../data/results/_bench_cost_matrix/<stamp>/report.md`.
 
 **Výsledek 18. 8. 2026 (108 běhů, 8,4 h): PASS 18/18 → `exact` je DEFAULT.**
 Exact levnější ve 13/18 případů, dražší ve 2 (nejvýš +0,80 %), shodný ve 3;

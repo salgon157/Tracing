@@ -95,21 +95,21 @@ proto se plánují odděleně.
 | **`osrm_orchestrator.py`, `update_osrm.py`** | Vnitřek té přestavby (Docker, Geofabrik download, osrm-extract/partition/customize). |
 | **`closures_utils.py`, `manage_closures.py`, `closure_map_editor.py`** | Uzavírky/objízdky: aplikace na matici, CLI správa, klikací mapový editor (port 8765). |
 | **`vrp_solver_lines_all_depots_v6.py`** | Varianta plánující všechna depa jako jeden velký problém (sdílený pool aut). |
-| **`benchmark_all_depots_solver_v6.py`, `benchmark/runner.py`** | Benchmark výkonnosti solveru. Jedou na **`stable`** mapě, aby byla měření porovnatelná v čase. |
+| **`benchmark_all_depots_solver_v6.py`** | Benchmark all-depots varianty (jede na **`stable`** mapě). Dnešní benchmark solveru je `regression_ab.py` (WORKFLOW 8). |
 | **`webui/`** | FastAPI + vanilla JS. 8 tabů (denní běh, predikce, benchmarky, výsledky, uzavírky, flotila, prostředí, úlohy). Spouští CLI skripty jako joby. |
 
-### Legacy / nepoužívané
+### Legacy / odstraněné z repa (22. 8. 2026)
 
-Zůstávají v repu kvůli historii, **v pipeline se nepoužívají**:
-
-| skript | proč legacy |
-|---|---|
-| `vrp_solver_lines_invalid(DoNotUse).py` | Stará verze solveru, nespouštět. |
-| `build_static_data.py` | Stavěl `locations_*.csv` z Excelů. GPS dnes chodí přímo v RiRo, soubor už pipeline nepotřebuje. |
-| `convert_to_riro.py` | Jednorázová konverze výsledků do formátu konkurenčního nástroje (RiNkai) kvůli porovnání. |
-| `export_prepare.py` | Jednorázový generátor offline ZIP balíčku s mapou. |
-| `benchmark_configs.py` | Jednorázový experiment (hledání optimálního rozdělení solver budgetu). |
-| `experiments/` | Uzavřený experiment „nejkratší vs. nejrychlejší trasy" + jeho report. Mimo hlavní flow. |
+Jednorázové a překonané nástroje byly z repa smazány — **git historie je
+drží navždy**; obnovení: `git show v1.1.0:<soubor>`. Šlo o: starou verzi
+solveru (`vrp_solver_lines_invalid`), generátor mrtvého formátu
+(`build_static_data`), konverzi pro porovnání s konkurencí
+(`convert_to_riro`), offline export map (`export_prepare`), jednorázové
+benchmarky (`benchmark_configs`, `compare_seed_finalists`,
+`benchmark_cost_matrix` + noční skript, blokový `benchmark/` runner,
+`investigate_phase_d`), uzavřený experiment `experiments/shortest_vs_fastest`
+a implementovaný audit `AUDIT_2026-08-14.md`. Výsledky měření zůstávají
+zapsané ve WORKFLOW a v `../data/` archivech.
 
 ---
 
