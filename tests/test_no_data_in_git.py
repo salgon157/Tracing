@@ -10,6 +10,7 @@ Test je součástí startup brány (běží pod sekundu) — chytí to v okamži
 kdy to vznikne, ne až při auditu.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -114,15 +115,23 @@ class TestDataRoot:
             f"data ({paths.DATA_ROOT}) nesmí ležet uvnitř repa ({REPO_ROOT})"
 
     def test_env_override(self, monkeypatch, tmp_path):
-        # VRP_DATA_ROOT se čte při importu — ověřujeme samotné pravidlo
-        monkeypatch.setenv("VRP_DATA_ROOT", str(tmp_path))
+        # VRP_DATA_ROOT se čte při importu — ověřujeme samotné pravidlo.
+        # Pozor na úklid: proměnná může být nastavená UŽ PŘED testem
+        # (sandbox běhy nad kopií dat) — musí se vrátit původní hodnota,
+        # ne smazat. Smazání by reload přestavilo na živý default a všechny
+        # další testy v sadě by porovnávaly proti jinému kořeni.
         import importlib
-        reloaded = importlib.reload(paths)
+        puvodni = os.environ.get("VRP_DATA_ROOT")
+        monkeypatch.setenv("VRP_DATA_ROOT", str(tmp_path))
         try:
+            reloaded = importlib.reload(paths)
             assert reloaded.DATA_ROOT == tmp_path
             assert reloaded.PREPARED_ROOT == tmp_path / "prepared"
         finally:
-            monkeypatch.delenv("VRP_DATA_ROOT")
+            if puvodni is None:
+                monkeypatch.delenv("VRP_DATA_ROOT")
+            else:
+                monkeypatch.setenv("VRP_DATA_ROOT", puvodni)
             importlib.reload(paths)
 
     def test_ensure_data_root_explains_structure(self, monkeypatch, tmp_path):
