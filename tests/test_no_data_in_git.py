@@ -72,6 +72,39 @@ def test_gitignore_blocks_data_dir():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  Ve složce s kódem nesmí vzniknout data — ani negitovaná
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Nestačí .gitignore: repo se klonuje na server a checkout verze nesmí
+# potkat cizí soubory. Výstupy patří pod paths.DATA_ROOT, dočasné věci
+# (baseline worktree pro A/B) mimo projekt.
+FORBIDDEN_IN_REPO = [
+    "data",                                   # celý datový strom
+    "benchmark/results",                      # výstupy benchmark runneru
+    "webui/jobs",                             # runtime joby webui
+    "experiments/shortest_vs_fastest/results",
+    "benchmark_results.csv",
+    "benchmark_summary.txt",
+]
+
+
+class TestNoDataDirsInRepo:
+    @pytest.mark.parametrize("rel", FORBIDDEN_IN_REPO)
+    def test_path_does_not_exist(self, rel):
+        p = REPO_ROOT / rel
+        assert not p.exists(), (
+            f"{rel} leží uvnitř repa — do vrp_benchmark nepatří žádná data.\n"
+            f"Přesuň to pod {paths.DATA_ROOT} a oprav skript, který to zapsal.")
+
+    def test_no_baseline_worktree_inside_repo(self):
+        found = [d.name for d in REPO_ROOT.glob("_baseline_*") if d.is_dir()]
+        assert not found, (
+            f"Baseline worktree v repu: {found}. Checkout starého commitu s sebou "
+            f"nese staré data/static — zakládej ho v %TEMP%, ne tady "
+            f"(viz regression_ab.py / overnight_regression.ps1).")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  Datový kořen a přechodová pojistka pro staré cesty
 # ═════════════════════════════════════════════════════════════════════════════
 

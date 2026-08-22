@@ -18,9 +18,10 @@
 # Vystup: data\results\_regression\<stamp>\report.md (+ results.jsonl per beh)
 #         a log data\results\overnight_<stamp>.log
 #
-# BASELINE = DOCASNY git worktree _baseline_4f0f879 (vypis stareho commitu). Skript
-# ho zalozi jen pro tento beh a na konci ho zase ODSTRANI - v projektu po nem nic
-# nezustane; vysledky lezi v data\results\_regression, ne ve worktree.
+# BASELINE = DOCASNY git worktree stareho commitu, zakladany v %TEMP% - do
+# vrp_benchmark nepatri zadna data ani checkouty starych commitu (ty s sebou
+# nesou stare data/static). Skript ho zalozi jen pro tento beh a na konci
+# ODSTRANI; vysledky lezi v ..\data\results\_regression, ne ve worktree.
 param(
     [double]$Budget = 5,
     [int]$Reps = 3,
@@ -38,7 +39,7 @@ $env:SKIP_STARTUP_TESTS = "1"
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Set-Location $PSScriptRoot
 
-$baseDir = "_baseline_$BaselineCommit"
+$baseDir = Join-Path $env:TEMP "vrp_baseline_$BaselineCommit"
 if (-not (Test-Path "$baseDir\vrp_solver_lines_v6.py")) {
     Write-Host "Baseline worktree - vytvarim DOCASNE: git worktree add --detach $baseDir $BaselineCommit"
     git worktree add --detach $baseDir $BaselineCommit

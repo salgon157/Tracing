@@ -812,20 +812,25 @@ nastartování routing instance (ověří ORS vs OSRM).
 
 Před uzavřením větší změny solveru: solver z pinnutého commitu vs pracovní
 kopie na TÝCHŽ prepared souborech, vozovém parku, routing instanci a
-budgetu, střídavě (ABAB). Baseline = git worktree `_baseline_<commit>/`,
-skript si ho založí sám.
+budgetu, střídavě (ABAB). Baseline = git worktree starého commitu, který
+si skript založí sám — **v `%TEMP%`, nikdy uvnitř repa**.
 
-> ⛔ **`_baseline_*/` je DOČASNÝ archiv, NESAHAT.** Není součást projektu:
-> je to výpis starého commitu jen pro měření. `overnight_regression.ps1`
-> ho založí na začátku běhu a **na konci sám odstraní** — v projektu po
-> něm nic nezůstane (výsledky jsou v `../data/results/_regression/…`).
-> Během běhu: needitovat (změna zkreslí výsledky), nespouštět odsud ostrý
-> běh, necommitovat — složka je v `.gitignore`, uvnitř má
-> `_NESAHAT_ARCHIV.md`, a `pytest.ini` (`norecursedirs`) ji vynechává,
-> takže ani holé `pytest` ji nesbírá. Kdyby po přerušeném běhu zůstala:
-> `git worktree remove --force _baseline_4f0f879; git worktree prune`.
-> Jiná baseline: `-BaselineCommit <hash>` (po delším provozu vln 0–4 dává
-> smysl `f14a3c5`, exact default); `-KeepBaseline` ji po běhu nechá.
+> ⛔ **Baseline worktree do `vrp_benchmark` NEPATŘÍ.** Výpis starého commitu
+> s sebou nese tehdejší `data/static` (vozový park, uzavírky), a ve složce
+> s kódem nesmí ležet žádná data. Proto `%TEMP%\vrp_baseline_<commit>`;
+> `regression_ab.py` cestu uvnitř repa **odmítne**. `overnight_regression.ps1`
+> worktree založí na začátku běhu a na konci sám odstraní; výsledky jsou
+> v `../data/results/_regression/…`, takže se mazání netýká ničeho cenného.
+> Během běhu ho needitovat (změna zkreslí výsledky). Kdyby po přerušeném
+> běhu zůstal: `git worktree remove --force $env:TEMP\vrp_baseline_<commit>;
+> git worktree prune`.
+> Jiná baseline: `-BaselineCommit <hash>`; `-KeepBaseline` ji po běhu nechá.
+
+> ⚠️ **Cesty do solveru musí být absolutní.** Každá strana běží ze své
+> složky (kandidát z kořene repa, baseline z worktree), takže relativní
+> `--out ..\data\...` by u každé znamenalo jinou složku a půlka výsledků
+> by se ztratila. `regression_ab.py` si proto všechny cesty převádí na
+> absolutní sám (hlídá `tests/test_regression_ab.py`).
 
 ```powershell
 # přes noc (notebook v zásuvce, nic jiného neběží, Docker Desktop + ORS/OSRM zapnuté):
@@ -833,7 +838,9 @@ skript si ho založí sám.
                                               # + extras (PR dvojlinky, L3), budget 5 ≈ 10 h
 .\overnight_regression.ps1 -Budget 3 -Reps 3  # ≈ 6 h
 # ručně / jiná baseline:
-python regression_ab.py --baseline-dir _baseline_4f0f879 --dates 2026-08-13 --depots HK --reps 1 --budget 1
+git worktree add --detach "$env:TEMP\vrp_baseline_4f0f879" 4f0f879
+python regression_ab.py --baseline-dir "$env:TEMP\vrp_baseline_4f0f879" --dates 2026-08-13 --depots HK --reps 1 --budget 1
+git worktree remove --force "$env:TEMP\vrp_baseline_4f0f879"; git worktree prune
 ```
 
 Měří per běh: linky, **skutečnou cenu** (Σ km × přesná sazba + Σ start; kamionové
@@ -853,7 +860,7 @@ skutečná), `run_log_A|B.jsonl` (per běh **CONFIG snapshot + git_commit
 solveru**), `A|B/<případ>_r<n>/` (kompletní výstup solveru: `lines_summary`,
 `lines_stops`, `eso_export`, `run_status.json`) + `.log` konzole per běh,
 a log `../data/results/overnight_<stamp>.log`. Chceš-li starý solver znovu
-spustit: `git worktree add --detach _baseline_<commit> <commit>` (commit je
+spustit: `git worktree add --detach $env:TEMP\vrp_baseline_<commit> <commit>` (commit je
 v `meta.json`) — nebo rovnou `overnight_regression.ps1 -BaselineCommit <commit>`.
 Solver s daným seedem je při
 stejném vytížení téměř deterministický (opakování ~0,1 %); rozdíly ~1 %

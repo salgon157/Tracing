@@ -211,8 +211,12 @@ def run_solver(script_dir: Path, orders: Path, out_dir: Path, fleet_file: Path,
                budget: float, osm: str, run_log: Path, console_log: Path,
                extra_args: list[str], env: dict, get_matrix_fn=None) -> dict:
     # cwd = složka té strany: baseline (starý commit) skládá interní cesty
-    # relativně ke cwd, kandidát je bere z paths.py. Všechny vstupy i výstupy
-    # jsou stejně předané absolutně přes CLI.
+    # relativně ke cwd (uzavírky), kandidát je bere z paths.py. Proto MUSÍ
+    # jít všechny cesty do příkazu absolutně — relativní by se u každé
+    # strany rozvinula jinam a výstupy by se rozpadly do dvou stromů.
+    orders, out_dir = orders.resolve(), out_dir.resolve()
+    fleet_file, run_log = fleet_file.resolve(), run_log.resolve()
+    console_log = console_log.resolve()
     cmd = [PY, (script_dir / "vrp_solver_lines_v6.py").as_posix(),
            "--orders-file", orders.as_posix(),
            "--output-dir", out_dir.as_posix(),
@@ -344,6 +348,14 @@ def main() -> None:
     baseline = Path(args.baseline_dir).resolve()
     candidate = Path(args.candidate_dir).resolve() if args.candidate_dir else root
     side_args = {"A": args.a_args.split(), "B": args.b_args.split()}
+    if baseline.is_relative_to(paths.REPO_ROOT):
+        raise SystemExit(
+            f"[CHYBA] Baseline worktree leží uvnitř repa: {baseline}\n"
+            f"        Ve vrp_benchmark nesmí být žádná data ani checkouty\n"
+            f"        starých commitů (nesou s sebou staré data/static).\n"
+            f"        Založ ho mimo repo, např.:\n"
+            f"        git worktree add --detach "
+            f"$env:TEMP\\vrp_baseline_<commit> <commit>")
     if not (baseline / "vrp_solver_lines_v6.py").exists():
         raise SystemExit(f"[CHYBA] {baseline} není worktree se solverem")
     prepare_baseline_data(baseline)
@@ -367,7 +379,9 @@ def main() -> None:
             print(f"  [!] přeceňování hgv km vypnuto ({e})")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    out_root = (Path(args.out) if args.out
+    # .resolve(): --out bývá relativní (..\data\results\...) a strany běží
+    # z různých složek — absolutní cesta je jediná, která u obou znamená totéž.
+    out_root = (Path(args.out).resolve() if args.out
                 else paths.RESULTS_ROOT / "_regression" / stamp)
     out_root.mkdir(parents=True, exist_ok=True)
     results_path = out_root / "results.jsonl"

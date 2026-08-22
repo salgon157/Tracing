@@ -57,8 +57,8 @@ CONFIGS_TO_TEST = [
     {"name": "e_heavy",      "C": 0.15, "D": 0.55, "E": 0.30},
 ]
 
-OUTPUT_CSV = Path("benchmark_results.csv")
-OUTPUT_SUMMARY = Path("benchmark_summary.txt")
+OUTPUT_CSV = paths.DATA_ROOT / "benchmark" / "benchmark_results.csv"
+OUTPUT_SUMMARY = paths.DATA_ROOT / "benchmark" / "benchmark_summary.txt"
 
 
 # ── Spuštění jedné konfigurace na jednom bloku ────────────────

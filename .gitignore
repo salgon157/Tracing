@@ -16,10 +16,15 @@ venv/
 # Verzuje se JEN kod — vcetne closures.json a vehicle_types (od 21.8.2026
 # take provozni data, viz WORKFLOW: Nasazeni na server).
 /data/
-benchmark/results/
 *.log
+
+# Vystupy benchmarku, experimentu a webui jobu chodi pod ../data/ (viz paths.py).
+# Tyhle radky jsou uz jen pojistka pro starsi pracovni kopie.
+benchmark/results/
 benchmark_results.csv
 benchmark_summary.txt
+webui/jobs/
+experiments/*/results/
 
 # --- Routovaci data (ORS/OSRM grafy, stahovana / v Docker volume) ---
 routing/
@@ -28,14 +33,8 @@ routing/
 .claude/settings.local.json
 .vscode/
 
-# --- webui runtime joby (job.json + job.log per beh) ---
-webui/jobs/
-
-# --- vystupy experimentu (generovane, muzou obsahovat PII z objednavek) ---
-experiments/*/results/
-
-# DOČASNÝ ARCHIV — NESAHAT: git worktree se starým solverem (strana A
-# regresního A/B, viz regression_ab.py a WORKFLOW 8). overnight_regression.ps1
-# ho založí jen pro běh a na konci odstraní. Není součást projektu, needituje
-# se, nespouští se odsud ostrý běh. Popis: _baseline_*/_NESAHAT_ARCHIV.md
+# POJISTKA: baseline worktree pro regresni A/B se zaklada v %TEMP%, ne tady
+# (vypis stareho commitu nese tehdejsi data/static -- ve slozce s kodem
+# nesmi lezet zadna data). Kdyby ho nekdo presto zalozil v repu, at aspon
+# neni v gitu. Viz regression_ab.py a WORKFLOW sekce 8.
 /_baseline_*/

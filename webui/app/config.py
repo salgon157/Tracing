@@ -57,7 +57,7 @@ def vehicle_types_files() -> list[Path]:
 
 WEBUI_DIR  = Path(__file__).resolve().parents[1]   # .../webui
 STATIC_DIR = WEBUI_DIR / "static"
-JOBS_DIR   = WEBUI_DIR / "jobs"                     # runtime, gitignored
+JOBS_DIR   = DATA_ROOT / "webui_jobs"               # runtime, mimo repo
 
 # ── Depa ─────────────────────────────────────────────────────────────────────
 DEPOTS = [

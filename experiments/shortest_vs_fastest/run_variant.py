@@ -27,6 +27,9 @@ from pathlib import Path
 
 EXP_DIR   = Path(__file__).resolve().parent
 REPO_ROOT = EXP_DIR.parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+import paths  # noqa: E402  (datový kořen leží mimo repo)
 
 VARIANT_URLS = {
     "fastest":  "http://localhost:5000",   # produkční stable (jen čteme)
@@ -60,8 +63,9 @@ def main() -> None:
         sys.exit(f"[CHYBA] Flotila neexistuje: {fleet_file}")
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_dir = EXP_DIR / "results" / f"{orders_file.stem}_{args.variant}_{stamp}"
-    run_log = EXP_DIR / "results" / "run_log.jsonl"
+    exp_out = paths.DATA_ROOT / "experiments" / "shortest_vs_fastest"
+    out_dir = exp_out / f"{orders_file.stem}_{args.variant}_{stamp}"
+    run_log = exp_out / "run_log.jsonl"
 
     # Solver čte relativní cesty vůči kořeni repa (data/static/closures.json apod.)
     os.chdir(REPO_ROOT)

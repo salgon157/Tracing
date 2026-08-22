@@ -46,6 +46,8 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+import paths  # noqa: E402  (až po sys.path — leží v kořeni repa)
+
 os.environ["SKIP_STARTUP_TESTS"] = "1"
 
 import numpy as np
@@ -62,7 +64,7 @@ from benchmark.configs import CONFIGS
 
 # ── Cesty ─────────────────────────────────────────────────────────────────────
 _BENCH_DIR  = Path(__file__).parent
-RESULTS_DIR = _BENCH_DIR / "results"
+RESULTS_DIR = paths.DATA_ROOT / "benchmark"   # do repa výstupy nepatří
 LOG_FILE    = RESULTS_DIR / "experiment_log.jsonl"
 
 # ── Výchozí hodnoty ───────────────────────────────────────────────────────────
